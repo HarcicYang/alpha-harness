@@ -88,6 +88,7 @@ impl SessionState {
                 self.pending_tool_calls.remove(id);
             }
             SessionEvent::ModeChanged { mode } => self.mode = *mode,
+            SessionEvent::PermissionRequested { .. } | SessionEvent::PermissionDecided { .. } => {}
             event @ (SessionEvent::LocationBound { .. } | SessionEvent::LocationRebound { .. }) => {
                 apply_location_event(&mut self.workspace, event);
             }

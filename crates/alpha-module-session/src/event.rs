@@ -81,6 +81,24 @@ pub enum SessionEvent {
         /// The new mode.
         mode: PermissionMode,
     },
+    /// A permission check was requested.
+    PermissionRequested {
+        /// Action key.
+        action: String,
+        /// Resources touched by the action.
+        resources: Vec<String>,
+    },
+    /// A permission check settled.
+    PermissionDecided {
+        /// Action key.
+        action: String,
+        /// Resources touched by the action.
+        resources: Vec<String>,
+        /// Whether the action was allowed.
+        allowed: bool,
+        /// Decision source label.
+        source: String,
+    },
     /// A session bound to a workspace location.
     LocationBound {
         /// The bound workspace and cwd.

@@ -22,7 +22,7 @@ pub const __ALPHA_MODULE__: &str = "permission";
 pub use policy::{Policy, Rule, RuleDecision, default_protected, wildcard_match};
 pub use request::{ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest};
 pub use service::{
-    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, DecisionSource,
+    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, CollectingAuditSink, DecisionSource,
     LocalPermissionService, PermissionService,
 };
 
@@ -57,8 +57,14 @@ impl Module for PermissionModule {
         let mut protected = default_protected();
         protected.extend(config.protected.iter().cloned());
         let policy = Policy::new(config.rules.clone(), protected);
-        let service: Arc<dyn PermissionService> =
-            Arc::new(LocalPermissionService::new(config.mode, policy));
+        let mut service = LocalPermissionService::new(config.mode, policy);
+        if let Some(channel) = ctx.get::<dyn ApprovalChannel>() {
+            service = service.with_channel(channel);
+        }
+        if let Some(audit) = ctx.get::<dyn AuditSink>() {
+            service = service.with_audit(audit);
+        }
+        let service: Arc<dyn PermissionService> = Arc::new(service);
         ctx.provide::<dyn PermissionService>(service)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())

@@ -24,12 +24,12 @@ alpha-protocol.workspace = true
 alpha-kernel.workspace = true
 alpha-bundle-default.workspace = true
 clap.workspace = true
+futures.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [dev-dependencies]
-futures.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]

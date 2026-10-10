@@ -5,8 +5,9 @@ use alpha_harness::{RunOptions, compose_with_provider, run_prompt};
 use alpha_module_loop::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
 };
+use alpha_module_permission::{ApprovalChannel, ApprovalDecision, ApprovalPrompt};
 use alpha_module_session::{SessionEvent, SessionStore, ToolStatus};
-use alpha_schema::PermissionMode;
+use alpha_schema::{EventEnvelope, PermissionMode};
 use futures::future::BoxFuture;
 use serde_json::json;
 
@@ -40,6 +41,14 @@ impl ModelProvider for ScriptedProvider {
     }
 }
 
+struct AllowOnce;
+
+impl ApprovalChannel for AllowOnce {
+    fn decide(&self, _prompt: ApprovalPrompt) -> BoxFuture<'_, ApprovalDecision> {
+        Box::pin(async move { ApprovalDecision::AllowOnce })
+    }
+}
+
 fn write_script() -> Vec<CompletionResponse> {
     vec![
         CompletionResponse {
@@ -60,40 +69,67 @@ fn write_script() -> Vec<CompletionResponse> {
     ]
 }
 
-#[tokio::test]
-async fn run_prompt_edits_a_file_end_to_end() {
+fn decided_sources(events: &[EventEnvelope<SessionEvent>], allowed: bool) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|envelope| match &envelope.payload {
+            SessionEvent::PermissionDecided {
+                allowed: value,
+                source,
+                ..
+            } if *value == allowed => Some(source.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn run_script(
+    mode: PermissionMode,
+    approval: Option<Arc<dyn ApprovalChannel>>,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    alpha_harness::RunReport,
+    std::sync::Arc<ScriptedProvider>,
+) {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("state");
     let provider = Arc::new(ScriptedProvider::new(write_script()));
-    let (_ctx, agent) = compose_with_provider(
+    let composition = compose_with_provider(
         workspace.path(),
-        PermissionMode::Free,
+        mode,
         "scripted",
         "scripted",
+        approval,
         provider.clone(),
     )
     .expect("compose");
     let store = SessionStore::new(state.path());
-
     let report = run_prompt(
         RunOptions {
             workspace: workspace.path().to_path_buf(),
-            mode: PermissionMode::Free,
+            mode,
             model: "scripted".to_owned(),
             prompt: "write a file".to_owned(),
         },
-        &agent,
+        &composition,
         &store,
     )
     .await
     .expect("run");
+    (workspace, state, report, provider)
+}
 
+#[tokio::test]
+async fn run_prompt_edits_a_file_end_to_end() {
+    let (workspace, state, report, provider) = run_script(PermissionMode::Free, None).await;
     assert_eq!(report.assistant_text, "done");
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("hello.txt")).expect("file"),
         "hi from tool"
     );
 
+    let store = SessionStore::new(state.path());
     let reader = store.open_read(report.session_id).expect("read");
     assert!(reader.events().iter().any(|envelope| matches!(
         &envelope.payload,
@@ -102,6 +138,7 @@ async fn run_prompt_edits_a_file_end_to_end() {
             ..
         }
     )));
+    assert!(decided_sources(reader.events(), true).contains(&"default".to_owned()));
 
     let requests = provider.requests.lock().expect("request lock");
     assert!(requests[1].messages.iter().any(|message| matches!(
@@ -113,35 +150,11 @@ async fn run_prompt_edits_a_file_end_to_end() {
 
 #[tokio::test]
 async fn read_mode_blocks_writes_end_to_end() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let state = tempfile::tempdir().expect("state");
-    let provider = Arc::new(ScriptedProvider::new(write_script()));
-    let (_ctx, agent) = compose_with_provider(
-        workspace.path(),
-        PermissionMode::Read,
-        "scripted",
-        "scripted",
-        provider,
-    )
-    .expect("compose");
-    let store = SessionStore::new(state.path());
-
-    let report = run_prompt(
-        RunOptions {
-            workspace: workspace.path().to_path_buf(),
-            mode: PermissionMode::Read,
-            model: "scripted".to_owned(),
-            prompt: "write a file".to_owned(),
-        },
-        &agent,
-        &store,
-    )
-    .await
-    .expect("run");
-
+    let (workspace, state, report, _provider) = run_script(PermissionMode::Read, None).await;
     assert_eq!(report.assistant_text, "done");
     assert!(!workspace.path().join("hello.txt").exists());
 
+    let store = SessionStore::new(state.path());
     let reader = store.open_read(report.session_id).expect("read");
     assert!(reader.events().iter().any(|envelope| matches!(
         &envelope.payload,
@@ -151,4 +164,39 @@ async fn read_mode_blocks_writes_end_to_end() {
             ..
         } if content.contains("permission denied")
     )));
+    assert!(decided_sources(reader.events(), false).contains(&"default".to_owned()));
+}
+
+#[tokio::test]
+async fn auto_mode_uses_the_approval_channel() {
+    let (workspace, state, report, _provider) =
+        run_script(PermissionMode::Auto, Some(Arc::new(AllowOnce))).await;
+    assert_eq!(report.assistant_text, "done");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("hello.txt")).expect("file"),
+        "hi from tool"
+    );
+
+    let store = SessionStore::new(state.path());
+    let reader = store.open_read(report.session_id).expect("read");
+    assert!(decided_sources(reader.events(), true).contains(&"approval".to_owned()));
+}
+
+#[tokio::test]
+async fn auto_mode_without_a_channel_fails_closed() {
+    let (workspace, state, report, _provider) = run_script(PermissionMode::Auto, None).await;
+    assert_eq!(report.assistant_text, "done");
+    assert!(!workspace.path().join("hello.txt").exists());
+
+    let store = SessionStore::new(state.path());
+    let reader = store.open_read(report.session_id).expect("read");
+    assert!(reader.events().iter().any(|envelope| matches!(
+        &envelope.payload,
+        SessionEvent::ToolResult {
+            status: ToolStatus::Failed,
+            content,
+            ..
+        } if content.contains("no approval channel")
+    )));
+    assert!(decided_sources(reader.events(), false).contains(&"no_channel".to_owned()));
 }

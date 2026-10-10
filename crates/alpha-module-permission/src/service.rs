@@ -50,6 +50,20 @@ pub enum DecisionSource {
     NoChannel,
 }
 
+impl DecisionSource {
+    /// Stable label used in durable audit events.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grant => "grant",
+            Self::Policy => "policy",
+            Self::Default => "default",
+            Self::Protected => "protected",
+            Self::Approval => "approval",
+            Self::NoChannel => "no_channel",
+        }
+    }
+}
+
 /// One audit record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuditRecord {
@@ -65,6 +79,33 @@ pub struct AuditRecord {
 pub trait AuditSink: Send + Sync + 'static {
     /// Record one decision.
     fn record(&self, record: AuditRecord);
+}
+
+/// Audit sink that collects records in memory for the caller to drain.
+#[derive(Default)]
+pub struct CollectingAuditSink {
+    records: Mutex<Vec<AuditRecord>>,
+}
+
+impl CollectingAuditSink {
+    /// Create an empty sink.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take every collected record.
+    pub fn drain(&self) -> Vec<AuditRecord> {
+        std::mem::take(&mut *self.records.lock().expect("audit lock poisoned"))
+    }
+}
+
+impl AuditSink for CollectingAuditSink {
+    fn record(&self, record: AuditRecord) {
+        self.records
+            .lock()
+            .expect("audit lock poisoned")
+            .push(record);
+    }
 }
 
 /// Local permission service implementing the M1 modes.

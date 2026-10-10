@@ -1,7 +1,12 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use alpha_harness::{RunOptions, compose_openai_runtime, run_prompt, serve_stdio};
+use alpha_harness::{
+    RunOptions, TtyApprovalChannel, compose_openai_runtime, run_prompt, serve_stdio,
+};
+use alpha_module_permission::ApprovalChannel;
 use alpha_module_session::SessionStore;
 use alpha_schema::PermissionMode;
 use clap::{Args, Parser, Subcommand};
@@ -110,9 +115,21 @@ fn run_command(args: RunArgs) -> ExitCode {
         }
     };
 
-    let result = runtime.block_on(async {
-        let (_ctx, agent) =
-            compose_openai_runtime(&workspace, args.mode, &args.model, &base_url, &api_key)?;
+    let approval: Option<Arc<dyn ApprovalChannel>> = if std::io::stdin().is_terminal() {
+        Some(Arc::new(TtyApprovalChannel))
+    } else {
+        None
+    };
+
+    let result = runtime.block_on(async move {
+        let composition = compose_openai_runtime(
+            &workspace,
+            args.mode,
+            &args.model,
+            &base_url,
+            &api_key,
+            approval,
+        )?;
         let store = SessionStore::new(SessionStore::default_root());
         run_prompt(
             RunOptions {
@@ -121,7 +138,7 @@ fn run_command(args: RunArgs) -> ExitCode {
                 model: args.model,
                 prompt,
             },
-            &agent,
+            &composition,
             &store,
         )
         .await

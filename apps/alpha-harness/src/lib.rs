@@ -10,15 +10,21 @@ use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpConfig, HttpLocalModule};
 use alpha_module_loop::{AgentLoop, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
-use alpha_module_permission::{PermissionConfig, PermissionModule};
+use alpha_module_permission::{
+    ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
+    PermissionConfig, PermissionModule,
+};
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
-use alpha_module_session::{SessionError, SessionHeader, SessionState, SessionStore, WorkspaceRef};
+use alpha_module_session::{
+    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef,
+};
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
     FramingError, Id, Message, Response, Router, RpcError, read_message, write_message,
 };
 use alpha_schema::{PermissionMode, SessionId};
+use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
 /// Module keys enabled by the Cargo dependency graph.
@@ -65,6 +71,43 @@ pub struct RunReport {
     pub assistant_text: String,
 }
 
+/// A composed runtime ready for one session.
+pub struct Composition {
+    /// Root context; keep it alive for the lifetime of the run.
+    pub ctx: Ctx,
+    /// The default agent loop.
+    pub agent: Arc<AgentLoop>,
+    /// Audit records collected during the run.
+    pub audit: Arc<CollectingAuditSink>,
+}
+
+/// Approval channel that prompts on the terminal.
+pub struct TtyApprovalChannel;
+
+impl ApprovalChannel for TtyApprovalChannel {
+    fn decide(&self, prompt: ApprovalPrompt) -> BoxFuture<'_, ApprovalDecision> {
+        Box::pin(async move {
+            eprintln!(
+                "permission requested: {} ({}){}",
+                prompt.request.action,
+                prompt.request.resources.join(", "),
+                if prompt.protected { " [protected]" } else { "" }
+            );
+            eprintln!("reason: {}", prompt.reason);
+            eprintln!("[a]llow once  [s]ession  [d]eny");
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return ApprovalDecision::Deny;
+            }
+            match line.trim().to_ascii_lowercase().as_str() {
+                "a" | "y" | "yes" => ApprovalDecision::AllowOnce,
+                "s" | "session" => ApprovalDecision::AllowSession,
+                _ => ApprovalDecision::Deny,
+            }
+        })
+    }
+}
+
 /// Compose the production runtime with the OpenAI-compatible provider.
 pub fn compose_openai_runtime(
     workspace: &Path,
@@ -72,8 +115,10 @@ pub fn compose_openai_runtime(
     model: &str,
     base_url: &str,
     api_key: &str,
-) -> Result<(Ctx, Arc<AgentLoop>), RunError> {
+    approval: Option<Arc<dyn ApprovalChannel>>,
+) -> Result<Composition, RunError> {
     let ctx = Ctx::root();
+    let audit = Arc::new(CollectingAuditSink::new());
     provide_provider_registry(&ctx)?;
     HttpLocalModule.activate(&ctx, &HttpConfig {})?;
     OpenAiProviderModule.activate(
@@ -84,9 +129,9 @@ pub fn compose_openai_runtime(
             api_key: Some(api_key.to_owned()),
         },
     )?;
-    activate_core_modules(&ctx, workspace, mode)?;
+    activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
     let agent = activate_loop(&ctx, PROVIDER_NAME, model)?;
-    Ok((ctx, agent))
+    Ok(Composition { ctx, agent, audit })
 }
 
 /// Compose a runtime with an injected provider, used by tests.
@@ -95,18 +140,20 @@ pub fn compose_with_provider(
     mode: PermissionMode,
     model: &str,
     provider_name: &str,
+    approval: Option<Arc<dyn ApprovalChannel>>,
     provider: Arc<dyn ModelProvider>,
-) -> Result<(Ctx, Arc<AgentLoop>), RunError> {
+) -> Result<Composition, RunError> {
     let ctx = Ctx::root();
+    let audit = Arc::new(CollectingAuditSink::new());
     let registry = Arc::new(ProviderRegistry::new());
     registry
         .register(provider_name, provider)
         .map_err(|error| RunError::Service(error.to_string()))?;
     ctx.provide::<ProviderRegistry>(registry)
         .map_err(|error| RunError::Service(error.to_string()))?;
-    activate_core_modules(&ctx, workspace, mode)?;
+    activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
     let agent = activate_loop(&ctx, provider_name, model)?;
-    Ok((ctx, agent))
+    Ok(Composition { ctx, agent, audit })
 }
 
 fn provide_provider_registry(ctx: &Ctx) -> Result<(), RunError> {
@@ -119,6 +166,8 @@ fn activate_core_modules(
     ctx: &Ctx,
     workspace: &Path,
     mode: PermissionMode,
+    approval: Option<Arc<dyn ApprovalChannel>>,
+    audit: Arc<CollectingAuditSink>,
 ) -> Result<(), RunError> {
     FsLocalModule.activate(
         ctx,
@@ -133,6 +182,13 @@ fn activate_core_modules(
             ..ProcessConfig::default()
         },
     )?;
+    if let Some(channel) = approval {
+        ctx.provide::<dyn ApprovalChannel>(channel)
+            .map_err(|error| RunError::Service(error.to_string()))?;
+    }
+    let audit_service: Arc<dyn AuditSink> = audit;
+    ctx.provide::<dyn AuditSink>(audit_service)
+        .map_err(|error| RunError::Service(error.to_string()))?;
     PermissionModule.activate(
         ctx,
         &PermissionConfig {
@@ -159,7 +215,7 @@ fn activate_loop(ctx: &Ctx, provider: &str, model: &str) -> Result<Arc<AgentLoop
 /// Run one headless turn and record it in a session.
 pub async fn run_prompt(
     options: RunOptions,
-    agent: &AgentLoop,
+    composition: &Composition,
     store: &SessionStore,
 ) -> Result<RunReport, RunError> {
     let path = options.workspace.display().to_string();
@@ -174,10 +230,23 @@ pub async fn run_prompt(
     let session_id = header.id;
     let mut writer = store.create(header.clone())?;
     let state = SessionState::new(&header);
-    let outcome = agent
+    let outcome = composition
+        .agent
         .run_turn(&mut writer, &state, &options.prompt)
         .await
         .map_err(|error| RunError::Loop(error.to_string()))?;
+    for record in composition.audit.drain() {
+        writer.append(SessionEvent::PermissionRequested {
+            action: record.request.action.clone(),
+            resources: record.request.resources.clone(),
+        })?;
+        writer.append(SessionEvent::PermissionDecided {
+            action: record.request.action,
+            resources: record.request.resources,
+            allowed: record.outcome.is_allowed(),
+            source: record.source.label().to_owned(),
+        })?;
+    }
     Ok(RunReport {
         session_id,
         assistant_text: outcome.assistant_text,
