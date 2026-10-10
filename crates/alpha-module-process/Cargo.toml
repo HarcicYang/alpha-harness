@@ -9,3 +9,12 @@ keywords = ["alpha-harness", "process", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-kernel.workspace = true
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
