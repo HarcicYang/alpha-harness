@@ -1,6 +1,12 @@
 # alpha-harness
 
-A Rust project. Make sure a Rust toolchain (rustup / cargo) is installed before building.
+A lightweight, everything-is-a-module coding agent harness. Design decisions
+live in [docs/architecture.md](docs/architecture.md).
+
+## Layout
+
+- `apps/alpha-harness`: the `alpha` binary.
+- `crates/`: kernel, protocol, and modules.
 
 ## Common commands
 
