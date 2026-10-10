@@ -9,3 +9,9 @@ keywords = ["alpha-harness", "config", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
