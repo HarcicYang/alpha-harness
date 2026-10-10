@@ -448,6 +448,39 @@ fn build_router(store: SessionStore) -> Router {
                 }
             }
         })
+        .method("session.resume", {
+            let store = store.clone();
+            move |params: Value| {
+                let store = store.clone();
+                async move {
+                    let params: ResumeParams = serde_json::from_value(params)
+                        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                    let reader = store
+                        .open_read(params.session_id)
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    let mode = reader.header().mode;
+                    let workspace = reader.header().workspace.root.clone();
+                    drop(reader);
+                    let writer = store
+                        .open_write(params.session_id)
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    let repairs = writer.repairs().len();
+                    drop(writer);
+                    let reader = store
+                        .open_read(params.session_id)
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    let state = reader.state();
+                    Ok(json!({
+                        "sessionId": params.session_id,
+                        "mode": mode,
+                        "workspace": workspace,
+                        "messages": state.messages.len(),
+                        "turnOpen": state.turn_open,
+                        "repairs": repairs,
+                    }))
+                }
+            }
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,4 +489,10 @@ struct AttachParams {
     session_id: SessionId,
     #[serde(default)]
     after_seq: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResumeParams {
+    session_id: SessionId,
 }

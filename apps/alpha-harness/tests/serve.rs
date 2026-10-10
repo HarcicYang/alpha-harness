@@ -5,7 +5,7 @@ use alpha_module_session::{
     SessionEvent, SessionHeader, SessionStore, TurnEndReason, WorkspaceRef,
 };
 use alpha_protocol::{Id, Message, Response, ResponsePayload, codes, read_message};
-use alpha_schema::{PermissionMode, SessionId};
+use alpha_schema::{MessageId, PermissionMode, SessionId, ToolCallId};
 use serde_json::{Value, json};
 
 fn result_of(message: Message) -> serde_json::Value {
@@ -113,4 +113,50 @@ fn attach_replays_events_after_a_sequence() {
     let events = result.as_array().expect("events");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["seq"], json!(2));
+}
+
+#[test]
+fn resume_repairs_interrupted_work_and_reports_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = SessionHeader::new(
+        SessionId::new(),
+        PermissionMode::Auto,
+        WorkspaceRef {
+            root: "/tmp/workspace".to_owned(),
+            cwd: "/tmp/workspace".to_owned(),
+        },
+    );
+    let id = header.id;
+    {
+        let mut writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::TurnStarted)
+            .expect("turn start");
+        writer
+            .append(SessionEvent::ToolCall {
+                id: ToolCallId::new(),
+                message_id: MessageId::new(),
+                name: "shell".to_owned(),
+                input: json!({ "command": "cargo test" }),
+            })
+            .expect("tool call");
+    }
+
+    let input = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.resume\",\"params\":{{\"sessionId\":\"{id}\"}}}}\n"
+    );
+    let mut reader = Cursor::new(input.into_bytes());
+    let mut output = Vec::new();
+    serve_with(&mut reader, &mut output, store.clone()).expect("serve");
+
+    let message = read_message(&mut Cursor::new(output))
+        .expect("read resume")
+        .expect("resume response");
+    let result = result_of(message);
+    assert_eq!(result["repairs"], json!(2));
+    assert_eq!(result["turnOpen"], json!(false));
+
+    let reader = store.open_read(id).expect("open read");
+    assert_eq!(reader.events().len(), 4);
 }
