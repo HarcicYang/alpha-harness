@@ -25,6 +25,7 @@ alpha-module-permission = { path = "crates/alpha-module-permission", version = "
 alpha-module-tools = { path = "crates/alpha-module-tools", version = "0.1.0" }
 alpha-module-provider-openai = { path = "crates/alpha-module-provider-openai", version = "0.1.0" }
 alpha-bundle-default = { path = "crates/alpha-bundle-default", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }

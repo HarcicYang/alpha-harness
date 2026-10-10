@@ -61,6 +61,17 @@ fn responses_round_trip_in_both_shapes() {
 }
 
 #[test]
+fn null_ids_round_trip_for_parse_errors() {
+    let message = Message::Response(Response::failure(
+        Id::Null,
+        RpcError::parse_error("bad json"),
+    ));
+    let text = serde_json::to_string(&message).expect("serialize");
+    let parsed: Message = serde_json::from_str(&text).expect("deserialize");
+    assert_eq!(parsed, message);
+}
+
+#[test]
 fn ndjson_framing_round_trips() {
     let mut buffer = Vec::new();
     write_message(&mut buffer, &request()).expect("write request");

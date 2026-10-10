@@ -24,6 +24,8 @@ pub mod codes {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Id {
+    /// Null identifier, used for parse errors.
+    Null,
     /// Numeric identifier.
     Number(i64),
     /// String identifier.
