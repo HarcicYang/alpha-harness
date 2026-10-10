@@ -17,14 +17,16 @@ use alpha_module_permission::{
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
 use alpha_module_session::{
-    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef,
+    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
+    WorkspaceRef,
 };
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
     FramingError, Id, Message, Response, Router, RpcError, read_message, write_message,
 };
-use alpha_schema::{PermissionMode, SessionId};
+use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Module keys enabled by the Cargo dependency graph.
@@ -69,6 +71,43 @@ pub struct RunReport {
     pub session_id: SessionId,
     /// Final assistant text.
     pub assistant_text: String,
+}
+
+/// Summary of one stored session.
+#[derive(Clone, Debug)]
+pub struct SessionSummary {
+    /// Session identity.
+    pub id: SessionId,
+    /// Creation time in milliseconds since the Unix epoch.
+    pub created_at_ms: i64,
+    /// Permission mode recorded at creation.
+    pub mode: PermissionMode,
+    /// Workspace root.
+    pub workspace: String,
+}
+
+/// Options for resuming a session.
+#[derive(Clone, Debug)]
+pub struct ResumeOptions {
+    /// Session identity.
+    pub session_id: SessionId,
+    /// Optional follow-up prompt.
+    pub prompt: Option<String>,
+}
+
+/// Result of a resume.
+#[derive(Clone, Debug)]
+pub struct ResumeReport {
+    /// Session identity.
+    pub session_id: SessionId,
+    /// Assistant text when a follow-up prompt ran.
+    pub assistant_text: Option<String>,
+    /// Number of messages after resume.
+    pub messages: usize,
+    /// Whether a turn is still open.
+    pub turn_open: bool,
+    /// Repair events appended while opening.
+    pub repairs: usize,
 }
 
 /// A composed runtime ready for one session.
@@ -235,6 +274,14 @@ pub async fn run_prompt(
         .run_turn(&mut writer, &state, &options.prompt)
         .await
         .map_err(|error| RunError::Loop(error.to_string()))?;
+    record_audit(&mut writer, composition)?;
+    Ok(RunReport {
+        session_id,
+        assistant_text: outcome.assistant_text,
+    })
+}
+
+fn record_audit(writer: &mut SessionWriter, composition: &Composition) -> Result<(), RunError> {
     for record in composition.audit.drain() {
         writer.append(SessionEvent::PermissionRequested {
             action: record.request.action.clone(),
@@ -247,9 +294,62 @@ pub async fn run_prompt(
             source: record.source.label().to_owned(),
         })?;
     }
-    Ok(RunReport {
-        session_id,
-        assistant_text: outcome.assistant_text,
+    Ok(())
+}
+
+/// List stored sessions, newest first.
+pub fn list_sessions(store: &SessionStore) -> Result<Vec<SessionSummary>, RunError> {
+    let headers = store.list()?;
+    Ok(headers
+        .into_iter()
+        .map(|header| SessionSummary {
+            id: header.id,
+            created_at_ms: header.created_at.as_millis(),
+            mode: header.mode,
+            workspace: header.workspace.root,
+        })
+        .collect())
+}
+
+/// Resume a session, optionally running one follow-up prompt.
+pub async fn resume_session(
+    options: ResumeOptions,
+    composition: &Composition,
+    store: &SessionStore,
+) -> Result<ResumeReport, RunError> {
+    let reader = store.open_read(options.session_id)?;
+    let state = reader.state();
+    drop(reader);
+
+    let mut writer = store.open_write(options.session_id)?;
+    let repairs = writer.repairs().len();
+    let prompt = options
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty());
+    let assistant_text = match prompt {
+        Some(prompt) => Some(
+            composition
+                .agent
+                .run_turn(&mut writer, &state, prompt)
+                .await
+                .map_err(|error| RunError::Loop(error.to_string()))?
+                .assistant_text,
+        ),
+        None => None,
+    };
+    record_audit(&mut writer, composition)?;
+    drop(writer);
+
+    let reader = store.open_read(options.session_id)?;
+    let final_state = reader.state();
+    Ok(ResumeReport {
+        session_id: options.session_id,
+        assistant_text,
+        messages: final_state.messages.len(),
+        turn_open: final_state.turn_open,
+        repairs,
     })
 }
 
@@ -306,6 +406,7 @@ pub fn serve_with<R: BufRead, W: Write>(
 }
 
 fn build_router(store: SessionStore) -> Router {
+    let store = Arc::new(store);
     Router::new()
         .method("alpha.ping", |_params: Value| async move {
             Ok::<Value, RpcError>(json!({
@@ -313,13 +414,46 @@ fn build_router(store: SessionStore) -> Router {
                 "version": env!("CARGO_PKG_VERSION"),
             }))
         })
-        .method("session.list", move |_params: Value| {
+        .method("session.list", {
             let store = store.clone();
-            async move {
-                let headers = store
-                    .list()
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
-                serde_json::to_value(headers).map_err(|error| RpcError::internal(error.to_string()))
+            move |_params: Value| {
+                let store = store.clone();
+                async move {
+                    let headers = store
+                        .list()
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    serde_json::to_value(headers)
+                        .map_err(|error| RpcError::internal(error.to_string()))
+                }
             }
         })
+        .method("session.attach", {
+            let store = store.clone();
+            move |params: Value| {
+                let store = store.clone();
+                async move {
+                    let params: AttachParams = serde_json::from_value(params)
+                        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                    let reader = store
+                        .open_read(params.session_id)
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    let after = params.after_seq.unwrap_or(0);
+                    let events: Vec<&EventEnvelope<SessionEvent>> = reader
+                        .events()
+                        .iter()
+                        .filter(|envelope| envelope.seq.get() > after)
+                        .collect();
+                    serde_json::to_value(events)
+                        .map_err(|error| RpcError::internal(error.to_string()))
+                }
+            }
+        })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachParams {
+    session_id: SessionId,
+    #[serde(default)]
+    after_seq: Option<u64>,
 }

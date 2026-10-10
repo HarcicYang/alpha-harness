@@ -1,9 +1,12 @@
 use std::io::Cursor;
 
 use alpha_harness::serve_with;
-use alpha_module_session::SessionStore;
+use alpha_module_session::{
+    SessionEvent, SessionHeader, SessionStore, TurnEndReason, WorkspaceRef,
+};
 use alpha_protocol::{Id, Message, Response, ResponsePayload, codes, read_message};
-use serde_json::json;
+use alpha_schema::{PermissionMode, SessionId};
+use serde_json::{Value, json};
 
 fn result_of(message: Message) -> serde_json::Value {
     match message {
@@ -68,4 +71,46 @@ fn parse_errors_use_a_null_id() {
         }
         other => panic!("unexpected response: {other:?}"),
     }
+}
+
+#[test]
+fn attach_replays_events_after_a_sequence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = SessionHeader::new(
+        SessionId::new(),
+        PermissionMode::Auto,
+        WorkspaceRef {
+            root: "/tmp/workspace".to_owned(),
+            cwd: "/tmp/workspace".to_owned(),
+        },
+    );
+    let id = header.id;
+    {
+        let mut writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::TurnStarted)
+            .expect("turn start");
+        writer
+            .append(SessionEvent::TurnEnded {
+                reason: TurnEndReason::Completed,
+            })
+            .expect("turn end");
+    }
+
+    let input = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.attach\",\"params\":{{\"sessionId\":\"{id}\",\"afterSeq\":1}}}}\n"
+    );
+    let mut reader = Cursor::new(input.into_bytes());
+    let mut output = Vec::new();
+    serve_with(&mut reader, &mut output, store).expect("serve");
+
+    let mut responses = Cursor::new(output);
+    let message = read_message(&mut responses)
+        .expect("read attach")
+        .expect("attach response");
+    let result: Value = result_of(message);
+    let events = result.as_array().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["seq"], json!(2));
 }

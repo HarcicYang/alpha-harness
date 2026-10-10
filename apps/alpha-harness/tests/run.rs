@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use alpha_harness::{RunOptions, compose_with_provider, run_prompt};
+use alpha_harness::{ResumeOptions, RunOptions, compose_with_provider, resume_session, run_prompt};
 use alpha_module_loop::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
 };
@@ -199,4 +199,69 @@ async fn auto_mode_without_a_channel_fails_closed() {
         } if content.contains("no approval channel")
     )));
     assert!(decided_sources(reader.events(), false).contains(&"no_channel".to_owned()));
+}
+
+#[tokio::test]
+async fn resume_replays_history_and_runs_a_follow_up_turn() {
+    let (workspace, state, report, _provider) = run_script(PermissionMode::Free, None).await;
+    let store = SessionStore::new(state.path());
+
+    let provider = Arc::new(ScriptedProvider::new(vec![CompletionResponse {
+        text: "second".to_owned(),
+        tool_calls: Vec::new(),
+    }]));
+    let composition = compose_with_provider(
+        workspace.path(),
+        PermissionMode::Free,
+        "scripted",
+        "scripted",
+        None,
+        provider.clone(),
+    )
+    .expect("compose");
+
+    let idle = resume_session(
+        ResumeOptions {
+            session_id: report.session_id,
+            prompt: None,
+        },
+        &composition,
+        &store,
+    )
+    .await
+    .expect("idle resume");
+    assert!(idle.assistant_text.is_none());
+    assert_eq!(idle.messages, 4);
+    assert_eq!(idle.repairs, 0);
+
+    let resumed = resume_session(
+        ResumeOptions {
+            session_id: report.session_id,
+            prompt: Some("say hi again".to_owned()),
+        },
+        &composition,
+        &store,
+    )
+    .await
+    .expect("resume");
+    assert_eq!(resumed.assistant_text.as_deref(), Some("second"));
+    assert_eq!(resumed.messages, 6);
+    assert!(!resumed.turn_open);
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert!(requests[0].messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::AssistantToolCalls { calls, .. }
+            if calls.iter().any(|call| call.name == "write")
+    )));
+    assert!(requests[0].messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::ToolResult { content, .. } if content.contains("Wrote 12 bytes")
+    )));
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| matches!(message, ChatMessage::Assistant(text) if text == "done"))
+    );
 }
