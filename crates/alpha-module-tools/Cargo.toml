@@ -9,11 +9,27 @@ keywords = ["alpha-harness", "tools", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-kernel.workspace = true
+alpha-module-fs.workspace = true
+alpha-module-permission.workspace = true
+alpha-module-process.workspace = true
+alpha-schema.workspace = true
+futures.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [package.metadata.alpha]
 api = 1
 kind = "module"
 key = "tools"
 provides = [{ key = "tool", kind = "registry", scope = "location" }]
-requires = ["fs", "process"]
+requires = ["fs", "process", "permission"]
 registry_entries = ["read", "grep", "write", "edit", "shell"]
