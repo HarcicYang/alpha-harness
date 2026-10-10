@@ -130,6 +130,7 @@ fn activate_core_modules(
         ctx,
         &ProcessConfig {
             cwd: workspace.to_path_buf(),
+            ..ProcessConfig::default()
         },
     )?;
     PermissionModule.activate(

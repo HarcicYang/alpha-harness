@@ -26,6 +26,7 @@ fn setup(mode: PermissionMode, root: &Path) -> (Ctx, Arc<ToolRegistry>) {
             &ctx,
             &ProcessConfig {
                 cwd: root.to_path_buf(),
+                ..ProcessConfig::default()
             },
         )
         .expect("process");
