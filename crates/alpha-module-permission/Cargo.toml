@@ -9,6 +9,13 @@ keywords = ["alpha-harness", "permissions", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-kernel.workspace = true
+alpha-schema.workspace = true
+futures.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [package.metadata.alpha]
 api = 1

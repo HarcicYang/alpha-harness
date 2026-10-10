@@ -112,6 +112,13 @@ dependencies = [
 [[package]]
 name = "alpha-module-permission"
 version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-schema",
+ "futures",
+ "serde",
+ "tokio",
+]
 
 [[package]]
 name = "alpha-module-process"
