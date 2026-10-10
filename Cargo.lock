@@ -128,6 +128,15 @@ dependencies = [
 [[package]]
 name = "alpha-module-provider-openai"
 version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "alpha-module-session"
