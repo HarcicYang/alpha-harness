@@ -9,6 +9,15 @@ keywords = ["alpha-harness", "http", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-kernel.workspace = true
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread"] }
 
 [package.metadata.alpha]
 api = 1
