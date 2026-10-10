@@ -14,6 +14,13 @@ pub enum ChatMessage {
     User(String),
     /// Assistant message.
     Assistant(String),
+    /// Assistant message that also requested tool calls.
+    AssistantToolCalls {
+        /// Assistant text, possibly empty.
+        text: String,
+        /// Requested calls.
+        calls: Vec<ToolCall>,
+    },
     /// Tool result returned to the model.
     ToolResult {
         /// Provider call identity.
@@ -28,7 +35,7 @@ impl ChatMessage {
     pub fn role(&self) -> &'static str {
         match self {
             Self::User(_) => "user",
-            Self::Assistant(_) => "assistant",
+            Self::Assistant(_) | Self::AssistantToolCalls { .. } => "assistant",
             Self::ToolResult { .. } => "tool",
         }
     }
@@ -37,6 +44,7 @@ impl ChatMessage {
     pub fn text(&self) -> &str {
         match self {
             Self::User(text) | Self::Assistant(text) => text,
+            Self::AssistantToolCalls { text, .. } => text,
             Self::ToolResult { content, .. } => content,
         }
     }

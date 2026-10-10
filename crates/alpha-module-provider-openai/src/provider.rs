@@ -109,6 +109,22 @@ fn wire_message(message: &ChatMessage) -> Value {
     match message {
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
         ChatMessage::Assistant(text) => json!({ "role": "assistant", "content": text }),
+        ChatMessage::AssistantToolCalls { text, calls } => json!({
+            "role": "assistant",
+            "content": if text.is_empty() { Value::Null } else { json!(text) },
+            "tool_calls": calls
+                .iter()
+                .map(|call| json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": serde_json::to_string(&call.arguments)
+                            .unwrap_or_else(|_| "null".to_owned()),
+                    }
+                }))
+                .collect::<Vec<_>>(),
+        }),
         ChatMessage::ToolResult { call_id, content } => json!({
             "role": "tool",
             "tool_call_id": call_id,

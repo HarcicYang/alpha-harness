@@ -43,6 +43,14 @@ macro_rules! id_type {
             }
         }
 
+        impl std::str::FromStr for $name {
+            type Err = uuid::Error;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Ok(Self(Uuid::parse_str(value)?))
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}", self.0)

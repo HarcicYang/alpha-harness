@@ -89,14 +89,7 @@ impl AgentLoop {
             text: prompt.to_owned(),
         })?;
 
-        let mut messages: Vec<ChatMessage> = state
-            .messages
-            .iter()
-            .map(|record| match record {
-                MessageRecord::User { text, .. } => ChatMessage::User(text.clone()),
-                MessageRecord::Assistant { text, .. } => ChatMessage::Assistant(text.clone()),
-            })
-            .collect();
+        let mut messages = HistoryBuilder::from_state(state);
         messages.push(ChatMessage::User(prompt.to_owned()));
 
         let tools = self.tool_definitions();
@@ -120,17 +113,21 @@ impl AgentLoop {
             };
 
             let message_id = MessageId::new();
-            if !response.text.is_empty() {
+            let text = response.text;
+            let calls = response.tool_calls;
+            if !text.is_empty() {
                 writer.append(SessionEvent::AssistantMessage {
                     id: message_id,
-                    text: response.text.clone(),
+                    text: text.clone(),
                 })?;
-                last_text = response.text.clone();
+                last_text = text.clone();
                 last_message_id = Some(message_id);
-                messages.push(ChatMessage::Assistant(response.text));
             }
 
-            if response.tool_calls.is_empty() {
+            if calls.is_empty() {
+                if !text.is_empty() {
+                    messages.push(ChatMessage::Assistant(text));
+                }
                 let assistant_id = match last_message_id {
                     Some(id) => id,
                     None => {
@@ -152,7 +149,11 @@ impl AgentLoop {
                 });
             }
 
-            for call in response.tool_calls {
+            messages.push(ChatMessage::AssistantToolCalls {
+                text,
+                calls: calls.clone(),
+            });
+            for call in calls {
                 self.execute_tool(writer, session_id, message_id, &mut messages, call)
                     .await?;
             }
@@ -227,5 +228,86 @@ impl AgentLoop {
             content,
         });
         Ok(())
+    }
+}
+
+/// Rebuilds provider-facing history from the durable projection.
+#[derive(Default)]
+struct HistoryBuilder {
+    messages: Vec<ChatMessage>,
+    pending_text: Option<(MessageId, String)>,
+    pending_calls: Vec<ToolCall>,
+    calls_for: Option<MessageId>,
+}
+
+impl HistoryBuilder {
+    fn from_state(state: &SessionState) -> Vec<ChatMessage> {
+        let mut builder = Self::default();
+        for record in &state.messages {
+            builder.push(record);
+        }
+        builder.finish()
+    }
+
+    fn push(&mut self, record: &MessageRecord) {
+        match record {
+            MessageRecord::User { text, .. } => {
+                self.flush();
+                self.messages.push(ChatMessage::User(text.clone()));
+            }
+            MessageRecord::Assistant { id, text } => {
+                self.flush();
+                self.pending_text = Some((*id, text.clone()));
+            }
+            MessageRecord::ToolCall {
+                message_id,
+                id,
+                name,
+                input,
+            } => {
+                if self.calls_for != Some(*message_id) {
+                    self.flush();
+                    self.calls_for = Some(*message_id);
+                }
+                self.pending_calls.push(ToolCall {
+                    id: id.to_string(),
+                    name: name.clone(),
+                    arguments: input.clone(),
+                });
+            }
+            MessageRecord::ToolResult { id, content, .. } => {
+                self.flush();
+                self.messages.push(ChatMessage::ToolResult {
+                    call_id: id.to_string(),
+                    content: content.clone(),
+                });
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.pending_calls.is_empty() {
+            if let Some((_, text)) = self.pending_text.take() {
+                self.messages.push(ChatMessage::Assistant(text));
+            }
+            return;
+        }
+
+        let text = match (self.pending_text.take(), self.calls_for.take()) {
+            (Some((id, text)), Some(caller)) if id == caller => text,
+            (Some((_, text)), _) => {
+                self.messages.push(ChatMessage::Assistant(text));
+                String::new()
+            }
+            _ => String::new(),
+        };
+        let calls = std::mem::take(&mut self.pending_calls);
+        self.messages
+            .push(ChatMessage::AssistantToolCalls { text, calls });
+    }
+
+    fn finish(mut self) -> Vec<ChatMessage> {
+        self.flush();
+        self.messages
     }
 }

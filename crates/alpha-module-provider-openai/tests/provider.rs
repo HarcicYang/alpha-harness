@@ -150,6 +150,14 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
             model: "gpt-test".to_owned(),
             messages: vec![
                 ChatMessage::User("read a.txt".to_owned()),
+                ChatMessage::AssistantToolCalls {
+                    text: String::new(),
+                    calls: vec![ToolCall {
+                        id: "call_0".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: json!({ "path": "a.txt" }),
+                    }],
+                },
                 ChatMessage::ToolResult {
                     call_id: "call_0".to_owned(),
                     content: "previous".to_owned(),
@@ -177,8 +185,13 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
     let requests = fake.requests.lock().expect("request lock");
     let body: Value = serde_json::from_slice(&requests[0].body).expect("body json");
     assert_eq!(body["tools"][0]["function"]["name"], json!("read"));
-    assert_eq!(body["messages"][1]["role"], json!("tool"));
-    assert_eq!(body["messages"][1]["tool_call_id"], json!("call_0"));
+    assert_eq!(body["messages"][1]["role"], json!("assistant"));
+    assert_eq!(
+        body["messages"][1]["tool_calls"][0]["function"]["name"],
+        json!("read")
+    );
+    assert_eq!(body["messages"][2]["role"], json!("tool"));
+    assert_eq!(body["messages"][2]["tool_call_id"], json!("call_0"));
 }
 
 #[test]

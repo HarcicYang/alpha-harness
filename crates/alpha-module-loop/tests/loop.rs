@@ -31,7 +31,9 @@ impl ModelProvider for EchoProvider {
             .rev()
             .find_map(|message| match message {
                 ChatMessage::User(text) => Some(text.clone()),
-                ChatMessage::Assistant(_) | ChatMessage::ToolResult { .. } => None,
+                ChatMessage::Assistant(_)
+                | ChatMessage::AssistantToolCalls { .. }
+                | ChatMessage::ToolResult { .. } => None,
             })
             .unwrap_or_default();
         self.requests.lock().expect("request lock").push(request);

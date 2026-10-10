@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use alpha_schema::{EventEnvelope, MessageId, PermissionMode, Seq, ToolCallId};
 
-use crate::event::SessionEvent;
+use crate::event::{SessionEvent, ToolStatus};
 use crate::header::{SessionHeader, WorkspaceRef, apply_location_event};
 
 /// One message in the projected history.
@@ -23,6 +23,26 @@ pub enum MessageRecord {
         id: MessageId,
         /// Message text.
         text: String,
+    },
+    /// A tool call requested by the assistant.
+    ToolCall {
+        /// Assistant message that produced the call.
+        message_id: MessageId,
+        /// Call identity.
+        id: ToolCallId,
+        /// Tool name.
+        name: String,
+        /// Decoded input.
+        input: serde_json::Value,
+    },
+    /// A settled tool call.
+    ToolResult {
+        /// Call identity.
+        id: ToolCallId,
+        /// Outcome status.
+        status: ToolStatus,
+        /// Model-visible content.
+        content: String,
     },
 }
 
@@ -81,11 +101,31 @@ impl SessionState {
                     text: text.clone(),
                 });
             }
-            SessionEvent::ToolCall { id, .. } => {
+            SessionEvent::ToolCall {
+                id,
+                message_id,
+                name,
+                input,
+            } => {
                 self.pending_tool_calls.insert(*id);
+                self.messages.push(MessageRecord::ToolCall {
+                    message_id: *message_id,
+                    id: *id,
+                    name: name.clone(),
+                    input: input.clone(),
+                });
             }
-            SessionEvent::ToolResult { id, .. } => {
+            SessionEvent::ToolResult {
+                id,
+                status,
+                content,
+            } => {
                 self.pending_tool_calls.remove(id);
+                self.messages.push(MessageRecord::ToolResult {
+                    id: *id,
+                    status: *status,
+                    content: content.clone(),
+                });
             }
             SessionEvent::ModeChanged { mode } => self.mode = *mode,
             SessionEvent::PermissionRequested { .. } | SessionEvent::PermissionDecided { .. } => {}

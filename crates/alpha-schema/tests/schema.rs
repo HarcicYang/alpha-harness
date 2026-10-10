@@ -21,6 +21,9 @@ fn ids_are_unique_and_round_trip() {
     let json = serde_json::to_string(&session).expect("serialize");
     let parsed: SessionId = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(parsed, session);
+
+    let text = session.to_string();
+    assert_eq!(SessionId::from_str(&text).expect("parse"), session);
 }
 
 #[test]
