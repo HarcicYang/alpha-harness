@@ -1,12 +1,16 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use alpha_harness::{ResumeOptions, RunOptions, compose_with_provider, resume_session, run_prompt};
+use alpha_harness::{
+    ResumeOptions, RunOptions, compose_openai_runtime_with_http, compose_with_provider,
+    resume_session, run_prompt,
+};
+use alpha_module_http::{Cassette, CassetteEntry, HttpClient, ReplayHttpClient};
 use alpha_module_loop::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
 };
 use alpha_module_permission::{ApprovalChannel, ApprovalDecision, ApprovalPrompt};
-use alpha_module_session::{SessionEvent, SessionStore, ToolStatus};
+use alpha_module_session::{MessageRecord, SessionEvent, SessionStore, ToolStatus};
 use alpha_schema::{EventEnvelope, PermissionMode};
 use futures::future::BoxFuture;
 use serde_json::json;
@@ -263,5 +267,74 @@ async fn resume_replays_history_and_runs_a_follow_up_turn() {
             .messages
             .iter()
             .any(|message| matches!(message, ChatMessage::Assistant(text) if text == "done"))
+    );
+}
+
+#[tokio::test]
+async fn cassette_replay_reproduces_the_same_session_state() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionStore::new(state.path());
+
+    let cassette = || Cassette {
+        entries: vec![CassetteEntry {
+            method: "POST".to_owned(),
+            url: "https://api.test/v1/chat/completions".to_owned(),
+            request_body: Vec::new(),
+            status: 200,
+            headers: Default::default(),
+            response_body: serde_json::to_vec(&json!({
+                "choices": [{ "message": { "content": "cassette text" } }]
+            }))
+            .expect("body"),
+        }],
+    };
+
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        let http: Arc<dyn HttpClient> = Arc::new(ReplayHttpClient::new(cassette()));
+        let composition = compose_openai_runtime_with_http(
+            workspace.path(),
+            PermissionMode::Free,
+            "cassette-model",
+            "https://api.test/v1",
+            "key",
+            None,
+            http,
+        )
+        .expect("compose");
+        let report = run_prompt(
+            RunOptions {
+                workspace: workspace.path().to_path_buf(),
+                mode: PermissionMode::Free,
+                model: "cassette-model".to_owned(),
+                prompt: "hello".to_owned(),
+            },
+            &composition,
+            &store,
+        )
+        .await
+        .expect("run");
+        let reader = store.open_read(report.session_id).expect("read");
+        let messages: Vec<String> = reader
+            .state()
+            .messages
+            .iter()
+            .map(|record| match record {
+                MessageRecord::User { text, .. } => format!("user:{text}"),
+                MessageRecord::Assistant { text, .. } => format!("assistant:{text}"),
+                _ => "other".to_owned(),
+            })
+            .collect();
+        runs.push(messages);
+    }
+
+    assert_eq!(runs[0], runs[1]);
+    assert_eq!(
+        runs[0],
+        vec![
+            "user:hello".to_owned(),
+            "assistant:cassette text".to_owned()
+        ]
     );
 }

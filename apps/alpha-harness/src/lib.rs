@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
-use alpha_module_http::{HttpConfig, HttpLocalModule};
+use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
 use alpha_module_loop::{AgentLoop, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
@@ -160,6 +160,34 @@ pub fn compose_openai_runtime(
     let audit = Arc::new(CollectingAuditSink::new());
     provide_provider_registry(&ctx)?;
     HttpLocalModule.activate(&ctx, &HttpConfig {})?;
+    OpenAiProviderModule.activate(
+        &ctx,
+        &OpenAiConfig {
+            base_url: base_url.to_owned(),
+            api_key_env: "OPENAI_API_KEY".to_owned(),
+            api_key: Some(api_key.to_owned()),
+        },
+    )?;
+    activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
+    let agent = activate_loop(&ctx, PROVIDER_NAME, model)?;
+    Ok(Composition { ctx, agent, audit })
+}
+
+/// Compose the production runtime with an injected HTTP client.
+pub fn compose_openai_runtime_with_http(
+    workspace: &Path,
+    mode: PermissionMode,
+    model: &str,
+    base_url: &str,
+    api_key: &str,
+    approval: Option<Arc<dyn ApprovalChannel>>,
+    http: Arc<dyn HttpClient>,
+) -> Result<Composition, RunError> {
+    let ctx = Ctx::root();
+    let audit = Arc::new(CollectingAuditSink::new());
+    provide_provider_registry(&ctx)?;
+    ctx.provide::<dyn HttpClient>(http)
+        .map_err(|error| RunError::Service(error.to_string()))?;
     OpenAiProviderModule.activate(
         &ctx,
         &OpenAiConfig {
