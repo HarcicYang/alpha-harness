@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-config"
+description = "Layered TOML configuration with provenance for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "config", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]

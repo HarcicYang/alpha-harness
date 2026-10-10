@@ -11,3 +11,5 @@ name = "alpha"
 path = "src/main.rs"
 
 [dependencies]
+alpha-kernel.workspace = true
+alpha-bundle-default.workspace = true

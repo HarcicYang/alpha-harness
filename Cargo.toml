@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/*"]
+members = ["apps/*", "crates/*"]
 default-members = ["apps/alpha-harness"]
 
 [workspace.package]
@@ -8,3 +8,20 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/HarcicYang/alpha-harness"
+
+[workspace.dependencies]
+alpha-kernel = { path = "crates/alpha-kernel", version = "0.1.0" }
+alpha-schema = { path = "crates/alpha-schema", version = "0.1.0" }
+alpha-protocol = { path = "crates/alpha-protocol", version = "0.1.0" }
+alpha-macros = { path = "crates/alpha-macros", version = "0.1.0" }
+alpha-build = { path = "crates/alpha-build", version = "0.1.0" }
+alpha-module-config = { path = "crates/alpha-module-config", version = "0.1.0" }
+alpha-module-session = { path = "crates/alpha-module-session", version = "0.1.0" }
+alpha-module-loop = { path = "crates/alpha-module-loop", version = "0.1.0" }
+alpha-module-fs = { path = "crates/alpha-module-fs", version = "0.1.0" }
+alpha-module-process = { path = "crates/alpha-module-process", version = "0.1.0" }
+alpha-module-http = { path = "crates/alpha-module-http", version = "0.1.0" }
+alpha-module-permission = { path = "crates/alpha-module-permission", version = "0.1.0" }
+alpha-module-tools = { path = "crates/alpha-module-tools", version = "0.1.0" }
+alpha-module-provider-openai = { path = "crates/alpha-module-provider-openai", version = "0.1.0" }
+alpha-bundle-default = { path = "crates/alpha-bundle-default", version = "0.1.0" }

@@ -1,0 +1,20 @@
+[package]
+name = "alpha-bundle-default"
+description = "The default M1 module bundle for alpha-harness. Dependencies only, no behavior."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "bundle", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-module-config.workspace = true
+alpha-module-session.workspace = true
+alpha-module-loop.workspace = true
+alpha-module-fs.workspace = true
+alpha-module-process.workspace = true
+alpha-module-http.workspace = true
+alpha-module-permission.workspace = true
+alpha-module-tools.workspace = true
+alpha-module-provider-openai.workspace = true

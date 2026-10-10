@@ -1,0 +1,11 @@
+[package]
+name = "alpha-kernel"
+description = "Component runtime for alpha-harness: context, services, events, effects, scopes, and structured spawning."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "agent"]
+categories = ["development-tools"]
+
+[dependencies]

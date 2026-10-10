@@ -3,5 +3,80 @@
 version = 4
 
 [[package]]
+name = "alpha-build"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-bundle-default"
+version = "0.1.0"
+dependencies = [
+ "alpha-module-config",
+ "alpha-module-fs",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "alpha-module-permission",
+ "alpha-module-process",
+ "alpha-module-provider-openai",
+ "alpha-module-session",
+ "alpha-module-tools",
+]
+
+[[package]]
 name = "alpha-harness"
+version = "0.1.0"
+dependencies = [
+ "alpha-bundle-default",
+ "alpha-kernel",
+]
+
+[[package]]
+name = "alpha-kernel"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-macros"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-config"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-fs"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-http"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-loop"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-permission"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-process"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-provider-openai"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-session"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-module-tools"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "alpha-schema"
 version = "0.1.0"

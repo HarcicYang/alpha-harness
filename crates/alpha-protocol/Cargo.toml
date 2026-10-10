@@ -1,0 +1,11 @@
+[package]
+name = "alpha-protocol"
+description = "JSON-RPC 2.0 over NDJSON framing and request routing for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "json-rpc", "agent"]
+categories = ["development-tools"]
+
+[dependencies]

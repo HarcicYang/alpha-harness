@@ -1,0 +1,11 @@
+[package]
+name = "alpha-build"
+description = "Build-time composition validation and module table generation for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "build", "agent"]
+categories = ["development-tools"]
+
+[dependencies]

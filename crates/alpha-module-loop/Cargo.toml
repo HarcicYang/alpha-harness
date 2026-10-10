@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-loop"
+description = "Default agent driver module for alpha-harness, replaceable like any module."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "agent-loop", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]

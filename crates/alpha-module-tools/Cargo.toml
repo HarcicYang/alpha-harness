@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-tools"
+description = "Built-in read, grep, write, edit, and shell tools for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "tools", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]

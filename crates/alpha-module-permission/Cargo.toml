@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-permission"
+description = "Permission modes, approvals, policy evaluation, and sandbox integration for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "permissions", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]

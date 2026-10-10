@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-provider-openai"
+description = "OpenAI-compatible model provider module for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "llm", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]

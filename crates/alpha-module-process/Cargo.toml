@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-process"
+description = "Process execution seam and local driver module for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "process", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]

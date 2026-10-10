@@ -1,0 +1,5 @@
+//! Network seam and local HTTP driver, with record and replay for tests.
+//!
+//! Skeleton crate: implementation is pending.
+
+#![forbid(unsafe_code)]

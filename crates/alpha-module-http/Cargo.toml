@@ -1,0 +1,11 @@
+[package]
+name = "alpha-module-http"
+description = "Network seam and local HTTP driver module for alpha-harness, with record and replay support."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "http", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]
