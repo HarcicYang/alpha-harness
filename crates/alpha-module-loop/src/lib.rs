@@ -1,5 +1,62 @@
 //! Default agent driver module, replaceable like any module.
-//!
-//! Skeleton crate: implementation is pending.
 
 #![forbid(unsafe_code)]
+
+pub mod agent;
+pub mod provider;
+
+use std::sync::Arc;
+
+use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
+use serde::Deserialize;
+
+pub use agent::{AgentLoop, LoopError, TurnOutcome};
+pub use provider::{
+    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError,
+    ProviderRegistry, RegistryError,
+};
+
+/// Configuration for the default loop module.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct LoopConfig {
+    /// Provider name resolved from the registry.
+    pub provider: String,
+    /// Model identifier.
+    pub model: String,
+}
+
+/// Registers the provider registry and the default agent loop.
+pub struct LoopModule;
+
+impl Module for LoopModule {
+    type Requirements = ();
+    type Config = LoopConfig;
+
+    const KEY: &'static str = "loop";
+    const CAPABILITIES: &'static [CapabilitySpec] = &[
+        CapabilitySpec::singleton("agent.loop", CapabilityScope::Agent),
+        CapabilitySpec::registry("model.provider", CapabilityScope::Global),
+    ];
+
+    fn activate(&self, ctx: &Ctx, config: &Self::Config) -> Result<(), ActivateError> {
+        let registry = match ctx.get::<ProviderRegistry>() {
+            Some(registry) => registry,
+            None => {
+                let registry = Arc::new(ProviderRegistry::new());
+                ctx.provide::<ProviderRegistry>(registry.clone())
+                    .map_err(|error| ActivateError::new(Self::KEY, error))?;
+                registry
+            }
+        };
+        let provider = registry.get(&config.provider).ok_or_else(|| {
+            ActivateError::message(
+                Self::KEY,
+                format!("provider `{}` is not registered", config.provider),
+            )
+        })?;
+        let agent = Arc::new(AgentLoop::new(provider, config.model.clone()));
+        ctx.provide::<AgentLoop>(agent)
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        Ok(())
+    }
+}

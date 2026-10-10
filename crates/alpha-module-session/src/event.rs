@@ -13,6 +13,8 @@ pub enum TurnEndReason {
     Completed,
     /// The turn was interrupted, including crash repair.
     Interrupted,
+    /// The turn failed before producing a completed assistant message.
+    Failed,
     /// The turn was rejected before its first step.
     Rejected,
 }
