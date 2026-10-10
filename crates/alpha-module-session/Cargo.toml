@@ -9,3 +9,11 @@ keywords = ["alpha-harness", "session", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-schema.workspace = true
+fs2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
