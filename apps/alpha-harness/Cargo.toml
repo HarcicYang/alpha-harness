@@ -12,6 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 alpha-module-session.workspace = true
+alpha-module-fs.workspace = true
+alpha-module-http.workspace = true
+alpha-module-loop.workspace = true
+alpha-module-permission.workspace = true
+alpha-module-process.workspace = true
+alpha-module-provider-openai.workspace = true
+alpha-module-tools.workspace = true
+alpha-schema.workspace = true
 alpha-protocol.workspace = true
 alpha-kernel.workspace = true
 alpha-bundle-default.workspace = true
@@ -21,6 +29,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [dev-dependencies]
+futures.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]

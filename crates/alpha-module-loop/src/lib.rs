@@ -57,7 +57,11 @@ impl Module for LoopModule {
                 format!("provider `{}` is not registered", config.provider),
             )
         })?;
-        let agent = Arc::new(AgentLoop::new(provider, config.model.clone()));
+        let mut agent = AgentLoop::new(provider, config.model.clone());
+        if let Some(tools) = ctx.get::<alpha_module_tools::ToolRegistry>() {
+            agent = agent.with_tools(tools);
+        }
+        let agent = Arc::new(agent);
         ctx.provide::<AgentLoop>(agent)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())
