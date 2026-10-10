@@ -9,3 +9,9 @@ keywords = ["alpha-harness", "http", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "http.local"
+provides = [{ key = "http", kind = "singleton", scope = "location" }]

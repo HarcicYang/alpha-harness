@@ -9,3 +9,11 @@ keywords = ["alpha-harness", "tools", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "tools"
+provides = [{ key = "tool", kind = "registry", scope = "location" }]
+requires = ["fs", "process"]
+registry_entries = ["read", "grep", "write", "edit", "shell"]

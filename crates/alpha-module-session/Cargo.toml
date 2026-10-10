@@ -17,3 +17,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "session"
+provides = [{ key = "session.store", kind = "singleton", scope = "location" }]

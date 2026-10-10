@@ -1,5 +1,7 @@
 //! Application bootstrap for the `alpha` binary.
 
+include!(concat!(env!("OUT_DIR"), "/alpha_modules.rs"));
+
 use std::io::{BufRead, Write};
 
 use alpha_module_session::SessionStore;
@@ -7,6 +9,11 @@ use alpha_protocol::{
     FramingError, Id, Message, Response, Router, RpcError, read_message, write_message,
 };
 use serde_json::{Value, json};
+
+/// Module keys enabled by the Cargo dependency graph.
+pub fn module_keys() -> &'static [&'static str] {
+    ALPHA_MODULE_KEYS
+}
 
 /// Errors from the stdio server.
 #[derive(Debug, thiserror::Error)]

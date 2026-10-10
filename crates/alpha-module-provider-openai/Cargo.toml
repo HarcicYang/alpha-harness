@@ -9,3 +9,10 @@ keywords = ["alpha-harness", "llm", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "provider.openai"
+requires = ["model.provider"]
+registry_entries = ["openai-compatible"]

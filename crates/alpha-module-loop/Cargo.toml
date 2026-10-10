@@ -19,3 +19,12 @@ thiserror.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "loop"
+provides = [
+    { key = "agent.loop", kind = "singleton", scope = "agent" },
+    { key = "model.provider", kind = "registry", scope = "global" },
+]

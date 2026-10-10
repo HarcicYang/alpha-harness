@@ -9,3 +9,7 @@ keywords = ["alpha-harness", "build", "agent"]
 categories = ["development-tools"]
 
 [dependencies]
+cargo_metadata.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -15,3 +15,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "fs.local"
+provides = [{ key = "fs", kind = "singleton", scope = "location" }]

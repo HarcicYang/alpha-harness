@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+/// Stable module key used by the generated composition table.
+pub const __ALPHA_MODULE__: &str = "session";
+
 pub mod event;
 pub mod header;
 pub mod reader;

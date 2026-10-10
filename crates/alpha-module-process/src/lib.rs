@@ -5,6 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+/// Stable module key used by the generated composition table.
+pub const __ALPHA_MODULE__: &str = "process.local";
+
 pub mod local;
 pub mod seam;
 

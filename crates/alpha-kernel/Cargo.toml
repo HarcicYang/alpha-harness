@@ -12,8 +12,8 @@ categories = ["development-tools"]
 futures.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 tokio-util.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -18,3 +18,8 @@ alpha-module-http.workspace = true
 alpha-module-permission.workspace = true
 alpha-module-tools.workspace = true
 alpha-module-provider-openai.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "bundle"
+key = "default"
