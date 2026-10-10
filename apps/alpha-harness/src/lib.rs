@@ -9,7 +9,7 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
-use alpha_module_loop::{AgentLoop, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
+use alpha_module_loop::{AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
     PermissionConfig, PermissionModule,
@@ -115,7 +115,7 @@ pub struct Composition {
     /// Root context; keep it alive for the lifetime of the run.
     pub ctx: Ctx,
     /// The default agent loop.
-    pub agent: Arc<AgentLoop>,
+    pub agent: Arc<dyn AgentDriver>,
     /// Audit records collected during the run.
     pub audit: Arc<CollectingAuditSink>,
 }
@@ -223,6 +223,24 @@ pub fn compose_with_provider(
     Ok(Composition { ctx, agent, audit })
 }
 
+/// Compose a runtime with an injected agent driver, used by tests.
+pub fn compose_with_driver(
+    workspace: &Path,
+    mode: PermissionMode,
+    approval: Option<Arc<dyn ApprovalChannel>>,
+    driver: Arc<dyn AgentDriver>,
+) -> Result<Composition, RunError> {
+    let ctx = Ctx::root();
+    let audit = Arc::new(CollectingAuditSink::new());
+    ctx.provide::<dyn AgentDriver>(driver)
+        .map_err(|error| RunError::Service(error.to_string()))?;
+    activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
+    let agent = ctx
+        .require::<dyn AgentDriver>()
+        .map_err(|error| RunError::Service(error.to_string()))?;
+    Ok(Composition { ctx, agent, audit })
+}
+
 fn provide_provider_registry(ctx: &Ctx) -> Result<(), RunError> {
     ctx.provide::<ProviderRegistry>(Arc::new(ProviderRegistry::new()))
         .map_err(|error| RunError::Service(error.to_string()))?;
@@ -267,7 +285,7 @@ fn activate_core_modules(
     Ok(())
 }
 
-fn activate_loop(ctx: &Ctx, provider: &str, model: &str) -> Result<Arc<AgentLoop>, RunError> {
+fn activate_loop(ctx: &Ctx, provider: &str, model: &str) -> Result<Arc<dyn AgentDriver>, RunError> {
     LoopModule.activate(
         ctx,
         &LoopConfig {
@@ -275,7 +293,7 @@ fn activate_loop(ctx: &Ctx, provider: &str, model: &str) -> Result<Arc<AgentLoop
             model: model.to_owned(),
         },
     )?;
-    ctx.require::<AgentLoop>()
+    ctx.require::<dyn AgentDriver>()
         .map_err(|error| RunError::Service(error.to_string()))
 }
 

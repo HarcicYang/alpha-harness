@@ -13,7 +13,7 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
-pub use agent::{AgentLoop, LoopError, TurnOutcome};
+pub use agent::{AgentDriver, AgentLoop, LoopError, TurnOutcome};
 pub use provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError,
     ProviderRegistry, RegistryError, ToolCall, ToolDefinition,
@@ -62,6 +62,8 @@ impl Module for LoopModule {
             agent = agent.with_tools(tools);
         }
         let agent = Arc::new(agent);
+        ctx.provide::<dyn AgentDriver>(agent.clone())
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         ctx.provide::<AgentLoop>(agent)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())

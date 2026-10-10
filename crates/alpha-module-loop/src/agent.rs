@@ -8,6 +8,7 @@ use alpha_module_session::{
 };
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
 use alpha_schema::{MessageId, ToolCallId};
+use futures::future::BoxFuture;
 use thiserror::Error;
 
 use crate::provider::{
@@ -76,6 +77,15 @@ impl AgentLoop {
     /// The turn runs model steps until the model stops requesting tools or the
     /// step limit is reached. `state` is the projection before this turn.
     pub async fn run_turn(
+        &self,
+        writer: &mut SessionWriter,
+        state: &SessionState,
+        prompt: &str,
+    ) -> Result<TurnOutcome, LoopError> {
+        self.run_turn_impl(writer, state, prompt).await
+    }
+
+    async fn run_turn_impl(
         &self,
         writer: &mut SessionWriter,
         state: &SessionState,
@@ -228,6 +238,31 @@ impl AgentLoop {
             content,
         });
         Ok(())
+    }
+}
+
+/// Replaceable driver contract for one agent turn.
+///
+/// Consumers depend on this trait, so a composition can mount a different
+/// driver under the same service key.
+pub trait AgentDriver: Send + Sync + 'static {
+    /// Run one turn and record it in the session log.
+    fn run_turn<'a>(
+        &'a self,
+        writer: &'a mut SessionWriter,
+        state: &'a SessionState,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>>;
+}
+
+impl AgentDriver for AgentLoop {
+    fn run_turn<'a>(
+        &'a self,
+        writer: &'a mut SessionWriter,
+        state: &'a SessionState,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        Box::pin(self.run_turn_impl(writer, state, prompt))
     }
 }
 

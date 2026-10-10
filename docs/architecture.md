@@ -37,8 +37,10 @@ lifecycle, and scope-bound task spawning. Its only IO is terminal and stdio.
 
 ### D2: Agent loop is a module
 
-The default ReAct loop is the first shipped module, not kernel code. It is
-replaceable like any other module.
+The default ReAct loop is the first shipped module, not kernel code. Consumers
+depend on the `AgentDriver` trait, and the default `AgentLoop` implementation
+registers itself under the same service key, so a composition can mount a
+different driver in its place.
 
 ### D3: Compile-time composition
 

@@ -2,16 +2,20 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use alpha_harness::{
-    ResumeOptions, RunOptions, compose_openai_runtime_with_http, compose_with_provider,
-    resume_session, run_prompt,
+    ResumeOptions, RunOptions, compose_openai_runtime_with_http, compose_with_driver,
+    compose_with_provider, resume_session, run_prompt,
 };
 use alpha_module_http::{Cassette, CassetteEntry, HttpClient, ReplayHttpClient};
 use alpha_module_loop::{
-    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
+    AgentDriver, ChatMessage, CompletionRequest, CompletionResponse, LoopError, ModelProvider,
+    ProviderError, ToolCall, TurnOutcome,
 };
 use alpha_module_permission::{ApprovalChannel, ApprovalDecision, ApprovalPrompt};
-use alpha_module_session::{MessageRecord, SessionEvent, SessionStore, ToolStatus};
-use alpha_schema::{EventEnvelope, PermissionMode};
+use alpha_module_session::{
+    MessageRecord, SessionEvent, SessionState, SessionStore, SessionWriter, ToolStatus,
+    TurnEndReason,
+};
+use alpha_schema::{EventEnvelope, MessageId, PermissionMode};
 use futures::future::BoxFuture;
 use serde_json::json;
 
@@ -337,4 +341,68 @@ async fn cassette_replay_reproduces_the_same_session_state() {
             "assistant:cassette text".to_owned()
         ]
     );
+}
+
+struct FixedDriver;
+
+impl AgentDriver for FixedDriver {
+    fn run_turn<'a>(
+        &'a self,
+        writer: &'a mut SessionWriter,
+        _state: &'a SessionState,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        Box::pin(async move {
+            writer.append(SessionEvent::TurnStarted)?;
+            writer.append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: prompt.to_owned(),
+            })?;
+            let assistant = MessageId::new();
+            writer.append(SessionEvent::AssistantMessage {
+                id: assistant,
+                text: "fixed driver".to_owned(),
+            })?;
+            writer.append(SessionEvent::TurnEnded {
+                reason: TurnEndReason::Completed,
+            })?;
+            Ok(TurnOutcome {
+                assistant_message: assistant,
+                assistant_text: "fixed driver".to_owned(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn custom_drivers_can_replace_the_loop() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionStore::new(state.path());
+    let composition = compose_with_driver(
+        workspace.path(),
+        PermissionMode::Free,
+        None,
+        Arc::new(FixedDriver),
+    )
+    .expect("compose");
+    let report = run_prompt(
+        RunOptions {
+            workspace: workspace.path().to_path_buf(),
+            mode: PermissionMode::Free,
+            model: "unused".to_owned(),
+            prompt: "hello".to_owned(),
+        },
+        &composition,
+        &store,
+    )
+    .await
+    .expect("run");
+
+    assert_eq!(report.assistant_text, "fixed driver");
+    let reader = store.open_read(report.session_id).expect("read");
+    assert!(reader.events().iter().any(|envelope| matches!(
+        &envelope.payload,
+        SessionEvent::AssistantMessage { text, .. } if text == "fixed driver"
+    )));
 }
