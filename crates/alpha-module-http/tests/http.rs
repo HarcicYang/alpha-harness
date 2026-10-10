@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_http::{
-    HttpClient, HttpConfig, HttpLocalModule, HttpRequest, LocalHttpClient, RecordingHttpClient,
-    ReplayHttpClient,
+    Cassette, CassetteEntry, HttpClient, HttpConfig, HttpLocalModule, HttpRequest, LocalHttpClient,
+    RecordingHttpClient, ReplayHttpClient,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -103,4 +104,27 @@ fn module_provides_the_seam() {
     assert!(ctx.get::<dyn HttpClient>().is_some());
     ctx.dispose();
     assert!(ctx.get::<dyn HttpClient>().is_none());
+}
+
+#[tokio::test]
+async fn empty_recorded_bodies_match_any_request_body() {
+    let cassette = Cassette {
+        entries: vec![CassetteEntry {
+            method: "POST".to_owned(),
+            url: "https://api.test/v1/chat/completions".to_owned(),
+            request_body: Vec::new(),
+            status: 200,
+            headers: BTreeMap::new(),
+            response_body: b"ok".to_vec(),
+        }],
+    };
+    let client = ReplayHttpClient::new(cassette);
+    let response = client
+        .request(HttpRequest::post(
+            "https://api.test/v1/chat/completions",
+            b"anything".to_vec(),
+        ))
+        .await
+        .expect("replay");
+    assert_eq!(response.body, b"ok");
 }

@@ -15,7 +15,7 @@ pub struct CassetteEntry {
     pub method: String,
     /// Request URL.
     pub url: String,
-    /// Request body.
+    /// Request body. An empty body matches any request body.
     pub request_body: Vec<u8>,
     /// Response status.
     pub status: u16,
@@ -29,7 +29,7 @@ impl CassetteEntry {
     fn matches(&self, request: &HttpRequest) -> bool {
         self.method == request.method
             && self.url == request.url
-            && self.request_body == request.body
+            && (self.request_body.is_empty() || self.request_body == request.body)
     }
 
     fn response(&self) -> HttpResponse {
