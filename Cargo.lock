@@ -63,6 +63,12 @@ dependencies = [
 [[package]]
 name = "alpha-module-fs"
 version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "alpha-module-http"
