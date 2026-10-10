@@ -9,7 +9,9 @@
 pub mod context;
 pub mod effect;
 pub mod error;
+pub mod event;
 
 pub use context::{Ctx, ServiceChange};
 pub use effect::{Disposer, Scope, TaskHandle};
 pub use error::KernelError;
+pub use event::{BailEvent, EmitEvent, Event, Next, ParallelEvent, SerialEvent, WaterfallEvent};

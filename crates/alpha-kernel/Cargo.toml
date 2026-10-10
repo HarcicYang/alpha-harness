@@ -9,6 +9,7 @@ keywords = ["alpha-harness", "agent"]
 categories = ["development-tools"]
 
 [dependencies]
+futures.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

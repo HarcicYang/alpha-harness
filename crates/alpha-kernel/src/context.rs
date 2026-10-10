@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock, Weak};
 
 use crate::effect::{Disposer, Scope};
 use crate::error::KernelError;
+use crate::event::EventRegistry;
 
 /// A change to a singleton service in a context subtree.
 pub enum ServiceChange<T: ?Sized + 'static> {
@@ -43,6 +44,7 @@ struct CtxInner {
     watchers: RwLock<HashMap<TypeId, Vec<WatcherEntry>>>,
     children: RwLock<Vec<Weak<CtxInner>>>,
     watcher_seq: AtomicU64,
+    events: EventRegistry,
 }
 
 struct ErasedService {
@@ -69,6 +71,7 @@ impl Ctx {
                 watchers: RwLock::new(HashMap::new()),
                 children: RwLock::new(Vec::new()),
                 watcher_seq: AtomicU64::new(1),
+                events: EventRegistry::default(),
             }),
         }
     }
@@ -85,6 +88,7 @@ impl Ctx {
                 watchers: RwLock::new(HashMap::new()),
                 children: RwLock::new(Vec::new()),
                 watcher_seq: AtomicU64::new(1),
+                events: EventRegistry::default(),
             }),
         };
         self.inner
@@ -113,6 +117,10 @@ impl Ctx {
     /// Whether this context has been disposed.
     pub fn is_disposed(&self) -> bool {
         self.inner.scope.is_disposed()
+    }
+
+    pub(crate) fn events(&self) -> &EventRegistry {
+        &self.inner.events
     }
 
     /// Provide a singleton service in this context.
