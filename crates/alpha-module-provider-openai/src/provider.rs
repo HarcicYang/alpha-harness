@@ -3,9 +3,12 @@
 use std::sync::Arc;
 
 use alpha_module_http::{HttpClient, HttpRequest};
-use alpha_module_loop::{CompletionRequest, CompletionResponse, ModelProvider, ProviderError};
+use alpha_module_loop::{
+    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
+};
 use futures::future::BoxFuture;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 /// Provider name registered in the loop provider registry.
 pub const PROVIDER_NAME: &str = "openai-compatible";
@@ -42,18 +45,16 @@ impl ModelProvider for OpenAiProvider {
         request: CompletionRequest,
     ) -> BoxFuture<'_, Result<CompletionResponse, ProviderError>> {
         Box::pin(async move {
-            let payload = ChatRequest {
-                model: request.model,
-                messages: request
-                    .messages
-                    .iter()
-                    .map(|message| ChatMessage {
-                        role: message.role(),
-                        content: message.text(),
-                    })
-                    .collect(),
-                stream: false,
-            };
+            let messages: Vec<Value> = request.messages.iter().map(wire_message).collect();
+            let tools: Vec<Value> = request.tools.iter().map(wire_tool).collect();
+            let mut payload = serde_json::Map::new();
+            payload.insert("model".to_owned(), json!(request.model));
+            payload.insert("messages".to_owned(), Value::Array(messages));
+            if !tools.is_empty() {
+                payload.insert("tools".to_owned(), Value::Array(tools));
+            }
+            payload.insert("stream".to_owned(), json!(false));
+            let payload = Value::Object(payload);
             let body = serde_json::to_vec(&payload)
                 .map_err(|error| ProviderError::Request(error.to_string()))?;
             let http_request = HttpRequest::post(self.endpoint(), body)
@@ -75,32 +76,61 @@ impl ModelProvider for OpenAiProvider {
 
             let parsed: ChatResponse = serde_json::from_slice(&response.body)
                 .map_err(|error| ProviderError::Request(format!("invalid response: {error}")))?;
-            let text = parsed
+            let message = parsed
                 .choices
                 .into_iter()
                 .next()
-                .and_then(|choice| choice.message.content)
+                .map(|choice| choice.message)
                 .unwrap_or_default();
-            Ok(CompletionResponse { text })
+            let mut tool_calls = Vec::new();
+            for call in message.tool_calls.unwrap_or_default() {
+                let arguments = if call.function.arguments.trim().is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_str(&call.function.arguments).map_err(|error| {
+                        ProviderError::Request(format!("invalid tool arguments: {error}"))
+                    })?
+                };
+                tool_calls.push(ToolCall {
+                    id: call.id,
+                    name: call.function.name,
+                    arguments,
+                });
+            }
+            Ok(CompletionResponse {
+                text: message.content.unwrap_or_default(),
+                tool_calls,
+            })
         })
     }
 }
 
-#[derive(Serialize)]
-struct ChatRequest<'a> {
-    model: String,
-    messages: Vec<ChatMessage<'a>>,
-    stream: bool,
+fn wire_message(message: &ChatMessage) -> Value {
+    match message {
+        ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+        ChatMessage::Assistant(text) => json!({ "role": "assistant", "content": text }),
+        ChatMessage::ToolResult { call_id, content } => json!({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": content,
+        }),
+    }
 }
 
-#[derive(Serialize)]
-struct ChatMessage<'a> {
-    role: &'a str,
-    content: &'a str,
+fn wire_tool(tool: &alpha_module_loop::ToolDefinition) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        }
+    })
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct ChatResponse {
+    #[serde(default)]
     choices: Vec<Choice>,
 }
 
@@ -109,10 +139,25 @@ struct Choice {
     message: ResponseMessage,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct ResponseMessage {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<WireToolCall>>,
+}
+
+#[derive(Deserialize)]
+struct WireToolCall {
+    id: String,
+    function: WireFunction,
+}
+
+#[derive(Deserialize)]
+struct WireFunction {
+    name: String,
+    #[serde(default)]
+    arguments: String,
 }
 
 fn snippet(body: &[u8]) -> String {

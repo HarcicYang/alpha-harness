@@ -172,6 +172,19 @@ impl Tool for ShellTool {
         }
     }
 
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "shell": { "type": "string" },
+                "command": { "type": "string" },
+                "timeout_ms": { "type": "integer" },
+                "description": { "type": "string" }
+            },
+            "required": ["command"]
+        })
+    }
+
     fn execute(
         &self,
         input: Value,

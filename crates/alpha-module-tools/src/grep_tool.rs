@@ -62,6 +62,21 @@ impl Tool for GrepTool {
             .to_owned()
     }
 
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string" },
+                "path": { "type": "string" },
+                "include": { "type": "string" },
+                "literal": { "type": "boolean" },
+                "case_sensitive": { "type": "boolean" },
+                "limit": { "type": "integer" }
+            },
+            "required": ["pattern"]
+        })
+    }
+
     fn parallel_safe(&self) -> bool {
         true
     }

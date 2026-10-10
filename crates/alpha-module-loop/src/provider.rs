@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
+use serde_json::Value;
 use thiserror::Error;
 
 /// One chat message in provider-facing history.
@@ -13,6 +14,13 @@ pub enum ChatMessage {
     User(String),
     /// Assistant message.
     Assistant(String),
+    /// Tool result returned to the model.
+    ToolResult {
+        /// Provider call identity.
+        call_id: String,
+        /// Result content.
+        content: String,
+    },
 }
 
 impl ChatMessage {
@@ -21,6 +29,7 @@ impl ChatMessage {
         match self {
             Self::User(_) => "user",
             Self::Assistant(_) => "assistant",
+            Self::ToolResult { .. } => "tool",
         }
     }
 
@@ -28,8 +37,31 @@ impl ChatMessage {
     pub fn text(&self) -> &str {
         match self {
             Self::User(text) | Self::Assistant(text) => text,
+            Self::ToolResult { content, .. } => content,
         }
     }
+}
+
+/// One tool definition advertised to the model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolDefinition {
+    /// Tool name.
+    pub name: String,
+    /// Model-facing description.
+    pub description: String,
+    /// JSON schema for the tool input.
+    pub input_schema: Value,
+}
+
+/// One tool call requested by the model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCall {
+    /// Provider call identity.
+    pub id: String,
+    /// Tool name.
+    pub name: String,
+    /// Decoded arguments.
+    pub arguments: Value,
 }
 
 /// One completion request.
@@ -39,6 +71,8 @@ pub struct CompletionRequest {
     pub model: String,
     /// Conversation history.
     pub messages: Vec<ChatMessage>,
+    /// Tools advertised for this request.
+    pub tools: Vec<ToolDefinition>,
 }
 
 /// One completion response.
@@ -46,6 +80,8 @@ pub struct CompletionRequest {
 pub struct CompletionResponse {
     /// Assistant text.
     pub text: String,
+    /// Tool calls requested by the model.
+    pub tool_calls: Vec<ToolCall>,
 }
 
 /// Provider failure.

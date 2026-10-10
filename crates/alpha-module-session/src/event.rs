@@ -60,6 +60,8 @@ pub enum SessionEvent {
     ToolCall {
         /// Call identity.
         id: ToolCallId,
+        /// Assistant message that produced this call.
+        message_id: MessageId,
         /// Tool name.
         name: String,
         /// Decoded tool input.

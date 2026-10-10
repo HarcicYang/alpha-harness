@@ -93,6 +93,8 @@ pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     /// Model-facing description. Dynamic so tools can list available options.
     fn description(&self) -> String;
+    /// JSON schema for the model-facing input.
+    fn input_schema(&self) -> Value;
     /// Whether the tool may run in parallel with other parallel-safe calls.
     fn parallel_safe(&self) -> bool {
         false

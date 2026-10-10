@@ -49,6 +49,18 @@ impl Tool for ReadTool {
         "Read a text file inside the workspace, with optional line offset and limit.".to_owned()
     }
 
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "offset": { "type": "integer" },
+                "limit": { "type": "integer" }
+            },
+            "required": ["path"]
+        })
+    }
+
     fn parallel_safe(&self) -> bool {
         true
     }
@@ -120,6 +132,17 @@ impl Tool for WriteTool {
         "Write a file inside the workspace, replacing existing content atomically.".to_owned()
     }
 
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["path", "content"]
+        })
+    }
+
     fn execute(
         &self,
         input: Value,
@@ -173,6 +196,19 @@ impl Tool for EditTool {
 
     fn description(&self) -> String {
         "Replace text in a file. By default the old text must appear exactly once.".to_owned()
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "old": { "type": "string" },
+                "new": { "type": "string" },
+                "replace_all": { "type": "boolean" }
+            },
+            "required": ["path", "old", "new"]
+        })
     }
 
     fn execute(

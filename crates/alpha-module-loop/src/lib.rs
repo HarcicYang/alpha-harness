@@ -16,7 +16,7 @@ use serde::Deserialize;
 pub use agent::{AgentLoop, LoopError, TurnOutcome};
 pub use provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError,
-    ProviderRegistry, RegistryError,
+    ProviderRegistry, RegistryError, ToolCall, ToolDefinition,
 };
 
 /// Configuration for the default loop module.

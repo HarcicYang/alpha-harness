@@ -160,6 +160,7 @@ fn interrupted_turn_and_tool_call_are_repaired_on_write_open() {
         writer
             .append(SessionEvent::ToolCall {
                 id: call_id,
+                message_id: MessageId::new(),
                 name: "shell".to_owned(),
                 input: serde_json::json!({ "command": "cargo test" }),
             })

@@ -3,12 +3,18 @@
 use std::sync::Arc;
 
 use alpha_module_session::{
-    MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, TurnEndReason,
+    MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
+    TurnEndReason,
 };
-use alpha_schema::MessageId;
+use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
+use alpha_schema::{MessageId, ToolCallId};
 use thiserror::Error;
 
-use crate::provider::{ChatMessage, CompletionRequest, ModelProvider, ProviderError};
+use crate::provider::{
+    ChatMessage, CompletionRequest, ModelProvider, ProviderError, ToolCall, ToolDefinition,
+};
+
+const MAX_STEPS: usize = 8;
 
 /// Loop failure.
 #[derive(Debug, Error)]
@@ -19,6 +25,12 @@ pub enum LoopError {
     /// Provider failure.
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    /// Operational tool failure that ends the turn.
+    #[error("tool failure: {0}")]
+    Tool(String),
+    /// The turn exceeded the model step limit.
+    #[error("turn exceeded {0} model steps")]
+    StepLimit(usize),
 }
 
 /// Outcome of one completed turn.
@@ -35,6 +47,7 @@ pub struct TurnOutcome {
 pub struct AgentLoop {
     provider: Arc<dyn ModelProvider>,
     model: String,
+    tools: Option<Arc<ToolRegistry>>,
 }
 
 impl AgentLoop {
@@ -43,7 +56,14 @@ impl AgentLoop {
         Self {
             provider,
             model: model.into(),
+            tools: None,
         }
+    }
+
+    /// Attach a tool registry.
+    pub fn with_tools(mut self, tools: Arc<ToolRegistry>) -> Self {
+        self.tools = Some(tools);
+        self
     }
 
     /// The configured model identifier.
@@ -53,14 +73,15 @@ impl AgentLoop {
 
     /// Run one turn and record it in the session log.
     ///
-    /// `state` is the projection before this turn. On provider failure the
-    /// turn is closed as failed and the error is returned.
+    /// The turn runs model steps until the model stops requesting tools or the
+    /// step limit is reached. `state` is the projection before this turn.
     pub async fn run_turn(
         &self,
         writer: &mut SessionWriter,
         state: &SessionState,
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
+        let session_id = writer.header().id;
         writer.append(SessionEvent::TurnStarted)?;
         let user_id = MessageId::new();
         writer.append(SessionEvent::UserMessage {
@@ -78,32 +99,133 @@ impl AgentLoop {
             .collect();
         messages.push(ChatMessage::User(prompt.to_owned()));
 
-        let request = CompletionRequest {
-            model: self.model.clone(),
-            messages,
-        };
+        let tools = self.tool_definitions();
+        let mut last_text = String::new();
+        let mut last_message_id: Option<MessageId> = None;
 
-        match self.provider.complete(request).await {
-            Ok(response) => {
-                let assistant_id = MessageId::new();
+        for _ in 0..MAX_STEPS {
+            let request = CompletionRequest {
+                model: self.model.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+            };
+            let response = match self.provider.complete(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    writer.append(SessionEvent::TurnEnded {
+                        reason: TurnEndReason::Failed,
+                    })?;
+                    return Err(LoopError::Provider(error));
+                }
+            };
+
+            let message_id = MessageId::new();
+            if !response.text.is_empty() {
                 writer.append(SessionEvent::AssistantMessage {
-                    id: assistant_id,
+                    id: message_id,
                     text: response.text.clone(),
                 })?;
+                last_text = response.text.clone();
+                last_message_id = Some(message_id);
+                messages.push(ChatMessage::Assistant(response.text));
+            }
+
+            if response.tool_calls.is_empty() {
+                let assistant_id = match last_message_id {
+                    Some(id) => id,
+                    None => {
+                        let id = MessageId::new();
+                        writer.append(SessionEvent::AssistantMessage {
+                            id,
+                            text: "(no content)".to_owned(),
+                        })?;
+                        last_text = "(no content)".to_owned();
+                        id
+                    }
+                };
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Completed,
                 })?;
-                Ok(TurnOutcome {
+                return Ok(TurnOutcome {
                     assistant_message: assistant_id,
-                    assistant_text: response.text,
-                })
+                    assistant_text: last_text,
+                });
             }
-            Err(error) => {
+
+            for call in response.tool_calls {
+                self.execute_tool(writer, session_id, message_id, &mut messages, call)
+                    .await?;
+            }
+        }
+
+        writer.append(SessionEvent::TurnEnded {
+            reason: TurnEndReason::Failed,
+        })?;
+        Err(LoopError::StepLimit(MAX_STEPS))
+    }
+
+    fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        let Some(registry) = &self.tools else {
+            return Vec::new();
+        };
+        registry
+            .names()
+            .into_iter()
+            .filter_map(|name| registry.get(&name))
+            .map(|tool| ToolDefinition {
+                name: tool.name().to_owned(),
+                description: tool.description(),
+                input_schema: tool.input_schema(),
+            })
+            .collect()
+    }
+
+    async fn execute_tool(
+        &self,
+        writer: &mut SessionWriter,
+        session_id: alpha_schema::SessionId,
+        message_id: MessageId,
+        messages: &mut Vec<ChatMessage>,
+        call: ToolCall,
+    ) -> Result<(), LoopError> {
+        let call_id = ToolCallId::new();
+        writer.append(SessionEvent::ToolCall {
+            id: call_id,
+            message_id,
+            name: call.name.clone(),
+            input: call.arguments.clone(),
+        })?;
+
+        let outcome = match &self.tools {
+            Some(registry) => match registry.get(&call.name) {
+                Some(tool) => {
+                    let context = ToolContext::new(session_id, message_id, call_id);
+                    tool.execute(call.arguments, context).await
+                }
+                None => Err(ToolError::failure(format!("unknown tool `{}`", call.name))),
+            },
+            None => Err(ToolError::failure("no tools are registered")),
+        };
+
+        let (status, content) = match outcome {
+            Ok(response) => (ToolStatus::Completed, response.content),
+            Err(ToolError::Failure(message)) => (ToolStatus::Failed, message),
+            Err(ToolError::Operational(message)) => {
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Failed,
                 })?;
-                Err(LoopError::Provider(error))
+                return Err(LoopError::Tool(message));
             }
-        }
+        };
+        writer.append(SessionEvent::ToolResult {
+            id: call_id,
+            status,
+            content: content.clone(),
+        })?;
+        messages.push(ChatMessage::ToolResult {
+            call_id: call.id,
+            content,
+        });
+        Ok(())
     }
 }
