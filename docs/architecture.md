@@ -426,6 +426,12 @@ durable session state only; an interrupted turn is never replayed
 automatically. The hidden core command is available for manual debugging but
 is not a supported user workflow.
 
+The core caches Location contexts by `(workspace root, fixed cwd)`.
+Filesystem, process, prompt, and compaction services are shared by sessions in
+the same Location; session actors overlay their own mode, tools, approval
+channel, steer queue, and provider override. TUI transcript updates ignore
+events from sessions other than the active session.
+
 The first TUI screen is a provider manager backed by `provider.list_kinds`,
 `provider.list_instances`, and `provider.credential_status`. It can create and
 remove instances, select the default instance, submit an API key through the

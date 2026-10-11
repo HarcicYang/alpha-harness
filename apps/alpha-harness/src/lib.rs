@@ -226,13 +226,65 @@ impl CoreRuntime {
 struct AppSessionRuntimeFactory {
     root: Ctx,
     transport: Arc<dyn OutboundTransport>,
+    locations: Mutex<HashMap<LocationKey, Ctx>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct LocationKey {
+    root: String,
+    cwd: String,
+}
+
+impl AppSessionRuntimeFactory {
+    fn location_context(&self, workspace: &WorkspaceRef) -> Result<Ctx, AgentHostError> {
+        let key = LocationKey {
+            root: workspace.root.clone(),
+            cwd: workspace.cwd.clone(),
+        };
+        let mut locations = self
+            .locations
+            .lock()
+            .expect("location registry lock poisoned");
+        if let Some(context) = locations.get(&key) {
+            return Ok(context.clone());
+        }
+        let location = self
+            .root
+            .child()
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        FsLocalModule
+            .activate(
+                &location,
+                &FsConfig {
+                    root: workspace.root.clone().into(),
+                },
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        PromptModule
+            .activate(&location, &PromptConfig::default())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        ProcessLocalModule
+            .activate(
+                &location,
+                &ProcessConfig {
+                    cwd: workspace.cwd.clone().into(),
+                    ..ProcessConfig::default()
+                },
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        CompactionModule
+            .activate(&location, &CompactionConfig::default())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        locations.insert(key, location.clone());
+        Ok(location)
+    }
 }
 
 impl SessionRuntimeFactory for AppSessionRuntimeFactory {
     fn build(&self, request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError> {
         let (provider, model) = build_session_provider(&self.root, &request)?;
-        let session_ctx = self
-            .root
+        let location = self.location_context(&request.workspace)?;
+        let session_ctx = location
             .child()
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         session_ctx
@@ -255,26 +307,6 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
             .provide::<dyn AuditSink>(audit)
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
-        FsLocalModule
-            .activate(
-                &session_ctx,
-                &FsConfig {
-                    root: request.workspace.root.clone().into(),
-                },
-            )
-            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-        PromptModule
-            .activate(&session_ctx, &PromptConfig::default())
-            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-        ProcessLocalModule
-            .activate(
-                &session_ctx,
-                &ProcessConfig {
-                    cwd: request.workspace.cwd.clone().into(),
-                    ..ProcessConfig::default()
-                },
-            )
-            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         PermissionModule
             .activate(
                 &session_ctx,
@@ -287,10 +319,6 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
         ToolsModule
             .activate(&session_ctx, &ToolsConfig::default())
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-        CompactionModule
-            .activate(&session_ctx, &CompactionConfig::default())
-            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-
         let registry = Arc::new(ProviderRegistry::new());
         registry
             .register("session", provider)
@@ -924,6 +952,7 @@ pub fn serve_protocol_with_options<R: BufRead, W: Write + Send + 'static>(
     let factory = Arc::new(AppSessionRuntimeFactory {
         root: runtime.ctx.clone(),
         transport: transport.clone(),
+        locations: Mutex::new(HashMap::new()),
     });
     let agent_host = Arc::new(AgentHostService::new(
         runtime.store.clone(),
@@ -1770,4 +1799,59 @@ struct SetCapabilitiesParams {
     session_id: SessionId,
     #[serde(default)]
     provider_tools: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopTransport;
+
+    impl OutboundTransport for NoopTransport {
+        fn notify(&self, _method: String, _params: Value) -> Result<(), RpcError> {
+            Ok(())
+        }
+
+        fn request(
+            &self,
+            _method: String,
+            _params: Value,
+        ) -> BoxFuture<'static, Result<Value, RpcError>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    #[test]
+    fn locations_are_shared_by_root_and_cwd() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir(workspace.path().join("nested")).expect("nested directory");
+        let factory = AppSessionRuntimeFactory {
+            root: Ctx::root(),
+            transport: Arc::new(NoopTransport),
+            locations: Mutex::new(HashMap::new()),
+        };
+        let binding = WorkspaceRef {
+            root: workspace.path().display().to_string(),
+            cwd: workspace.path().display().to_string(),
+        };
+        let first = factory.location_context(&binding).expect("first location");
+        let second = factory.location_context(&binding).expect("second location");
+        let first_fs = first
+            .require::<dyn alpha_module_fs::FileSystem>()
+            .expect("first filesystem");
+        let second_fs = second
+            .require::<dyn alpha_module_fs::FileSystem>()
+            .expect("second filesystem");
+        assert!(Arc::ptr_eq(&first_fs, &second_fs));
+
+        let other = WorkspaceRef {
+            root: workspace.path().display().to_string(),
+            cwd: workspace.path().join("nested").display().to_string(),
+        };
+        let third = factory.location_context(&other).expect("third location");
+        let third_fs = third
+            .require::<dyn alpha_module_fs::FileSystem>()
+            .expect("third filesystem");
+        assert!(!Arc::ptr_eq(&first_fs, &third_fs));
+    }
 }

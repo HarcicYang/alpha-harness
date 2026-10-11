@@ -344,6 +344,11 @@ impl ChatView {
     }
 
     fn handle_session_event(&mut self, params: &Value) {
+        if let Some(session_id) = params.get("sessionId").and_then(Value::as_str) {
+            if self.session_id.as_deref() != Some(session_id) {
+                return;
+            }
+        }
         let kind = params.get("kind").and_then(Value::as_str).unwrap_or("");
         let event = params.get("event").unwrap_or(&Value::Null);
         match kind {
@@ -1722,12 +1727,17 @@ mod tests {
 
     #[test]
     fn chat_streams_and_replaces_assistant_text() {
-        let mut view = ChatView::default();
+        let mut view = ChatView {
+            session_id: Some("session-a".to_owned()),
+            ..ChatView::default()
+        };
         view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
             "kind": "live",
             "event": { "type": "text_delta", "text": "hel" }
         }));
         view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
             "kind": "live",
             "event": { "type": "text_delta", "text": "lo" }
         }));
@@ -1736,6 +1746,7 @@ mod tests {
             vec![TranscriptEntry::Assistant("hello".to_owned())]
         );
         view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
             "kind": "durable",
             "event": {
                 "payload": {
@@ -1748,6 +1759,20 @@ mod tests {
             view.transcript,
             vec![TranscriptEntry::Assistant("hello".to_owned())]
         );
+    }
+
+    #[test]
+    fn chat_ignores_events_from_other_sessions() {
+        let mut view = ChatView {
+            session_id: Some("session-a".to_owned()),
+            ..ChatView::default()
+        };
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-b",
+            "kind": "live",
+            "event": { "type": "text_delta", "text": "wrong" }
+        }));
+        assert!(view.transcript.is_empty());
     }
 
     #[test]
