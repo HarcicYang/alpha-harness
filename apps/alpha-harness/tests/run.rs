@@ -62,6 +62,7 @@ impl ModelProvider for DeltaProvider {
             Ok(CompletionResponse {
                 text: "hello".to_owned(),
                 tool_calls: Vec::new(),
+                blocks: Vec::new(),
             })
         })
     }
@@ -97,10 +98,12 @@ fn write_script() -> Vec<CompletionResponse> {
                     "content": "hi from tool"
                 }),
             }],
+            blocks: Vec::new(),
         },
         CompletionResponse {
             text: "done".to_owned(),
             tool_calls: Vec::new(),
+            blocks: Vec::new(),
         },
     ]
 }
@@ -288,6 +291,7 @@ async fn resume_replays_history_and_runs_a_follow_up_turn() {
     let provider = Arc::new(ScriptedProvider::new(vec![CompletionResponse {
         text: "second".to_owned(),
         tool_calls: Vec::new(),
+        blocks: Vec::new(),
     }]));
     let composition = compose_with_provider(
         workspace.path(),
@@ -433,6 +437,7 @@ impl AgentDriver for FixedDriver {
             let assistant = MessageId::new();
             writer.append(SessionEvent::AssistantMessage {
                 id: assistant,
+                blocks: Vec::new(),
                 text: "fixed driver".to_owned(),
             })?;
             writer.append(SessionEvent::TurnEnded {
@@ -473,8 +478,10 @@ async fn custom_drivers_can_replace_the_loop() {
 
     assert_eq!(report.assistant_text, "fixed driver");
     let reader = store.open_read(report.session_id).expect("read");
-    assert!(reader.events().iter().any(|envelope| matches!(
-        &envelope.payload,
-        SessionEvent::AssistantMessage { text, .. } if text == "fixed driver"
-    )));
+    assert!(
+        reader
+            .events()
+            .iter()
+            .any(|envelope| envelope.payload.assistant_text().as_deref() == Some("fixed driver"))
+    );
 }

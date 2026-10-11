@@ -51,6 +51,7 @@ impl ModelProvider for SummaryProvider {
                 Ok(CompletionResponse {
                     text,
                     tool_calls: Vec::new(),
+                    blocks: Vec::new(),
                 })
             }
         })
@@ -80,6 +81,7 @@ fn append_history(writer: &mut alpha_module_session::SessionWriter) -> SessionSt
         writer
             .append(SessionEvent::AssistantMessage {
                 id: MessageId::new(),
+                blocks: Vec::new(),
                 text: "b".repeat(200),
             })
             .expect("first assistant"),

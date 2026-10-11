@@ -1,6 +1,6 @@
 //! Durable session events.
 
-use alpha_schema::{MessageId, PermissionMode, ToolCallId, TurnId};
+use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode, ToolCallId, TurnId};
 use serde::{Deserialize, Serialize};
 
 use crate::header::WorkspaceRef;
@@ -83,7 +83,11 @@ pub enum SessionEvent {
     AssistantMessage {
         /// Message identity.
         id: MessageId,
-        /// Message text.
+        /// Structured assistant content.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blocks: Vec<AssistantContentBlock>,
+        /// Legacy text form accepted when reading schema 1 logs.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         text: String,
     },
     /// The model requested a tool call.
@@ -139,4 +143,25 @@ pub enum SessionEvent {
         /// The new workspace and cwd.
         workspace: WorkspaceRef,
     },
+}
+
+impl SessionEvent {
+    /// Visible assistant text for assistant messages.
+    pub fn assistant_text(&self) -> Option<String> {
+        match self {
+            Self::AssistantMessage { blocks, text, .. } => {
+                if blocks.is_empty() {
+                    Some(text.clone())
+                } else {
+                    Some(
+                        blocks
+                            .iter()
+                            .filter_map(AssistantContentBlock::text)
+                            .collect::<String>(),
+                    )
+                }
+            }
+            _ => None,
+        }
+    }
 }

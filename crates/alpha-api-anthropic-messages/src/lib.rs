@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, Ctx, Module};
@@ -92,6 +92,7 @@ struct StreamState {
     body: BoxStream<'static, Result<Vec<u8>, alpha_module_http::HttpError>>,
     buffer: Vec<u8>,
     pending: VecDeque<Result<CompletionChunk, ProviderError>>,
+    block_kinds: BTreeMap<usize, String>,
     done: bool,
 }
 
@@ -101,6 +102,7 @@ impl StreamState {
             body: response.body,
             buffer: Vec::new(),
             pending: VecDeque::new(),
+            block_kinds: BTreeMap::new(),
             done: false,
         }
     }
@@ -122,6 +124,7 @@ async fn next_stream_chunk(
                 if let Err(error) = drain_events(
                     &mut state.buffer,
                     &mut state.pending,
+                    &mut state.block_kinds,
                     &mut state.done,
                     false,
                 ) {
@@ -137,9 +140,13 @@ async fn next_stream_chunk(
             }
             None => {
                 state.done = true;
-                if let Err(error) =
-                    drain_events(&mut state.buffer, &mut state.pending, &mut state.done, true)
-                {
+                if let Err(error) = drain_events(
+                    &mut state.buffer,
+                    &mut state.pending,
+                    &mut state.block_kinds,
+                    &mut state.done,
+                    true,
+                ) {
                     state.pending.push_back(Err(error));
                 }
             }
@@ -254,6 +261,7 @@ fn wire_tool(tool: &ToolDefinition) -> Value {
 fn drain_events(
     buffer: &mut Vec<u8>,
     pending: &mut VecDeque<Result<CompletionChunk, ProviderError>>,
+    block_kinds: &mut BTreeMap<usize, String>,
     done: &mut bool,
     finish: bool,
 ) -> Result<(), ProviderError> {
@@ -263,7 +271,7 @@ fn drain_events(
         };
         let mut line: Vec<u8> = buffer.drain(..=index).collect();
         line.pop();
-        process_event_line(&line, pending, done)?;
+        process_event_line(&line, pending, block_kinds, done)?;
         if *done {
             buffer.clear();
             return Ok(());
@@ -271,7 +279,7 @@ fn drain_events(
     }
     if finish && !buffer.is_empty() {
         let line = std::mem::take(buffer);
-        process_event_line(&line, pending, done)?;
+        process_event_line(&line, pending, block_kinds, done)?;
     }
     Ok(())
 }
@@ -279,6 +287,7 @@ fn drain_events(
 fn process_event_line(
     line: &[u8],
     pending: &mut VecDeque<Result<CompletionChunk, ProviderError>>,
+    block_kinds: &mut BTreeMap<usize, String>,
     done: &mut bool,
 ) -> Result<(), ProviderError> {
     let line = trim_ascii(line);
@@ -298,22 +307,47 @@ fn process_event_line(
     match event.kind.as_str() {
         "content_block_start" => {
             if let Some(block) = event.content_block {
-                if block.kind == "tool_use" {
-                    let arguments = block
-                        .input
-                        .as_ref()
-                        .filter(|value| {
-                            !value.is_null()
-                                && value.as_object().is_none_or(|object| !object.is_empty())
-                        })
-                        .map(Value::to_string)
-                        .unwrap_or_default();
-                    pending.push_back(Ok(CompletionChunk::ToolCall(ToolCallDelta {
-                        index: event.index.unwrap_or_default(),
-                        id: block.id,
-                        name: block.name,
-                        arguments,
-                    })));
+                let index = event.index.unwrap_or_default();
+                block_kinds.insert(index, block.kind.clone());
+                match block.kind.as_str() {
+                    "tool_use" => {
+                        let arguments = block
+                            .input
+                            .as_ref()
+                            .filter(|value| {
+                                !value.is_null()
+                                    && value.as_object().is_none_or(|object| !object.is_empty())
+                            })
+                            .map(Value::to_string)
+                            .unwrap_or_default();
+                        pending.push_back(Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                            index,
+                            id: block.id,
+                            name: block.name,
+                            arguments,
+                        })));
+                    }
+                    "server_tool_use" => {
+                        pending.push_back(Ok(CompletionChunk::ProviderToolCall {
+                            id: block.id.unwrap_or_else(|| format!("provider-{index}")),
+                            name: block.name.unwrap_or_else(|| "provider_tool".to_owned()),
+                            input: block.input.unwrap_or_else(|| json!({})),
+                        }));
+                    }
+                    "web_search_tool_result" => {
+                        pending.push_back(Ok(CompletionChunk::ProviderToolResult {
+                            id: block.id.unwrap_or_else(|| format!("search-{index}")),
+                            name: "web_search".to_owned(),
+                            content: block.content.unwrap_or_else(|| json!({})),
+                        }));
+                    }
+                    "thinking" => {
+                        pending.push_back(Ok(CompletionChunk::Thinking {
+                            text: block.thinking.unwrap_or_default(),
+                            signature: block.signature,
+                        }));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -326,13 +360,44 @@ fn process_event_line(
                         }
                     }
                     "input_json_delta" => {
-                        if let Some(partial) = delta.partial_json {
+                        let index = event.index.unwrap_or_default();
+                        if block_kinds
+                            .get(&index)
+                            .is_some_and(|kind| kind == "tool_use")
+                            && let Some(partial) = delta.partial_json
+                        {
                             pending.push_back(Ok(CompletionChunk::ToolCall(ToolCallDelta {
-                                index: event.index.unwrap_or_default(),
+                                index,
                                 id: None,
                                 name: None,
                                 arguments: partial,
                             })));
+                        }
+                    }
+                    "thinking_delta" => {
+                        if let Some(text) = delta.thinking {
+                            pending.push_back(Ok(CompletionChunk::Thinking {
+                                text,
+                                signature: None,
+                            }));
+                        }
+                    }
+                    "citation_delta" => {
+                        if let Some(citation) = delta.citation {
+                            pending.push_back(Ok(CompletionChunk::Citation {
+                                url: citation
+                                    .get("url")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                title: citation
+                                    .get("title")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                snippet: citation
+                                    .get("cited_text")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                            }));
                         }
                     }
                     _ => {}
@@ -389,6 +454,12 @@ struct StreamContentBlock {
     name: Option<String>,
     #[serde(default)]
     input: Option<Value>,
+    #[serde(default)]
+    content: Option<Value>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -399,6 +470,10 @@ struct StreamDelta {
     text: Option<String>,
     #[serde(default)]
     partial_json: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    citation: Option<Value>,
 }
 
 fn snippet(body: &[u8]) -> String {

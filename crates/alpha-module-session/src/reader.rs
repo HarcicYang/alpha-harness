@@ -120,7 +120,7 @@ fn parse_line(
 }
 
 fn push_envelope(
-    envelope: EventEnvelope<SessionEvent>,
+    mut envelope: EventEnvelope<SessionEvent>,
     line_number: usize,
     events: &mut Vec<EventEnvelope<SessionEvent>>,
 ) -> Result<(), SessionError> {
@@ -131,10 +131,14 @@ fn push_envelope(
         });
     }
     if envelope.schema < CURRENT_EVENT_SCHEMA {
-        return Err(SessionError::MigrationRequired {
-            found: envelope.schema,
-            supported: CURRENT_EVENT_SCHEMA,
-        });
+        if envelope.schema == 1 {
+            envelope.schema = CURRENT_EVENT_SCHEMA;
+        } else {
+            return Err(SessionError::MigrationRequired {
+                found: envelope.schema,
+                supported: CURRENT_EVENT_SCHEMA,
+            });
+        }
     }
     if let Some(previous) = events.last() {
         if envelope.seq <= previous.seq {

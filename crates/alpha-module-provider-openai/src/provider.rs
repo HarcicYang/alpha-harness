@@ -111,6 +111,7 @@ impl ModelProvider for OpenAiProvider {
             Ok(CompletionResponse {
                 text: message.content.unwrap_or_default(),
                 tool_calls,
+                blocks: Vec::new(),
             })
         })
     }

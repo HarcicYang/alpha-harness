@@ -112,6 +112,57 @@ async fn streams_text_and_tool_input_deltas() {
     assert_eq!(payload["tools"][0]["type"], json!("web_search_20250305"));
 }
 
+#[tokio::test]
+async fn streams_provider_native_web_search_blocks() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![
+            b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_1\",\"name\":\"web_search\",\"input\":{\"query\":\"rust\"}}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"web_search_tool_result\",\"id\":\"srvtoolu_1\",\"content\":[{\"type\":\"web_search_result\",\"url\":\"https://example.com\",\"title\":\"Example\"}]}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"citation_delta\",\"citation\":{\"url\":\"https://example.com\",\"title\":\"Example\",\"cited_text\":\"snippet\"}}}\n\n".to_vec(),
+            b"data: {\"type\":\"message_stop\"}\n\n".to_vec(),
+        ],
+    });
+    let adapter = alpha_api_anthropic_messages::AnthropicMessagesAdapter;
+    let chunks: Vec<CompletionChunk> = adapter
+        .stream(
+            http,
+            AdapterRequest {
+                base_url: "https://api.anthropic.test".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "claude-test".to_owned(),
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: vec!["web_search".to_owned()],
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+
+    assert!(matches!(
+        &chunks[0],
+        CompletionChunk::ProviderToolCall { id, name, input }
+            if id == "srvtoolu_1" && name == "web_search" && input["query"] == "rust"
+    ));
+    assert!(matches!(
+        &chunks[1],
+        CompletionChunk::ProviderToolResult { id, name, content }
+            if id == "srvtoolu_1" && name == "web_search" && content[0]["url"] == "https://example.com"
+    ));
+    assert!(matches!(
+        &chunks[2],
+        CompletionChunk::Citation { url, title, snippet }
+            if url.as_deref() == Some("https://example.com")
+                && title.as_deref() == Some("Example")
+                && snippet.as_deref() == Some("snippet")
+    ));
+}
+
 #[test]
 fn module_registers_the_adapter() {
     let ctx = Ctx::root();

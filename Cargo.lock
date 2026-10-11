@@ -483,6 +483,7 @@ dependencies = [
  "alpha-kernel",
  "alpha-module-http",
  "alpha-module-loop",
+ "alpha-schema",
  "futures",
  "serde",
  "serde_json",

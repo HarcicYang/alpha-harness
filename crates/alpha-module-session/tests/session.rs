@@ -2,10 +2,12 @@ use std::fs;
 use std::io::Write;
 
 use alpha_module_session::{
-    SessionError, SessionEvent, SessionHeader, SessionStore, ToolStatus, TurnEndReason,
-    WorkspaceRef,
+    MessageRecord, SessionError, SessionEvent, SessionHeader, SessionStore, ToolStatus,
+    TurnEndReason, WorkspaceRef,
 };
-use alpha_schema::{MessageId, PermissionMode, SessionId, Timestamp, ToolCallId};
+use alpha_schema::{
+    AssistantContentBlock, MessageId, PermissionMode, SessionId, Timestamp, ToolCallId,
+};
 
 fn header() -> SessionHeader {
     SessionHeader::new(
@@ -16,6 +18,42 @@ fn header() -> SessionHeader {
             cwd: "/tmp/workspace".to_owned(),
         },
     )
+}
+
+#[test]
+fn schema_one_assistant_text_migrates_to_a_text_block() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let id = header.id;
+    drop(store.create(header).expect("create"));
+
+    let message_id = MessageId::new();
+    let line = serde_json::json!({
+        "seq": 1,
+        "at": 123,
+        "schema": 1,
+        "payload": {
+            "type": "assistant_message",
+            "id": message_id,
+            "text": "legacy"
+        }
+    });
+    let path = dir.path().join(id.to_string()).join("session.v0.jsonl");
+    fs::write(path, format!("{line}\n")).expect("write legacy log");
+
+    let reader = store.open_read(id).expect("read");
+    let state = reader.state();
+    let MessageRecord::Assistant { blocks, text, .. } = &state.messages[0] else {
+        panic!("expected assistant message");
+    };
+    assert_eq!(text, "legacy");
+    assert_eq!(
+        blocks,
+        &vec![AssistantContentBlock::Text {
+            text: "legacy".to_owned()
+        }]
+    );
 }
 
 #[test]

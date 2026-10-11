@@ -45,6 +45,7 @@ impl ModelProvider for EchoProvider {
             Ok(CompletionResponse {
                 text: format!("echo: {last_user}"),
                 tool_calls: Vec::new(),
+                blocks: Vec::new(),
             })
         })
     }
@@ -278,15 +279,12 @@ async fn stream_deltas_are_merged_into_one_durable_message() {
     drop(writer);
 
     let reader = store.open_read(header.id).expect("read");
-    let assistant: Vec<&str> = reader
+    let assistant: Vec<String> = reader
         .events()
         .iter()
-        .filter_map(|event| match &event.payload {
-            SessionEvent::AssistantMessage { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
+        .filter_map(|event| event.payload.assistant_text())
         .collect();
-    assert_eq!(assistant, vec!["hello"]);
+    assert_eq!(assistant, vec!["hello".to_owned()]);
 }
 
 #[tokio::test]
@@ -307,10 +305,12 @@ async fn stream_failure_preserves_the_received_text_prefix() {
     drop(writer);
 
     let reader = store.open_read(header.id).expect("read");
-    assert!(reader.events().iter().any(|event| matches!(
-        &event.payload,
-        SessionEvent::AssistantMessage { text, .. } if text == "partial"
-    )));
+    assert!(
+        reader
+            .events()
+            .iter()
+            .any(|event| event.payload.assistant_text().as_deref() == Some("partial"))
+    );
     assert!(reader.events().iter().any(|event| matches!(
         &event.payload,
         SessionEvent::TurnEnded {
@@ -416,6 +416,7 @@ async fn context_preparer_updates_the_request_history() {
         writer
             .append(SessionEvent::AssistantMessage {
                 id: MessageId::new(),
+                blocks: Vec::new(),
                 text: "old assistant".to_owned(),
             })
             .expect("old assistant"),
@@ -486,10 +487,12 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
                 name: "write_note".to_owned(),
                 arguments: json!({ "value": "hi" }),
             }],
+            blocks: Vec::new(),
         },
         CompletionResponse {
             text: "done".to_owned(),
             tool_calls: Vec::new(),
+            blocks: Vec::new(),
         },
     ]));
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -559,10 +562,12 @@ async fn step_limit_wraps_up_without_tools() {
                 name: "write_note".to_owned(),
                 arguments: json!({ "value": "x" }),
             }],
+            blocks: Vec::new(),
         },
         CompletionResponse {
             text: "wrapped up".to_owned(),
             tool_calls: Vec::new(),
+            blocks: Vec::new(),
         },
     ]));
     let registry = Arc::new(ToolRegistry::new());
@@ -598,10 +603,12 @@ async fn live_events_report_steps_and_tools() {
                 name: "write_note".to_owned(),
                 arguments: json!({ "value": "y" }),
             }],
+            blocks: Vec::new(),
         },
         CompletionResponse {
             text: "done".to_owned(),
             tool_calls: Vec::new(),
+            blocks: Vec::new(),
         },
     ]));
     let registry = Arc::new(ToolRegistry::new());

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use alpha_schema::AssistantContentBlock;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -89,21 +90,57 @@ pub struct CompletionRequest {
 }
 
 /// One completion response.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CompletionResponse {
     /// Assistant text.
     pub text: String,
     /// Tool calls requested by the model.
     pub tool_calls: Vec<ToolCall>,
+    /// Structured assistant content.
+    pub blocks: Vec<AssistantContentBlock>,
 }
 
 /// One incremental completion chunk.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CompletionChunk {
     /// Assistant text delta.
     Text(String),
     /// Incremental tool-call data.
     ToolCall(ToolCallDelta),
+    /// Thinking content.
+    Thinking {
+        /// Thinking text.
+        text: String,
+        /// Provider signature.
+        signature: Option<String>,
+    },
+    /// Provider-native tool call.
+    ProviderToolCall {
+        /// Provider call identity.
+        id: String,
+        /// Tool name.
+        name: String,
+        /// Tool input.
+        input: Value,
+    },
+    /// Provider-native tool result.
+    ProviderToolResult {
+        /// Provider call identity.
+        id: String,
+        /// Tool name.
+        name: String,
+        /// Result content.
+        content: Value,
+    },
+    /// Citation attached to assistant output.
+    Citation {
+        /// Source URL.
+        url: Option<String>,
+        /// Source title.
+        title: Option<String>,
+        /// Source snippet.
+        snippet: Option<String>,
+    },
 }
 
 /// One tool-call delta.

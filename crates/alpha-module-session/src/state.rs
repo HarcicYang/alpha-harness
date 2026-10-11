@@ -2,13 +2,15 @@
 
 use std::collections::BTreeSet;
 
-use alpha_schema::{EventEnvelope, MessageId, PermissionMode, Seq, ToolCallId};
+use alpha_schema::{
+    AssistantContentBlock, EventEnvelope, MessageId, PermissionMode, Seq, ToolCallId,
+};
 
 use crate::event::{SessionEvent, ToolStatus};
 use crate::header::{SessionHeader, WorkspaceRef, apply_location_event};
 
 /// One message in the projected history.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MessageRecord {
     /// A user message.
     User {
@@ -25,6 +27,8 @@ pub enum MessageRecord {
         seq: Seq,
         /// Message identity.
         id: MessageId,
+        /// Structured content blocks.
+        blocks: Vec<AssistantContentBlock>,
         /// Message text.
         text: String,
     },
@@ -153,11 +157,25 @@ impl SessionState {
                     through_seq: *through_seq,
                 });
             }
-            SessionEvent::AssistantMessage { id, text } => {
+            SessionEvent::AssistantMessage { id, blocks, text } => {
+                let blocks = if blocks.is_empty() && !text.is_empty() {
+                    vec![AssistantContentBlock::Text { text: text.clone() }]
+                } else {
+                    blocks.clone()
+                };
+                let text = if text.is_empty() {
+                    blocks
+                        .iter()
+                        .filter_map(AssistantContentBlock::text)
+                        .collect::<String>()
+                } else {
+                    text.clone()
+                };
                 self.messages.push(MessageRecord::Assistant {
                     seq: envelope.seq,
                     id: *id,
-                    text: text.clone(),
+                    blocks,
+                    text,
                 });
             }
             SessionEvent::ToolCall {

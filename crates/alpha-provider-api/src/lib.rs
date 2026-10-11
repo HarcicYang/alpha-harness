@@ -400,9 +400,23 @@ async fn collect_stream(
 
     let mut text = String::new();
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
+    let mut blocks: Vec<alpha_schema::AssistantContentBlock> = Vec::new();
+    let mut text_block: Option<usize> = None;
     while let Some(chunk) = stream.next().await {
         match chunk? {
-            CompletionChunk::Text(delta) => text.push_str(&delta),
+            CompletionChunk::Text(delta) => {
+                text.push_str(&delta);
+                if let Some(index) = text_block {
+                    if let Some(alpha_schema::AssistantContentBlock::Text { text }) =
+                        blocks.get_mut(index)
+                    {
+                        text.push_str(&delta);
+                    }
+                } else {
+                    blocks.push(alpha_schema::AssistantContentBlock::Text { text: delta });
+                    text_block = Some(blocks.len() - 1);
+                }
+            }
             CompletionChunk::ToolCall(delta) => {
                 let call = calls.entry(delta.index).or_default();
                 if let Some(id) = delta.id {
@@ -412,6 +426,34 @@ async fn collect_stream(
                     call.name = Some(name);
                 }
                 call.arguments.push_str(&delta.arguments);
+            }
+            CompletionChunk::Thinking { text, signature } => {
+                blocks.push(alpha_schema::AssistantContentBlock::Thinking { text, signature });
+            }
+            CompletionChunk::ProviderToolCall { id, name, input } => {
+                blocks.push(alpha_schema::AssistantContentBlock::ProviderToolCall {
+                    id,
+                    name,
+                    input,
+                });
+            }
+            CompletionChunk::ProviderToolResult { id, name, content } => {
+                blocks.push(alpha_schema::AssistantContentBlock::ProviderToolResult {
+                    id,
+                    name,
+                    content,
+                });
+            }
+            CompletionChunk::Citation {
+                url,
+                title,
+                snippet,
+            } => {
+                blocks.push(alpha_schema::AssistantContentBlock::Citation {
+                    url,
+                    title,
+                    snippet,
+                });
             }
         }
     }
@@ -428,13 +470,23 @@ async fn collect_stream(
                 ProviderError::Request(format!("invalid tool arguments for `{name}`: {error}"))
             })?
         };
-        tool_calls.push(ToolCall {
+        let call = ToolCall {
             id,
             name,
             arguments,
+        };
+        blocks.push(alpha_schema::AssistantContentBlock::LocalToolCall {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
         });
+        tool_calls.push(call);
     }
-    Ok(CompletionResponse { text, tool_calls })
+    Ok(CompletionResponse {
+        text,
+        tool_calls,
+        blocks,
+    })
 }
 
 #[derive(Default)]

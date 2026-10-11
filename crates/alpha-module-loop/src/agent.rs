@@ -9,7 +9,7 @@ use alpha_module_session::{
     TurnEndReason,
 };
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
-use alpha_schema::{MessageId, ToolCallId, TurnId};
+use alpha_schema::{AssistantContentBlock, MessageId, ToolCallId, TurnId};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -178,7 +178,10 @@ impl AgentLoop {
                     if !failure.text.is_empty() {
                         writer.append(SessionEvent::AssistantMessage {
                             id: MessageId::new(),
-                            text: failure.text.clone(),
+                            blocks: vec![AssistantContentBlock::Text {
+                                text: failure.text.clone(),
+                            }],
+                            text: String::new(),
                         })?;
                     }
                     writer.append(SessionEvent::TurnEnded {
@@ -195,10 +198,12 @@ impl AgentLoop {
             let message_id = MessageId::new();
             let text = response.text;
             let calls = response.tool_calls;
+            let blocks = normalized_blocks(response.blocks, &text, &calls);
             if !text.is_empty() {
                 writer.append(SessionEvent::AssistantMessage {
                     id: message_id,
-                    text: text.clone(),
+                    blocks: blocks.clone(),
+                    text: String::new(),
                 })?;
                 last_text = text.clone();
                 last_message_id = Some(message_id);
@@ -214,7 +219,10 @@ impl AgentLoop {
                         let id = MessageId::new();
                         writer.append(SessionEvent::AssistantMessage {
                             id,
-                            text: "(no content)".to_owned(),
+                            blocks: vec![AssistantContentBlock::Text {
+                                text: "(no content)".to_owned(),
+                            }],
+                            text: String::new(),
                         })?;
                         last_text = "(no content)".to_owned();
                         id
@@ -252,9 +260,12 @@ impl AgentLoop {
         match self.stream_response(ctx, request).await {
             Ok(response) if !response.text.is_empty() => {
                 let assistant_id = MessageId::new();
+                let blocks =
+                    normalized_blocks(response.blocks, &response.text, &response.tool_calls);
                 writer.append(SessionEvent::AssistantMessage {
                     id: assistant_id,
-                    text: response.text.clone(),
+                    blocks,
+                    text: String::new(),
                 })?;
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Completed,
@@ -272,7 +283,8 @@ impl AgentLoop {
                 if !failure.text.is_empty() {
                     writer.append(SessionEvent::AssistantMessage {
                         id: MessageId::new(),
-                        text: failure.text,
+                        blocks: vec![AssistantContentBlock::Text { text: failure.text }],
+                        text: String::new(),
                     })?;
                 }
                 writer.append(SessionEvent::TurnEnded {
@@ -305,6 +317,8 @@ impl AgentLoop {
         let mut stream = self.provider.stream(request);
         let mut text = String::new();
         let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
+        let mut blocks: Vec<AssistantContentBlock> = Vec::new();
+        let mut text_block: Option<usize> = None;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| StreamFailure {
@@ -315,6 +329,18 @@ impl AgentLoop {
                 crate::provider::CompletionChunk::Text(delta) => {
                     if !delta.is_empty() {
                         text.push_str(&delta);
+                        if let Some(index) = text_block {
+                            if let Some(AssistantContentBlock::Text { text }) =
+                                blocks.get_mut(index)
+                            {
+                                text.push_str(&delta);
+                            }
+                        } else {
+                            blocks.push(AssistantContentBlock::Text {
+                                text: delta.clone(),
+                            });
+                            text_block = Some(blocks.len() - 1);
+                        }
                         ctx.parallel(AgentTextDelta { text: delta }).await;
                     }
                 }
@@ -327,6 +353,26 @@ impl AgentLoop {
                         call.name = Some(name);
                     }
                     call.arguments.push_str(&delta.arguments);
+                }
+                crate::provider::CompletionChunk::Thinking { text, signature } => {
+                    blocks.push(AssistantContentBlock::Thinking { text, signature });
+                }
+                crate::provider::CompletionChunk::ProviderToolCall { id, name, input } => {
+                    blocks.push(AssistantContentBlock::ProviderToolCall { id, name, input });
+                }
+                crate::provider::CompletionChunk::ProviderToolResult { id, name, content } => {
+                    blocks.push(AssistantContentBlock::ProviderToolResult { id, name, content });
+                }
+                crate::provider::CompletionChunk::Citation {
+                    url,
+                    title,
+                    snippet,
+                } => {
+                    blocks.push(AssistantContentBlock::Citation {
+                        url,
+                        title,
+                        snippet,
+                    });
                 }
             }
         }
@@ -348,14 +394,24 @@ impl AgentLoop {
                     text: text.clone(),
                 })?
             };
-            tool_calls.push(ToolCall {
+            let call = ToolCall {
                 id,
                 name,
                 arguments,
+            };
+            blocks.push(AssistantContentBlock::LocalToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
             });
+            tool_calls.push(call);
         }
 
-        Ok(CompletionResponse { text, tool_calls })
+        Ok(CompletionResponse {
+            text,
+            tool_calls,
+            blocks,
+        })
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -596,6 +652,30 @@ impl AgentDriver for AgentLoop {
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
         Box::pin(self.run_turn_impl(ctx, writer, state, prompt))
     }
+}
+
+fn normalized_blocks(
+    blocks: Vec<AssistantContentBlock>,
+    text: &str,
+    calls: &[ToolCall],
+) -> Vec<AssistantContentBlock> {
+    if !blocks.is_empty() {
+        return blocks;
+    }
+    let mut normalized = Vec::new();
+    if !text.is_empty() {
+        normalized.push(AssistantContentBlock::Text {
+            text: text.to_owned(),
+        });
+    }
+    for call in calls {
+        normalized.push(AssistantContentBlock::LocalToolCall {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        });
+    }
+    normalized
 }
 
 /// Rebuilds provider-facing history from the durable projection.

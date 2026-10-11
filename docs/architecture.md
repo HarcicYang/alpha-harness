@@ -476,6 +476,20 @@ Provider instances are persisted under `[providers.instances.<id>]` in the
 user configuration file. Writes use last-write-wins with atomic rename; the
 in-memory registry is updated after a successful write.
 
+### D28: Structured assistant content
+
+Assistant messages are durable sequences of `AssistantContentBlock` values:
+text, thinking, local tool calls, provider tool calls, provider tool results,
+and citations. Local tool calls still produce independent `ToolCall` and
+`ToolResult` events. Provider-native tools remain inside the assistant message
+and never enter the local tool registry.
+
+Schema 1 assistant messages with a plain `text` field are migrated at read
+time into a single text block. The current durable schema is version 2.
+Provider-native tools, including Anthropic `web_search`, are represented as
+provider tool blocks so the transcript and replay path do not need
+provider-specific event types.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,

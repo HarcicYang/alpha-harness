@@ -11,7 +11,7 @@ use alpha_module_session::{
     SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason,
 };
 use alpha_protocol::{OutboundTransport, RpcError};
-use alpha_schema::{MessageId, PermissionMode};
+use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
@@ -35,7 +35,8 @@ impl AgentDriver for EchoDriver {
             let text = format!("echo:{prompt}");
             writer.append(SessionEvent::AssistantMessage {
                 id,
-                text: text.clone(),
+                blocks: vec![AssistantContentBlock::Text { text: text.clone() }],
+                text: String::new(),
             })?;
             writer.append(SessionEvent::TurnEnded {
                 reason: TurnEndReason::Completed,
@@ -133,16 +134,16 @@ fn actor_streams_durable_events_and_completes_a_turn() {
             method == "session.event"
                 && params["kind"] == "durable"
                 && params["event"]["payload"]["type"] == "assistant_message"
-                && params["event"]["payload"]["text"] == "echo:hello"
+                && params["event"]["payload"]["blocks"][0]["text"] == "echo:hello"
         }));
         drop(notifications);
 
         let reader = store.open_read(created.session_id).expect("read");
-        assert!(reader.events().iter().any(|envelope| {
-            matches!(
-                &envelope.payload,
-                SessionEvent::AssistantMessage { text, .. } if text == "echo:hello"
-            )
-        }));
+        assert!(
+            reader
+                .events()
+                .iter()
+                .any(|envelope| envelope.payload.assistant_text().as_deref() == Some("echo:hello"))
+        );
     });
 }
