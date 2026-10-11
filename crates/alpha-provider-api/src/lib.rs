@@ -68,6 +68,8 @@ pub struct ProviderDescriptor {
     pub name: String,
     /// JSON Schema for provider-specific config.
     pub config_schema: Value,
+    /// Default provider config used when creating an instance.
+    pub default_config: Value,
     /// Authentication methods.
     pub auth_methods: Vec<AuthMethodDescriptor>,
     /// Model catalog.

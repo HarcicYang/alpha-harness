@@ -67,6 +67,8 @@ impl ProviderKind for OpenCodeGoProviderKind {
             name: "OpenCode Go".to_owned(),
             config_schema: serde_json::to_value(schemars::schema_for!(OpenCodeGoConfig))
                 .unwrap_or_else(|_| json!({})),
+            default_config: serde_json::to_value(OpenCodeGoConfig::default())
+                .unwrap_or_else(|_| json!({})),
             auth_methods: vec![AuthMethodDescriptor {
                 key: "api_key".to_owned(),
                 label: "OpenCode API key".to_owned(),

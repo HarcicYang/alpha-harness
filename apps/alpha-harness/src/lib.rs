@@ -688,6 +688,19 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
         .expect("provider instance registry is required by the core");
     let config_store = ctx.get::<dyn ProviderConfigStore>();
 
+    let router = router.method("provider.credential_status", {
+        let ctx = ctx.clone();
+        move |_params: Value| {
+            let ctx = ctx.clone();
+            async move {
+                let credentials = ctx
+                    .require::<dyn CredentialStore>()
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                serde_json::to_value(credentials.status())
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
     let router = router.method("provider.list_kinds", {
         let registry = kind_registry.clone();
         move |_params: Value| {
@@ -732,13 +745,17 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
             let instances = instances.clone();
             let config_store = config_store.clone();
             async move {
-                let instance: ProviderInstance = serde_json::from_value(params)
+                let mut instance: ProviderInstance = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-                if kinds.get(&instance.kind).is_none() {
-                    return Err(RpcError::invalid_params(format!(
-                        "unknown provider kind `{}`",
-                        instance.kind
-                    )));
+                if instance.id.trim().is_empty() {
+                    return Err(RpcError::invalid_params("provider instance id is empty"));
+                }
+                let kind = kinds.get(&instance.kind).ok_or_else(|| {
+                    RpcError::invalid_params(format!("unknown provider kind `{}`", instance.kind))
+                })?;
+                migrate_instance_config(&mut instance, kind.as_ref())?;
+                if instance.auth_ref.is_none() {
+                    instance.auth_ref = Some(default_auth_ref(&instance.id));
                 }
                 if let Some(store) = config_store {
                     store
@@ -761,14 +778,15 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
             let instances = instances.clone();
             let config_store = config_store.clone();
             async move {
-                let instance: ProviderInstance = serde_json::from_value(params)
+                let mut instance: ProviderInstance = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-                if kinds.get(&instance.kind).is_none() {
-                    return Err(RpcError::invalid_params(format!(
-                        "unknown provider kind `{}`",
-                        instance.kind
-                    )));
+                if instances.get(&instance.id).is_none() {
+                    return Err(RpcError::invalid_params("unknown provider instance"));
                 }
+                let kind = kinds.get(&instance.kind).ok_or_else(|| {
+                    RpcError::invalid_params(format!("unknown provider kind `{}`", instance.kind))
+                })?;
+                migrate_instance_config(&mut instance, kind.as_ref())?;
                 if let Some(store) = config_store {
                     store
                         .upsert(instance.clone())
@@ -784,12 +802,31 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     let router = router.method("provider.remove_instance", {
         let instances = instance_registry.clone();
         let config_store = config_store.clone();
+        let ctx = ctx.clone();
         move |params: Value| {
             let instances = instances.clone();
             let config_store = config_store.clone();
+            let ctx = ctx.clone();
             async move {
                 let params: InstanceIdParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let instance = instances
+                    .get(&params.id)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider instance"))?;
+                let mut credential_removed = true;
+                let mut credential_error = None;
+                if let Some(auth_ref) = instance.auth_ref.as_deref() {
+                    let credentials = ctx
+                        .require::<dyn CredentialStore>()
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    match credentials.delete(auth_ref) {
+                        Ok(()) => {}
+                        Err(error) => {
+                            credential_removed = false;
+                            credential_error = Some(error.to_string());
+                        }
+                    }
+                }
                 let removed = if let Some(store) = config_store {
                     store
                         .remove(&params.id)
@@ -797,23 +834,98 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                 } else {
                     instances.remove(&params.id).is_some()
                 };
-                Ok(json!({ "removed": removed }))
+                Ok(json!({
+                    "removed": removed,
+                    "credentialRemoved": credential_removed,
+                    "credentialError": credential_error,
+                }))
             }
         }
     });
     let router = router.method("provider.set_default_instance", {
+        let instances = instance_registry.clone();
         let config_store = config_store.clone();
         move |params: Value| {
+            let instances = instances.clone();
             let config_store = config_store.clone();
             async move {
                 let params: DefaultInstanceParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                if let Some(id) = params.id.as_deref() {
+                    if instances.get(id).is_none() {
+                        return Err(RpcError::invalid_params("unknown provider instance"));
+                    }
+                }
                 let store = config_store
                     .ok_or_else(|| RpcError::internal("provider config store is unavailable"))?;
                 store
                     .set_default_instance(params.id)
                     .map_err(|error| RpcError::internal(error.to_string()))?;
                 Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let router = router.method("provider.authenticate_instance", {
+        let instances = instance_registry.clone();
+        let config_store = config_store.clone();
+        let ctx = ctx.clone();
+        move |params: Value| {
+            let instances = instances.clone();
+            let config_store = config_store.clone();
+            let ctx = ctx.clone();
+            async move {
+                let params: AuthInstanceParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                if params.secret.trim().is_empty() {
+                    return Err(RpcError::invalid_params("credential is empty"));
+                }
+                let mut instance = instances
+                    .get(&params.id)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider instance"))?;
+                let auth_ref = instance
+                    .auth_ref
+                    .clone()
+                    .unwrap_or_else(|| default_auth_ref(&instance.id));
+                let credentials = ctx
+                    .require::<dyn CredentialStore>()
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                credentials
+                    .write(&auth_ref, params.secret.as_bytes())
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                instance.auth_ref = Some(auth_ref.clone());
+                if let Some(store) = config_store {
+                    store
+                        .upsert(instance.clone())
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                } else {
+                    instances.upsert(instance);
+                }
+                Ok(json!({ "ok": true, "authRef": auth_ref }))
+            }
+        }
+    });
+    let router = router.method("provider.remove_credential", {
+        let instances = instance_registry.clone();
+        let ctx = ctx.clone();
+        move |params: Value| {
+            let instances = instances.clone();
+            let ctx = ctx.clone();
+            async move {
+                let params: InstanceIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let instance = instances
+                    .get(&params.id)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider instance"))?;
+                let Some(auth_ref) = instance.auth_ref else {
+                    return Ok(json!({ "removed": false }));
+                };
+                let credentials = ctx
+                    .require::<dyn CredentialStore>()
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                credentials
+                    .delete(&auth_ref)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "removed": true }))
             }
         }
     });
@@ -868,6 +980,25 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     })
 }
 
+fn default_auth_ref(instance_id: &str) -> String {
+    format!("provider/{instance_id}/api-key")
+}
+
+fn migrate_instance_config(
+    instance: &mut ProviderInstance,
+    kind: &dyn alpha_provider_api::ProviderKind,
+) -> Result<(), RpcError> {
+    let current = kind.config_version();
+    if instance.config_version == current {
+        return Ok(());
+    }
+    instance.config = kind
+        .migrate_config(instance.config_version, instance.config.clone())
+        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+    instance.config_version = current;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AttachParams {
@@ -895,4 +1026,10 @@ struct InstanceIdParams {
 #[derive(Debug, Deserialize)]
 struct DefaultInstanceParams {
     id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthInstanceParams {
+    id: String,
+    secret: String,
 }

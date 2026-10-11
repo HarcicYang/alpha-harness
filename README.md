@@ -40,7 +40,9 @@ alpha tui
 ```
 
 The TUI starts its own core process, discovers provider kinds and persisted
-provider instances, and currently exposes provider inspection and refresh.
+provider instances, and exposes provider creation, removal, default selection,
+credential entry, validation, and refresh. Secrets are written to the platform
+keyring by the core and are never returned to the TUI.
 
 ## Prompting and context
 

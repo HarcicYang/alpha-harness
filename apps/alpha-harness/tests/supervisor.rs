@@ -43,16 +43,22 @@ fn core_exposes_provider_registry_methods() {
     let kinds = kinds.as_array().expect("provider kinds");
     assert_eq!(kinds.len(), 5);
 
+    let credential_status = supervisor
+        .request("provider.credential_status", None)
+        .expect("credential status");
+    assert!(credential_status["backend"].is_string());
+    assert!(credential_status["status"].is_string());
+
     let instance = serde_json::json!({
         "id": "test-openai",
         "kind": "openai-chat-completions",
         "config_version": 1,
-        "config": { "base_url": "https://api.test/v1" },
-        "auth_ref": "provider/test-openai/api-key"
+        "config": { "base_url": "https://api.test/v1" }
     });
-    supervisor
+    let created = supervisor
         .request("provider.create_instance", Some(instance.clone()))
         .expect("create provider instance");
+    assert_eq!(created["auth_ref"], "provider/test-openai/api-key");
     let listed = supervisor
         .request("provider.list_instances", None)
         .expect("list provider instances");

@@ -57,6 +57,8 @@ impl ProviderKind for OpenAiResponsesProviderKind {
             name: "OpenAI Responses".to_owned(),
             config_schema: serde_json::to_value(schemars::schema_for!(OpenAiResponsesConfig))
                 .unwrap_or_else(|_| json!({})),
+            default_config: serde_json::to_value(OpenAiResponsesConfig::default())
+                .unwrap_or_else(|_| json!({})),
             auth_methods: vec![AuthMethodDescriptor {
                 key: "api_key".to_owned(),
                 label: "API key".to_owned(),

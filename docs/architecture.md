@@ -420,9 +420,13 @@ restart the core process and restore durable session state only; an
 interrupted turn is never replayed automatically. The hidden core command is
 available for manual debugging but is not a supported user workflow.
 
-The first TUI screen is a provider manager backed by `provider.list_kinds` and
-`provider.list_instances`. It uses a full-screen alternate terminal and starts
-and stops its own core process.
+The first TUI screen is a provider manager backed by `provider.list_kinds`,
+`provider.list_instances`, and `provider.credential_status`. It can create and
+remove instances, select the default instance, submit an API key through the
+credential module, validate an instance, and refresh provider state. It uses a
+full-screen alternate terminal and starts and stops its own core process.
+Secrets are never returned by provider reads and never enter front state after
+submission.
 
 ### D26: Credential storage
 
@@ -458,9 +462,12 @@ Go kinds. DeepSeek uses the Anthropic Messages adapter so provider-native web
 search can be exposed through the same request path.
 
 The hidden core exposes provider kind discovery, instance CRUD, and instance
-validation through `alpha-protocol`. Runtime instances are held in the global
-provider instance registry; the configuration layer can persist that
-projection to user TOML without changing the protocol surface.
+validation and credential operations through `alpha-protocol`. Runtime
+instances are held in the global provider instance registry; the configuration
+layer persists that projection to user TOML without changing the protocol
+surface. The core owns generated `auth_ref` values and removes credentials when
+an instance is removed. If keyring cleanup fails, the instance is still
+removed and the front reports the credential cleanup warning.
 
 Provider instances are persisted under `[providers.instances.<id>]` in the
 user configuration file. Writes use last-write-wins with atomic rename; the

@@ -65,6 +65,8 @@ impl ProviderKind for DeepSeekProviderKind {
             name: "DeepSeek".to_owned(),
             config_schema: serde_json::to_value(schemars::schema_for!(DeepSeekConfig))
                 .unwrap_or_else(|_| json!({})),
+            default_config: serde_json::to_value(DeepSeekConfig::default())
+                .unwrap_or_else(|_| json!({})),
             auth_methods: vec![AuthMethodDescriptor {
                 key: "api_key".to_owned(),
                 label: "DeepSeek API key".to_owned(),
