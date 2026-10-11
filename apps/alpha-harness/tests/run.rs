@@ -68,9 +68,9 @@ impl ModelProvider for DeltaProvider {
     }
 
     fn stream(
-        &self,
+        self: Arc<Self>,
         _request: CompletionRequest,
-    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+    ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
         Box::pin(futures::stream::iter(vec![
             Ok(CompletionChunk::Text("hel".to_owned())),
             Ok(CompletionChunk::Text("lo".to_owned())),

@@ -481,6 +481,7 @@ name = "alpha-provider-api"
 version = "0.1.0"
 dependencies = [
  "alpha-kernel",
+ "alpha-module-credential",
  "alpha-module-http",
  "alpha-module-loop",
  "alpha-schema",

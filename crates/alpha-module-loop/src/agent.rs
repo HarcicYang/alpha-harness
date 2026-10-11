@@ -314,7 +314,7 @@ impl AgentLoop {
         ctx: &Ctx,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, StreamFailure> {
-        let mut stream = self.provider.stream(request);
+        let mut stream = self.provider.clone().stream(request);
         let mut text = String::new();
         let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
         let mut blocks: Vec<AssistantContentBlock> = Vec::new();

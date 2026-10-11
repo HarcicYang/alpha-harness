@@ -49,8 +49,8 @@ use alpha_protocol::{
     Router, RpcError, read_message, write_message,
 };
 use alpha_provider_api::{
-    ApiAdapterRegistry, ProviderApiModule, ProviderBuildContext, ProviderInstance,
-    ProviderInstanceRegistry, ProviderKindRegistry,
+    ApiAdapterRegistry, DynamicProvider, ProviderApiModule, ProviderBuildContext, ProviderInstance,
+    ProviderInstanceRegistry, ProviderKindRegistry, build_provider_instance,
 };
 use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
@@ -394,35 +394,10 @@ fn build_session_provider(
     } else {
         request.model.clone()
     };
-    let adapters = root
-        .require::<ApiAdapterRegistry>()
+    build_provider_instance(root, &instance.id)
         .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-    let http = root
-        .require::<dyn HttpClient>()
-        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-    let credential = match instance.auth_ref.as_deref() {
-        Some(auth_ref) => {
-            let store = root
-                .require::<dyn CredentialStore>()
-                .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-            Some(
-                store
-                    .read(auth_ref)
-                    .map_err(|error| AgentHostError::Runtime(error.to_string()))?,
-            )
-        }
-        None => None,
-    };
-    let provider = kind
-        .build(
-            &instance,
-            &ProviderBuildContext {
-                adapters,
-                http,
-                credential,
-            },
-        )
-        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    let provider: Arc<dyn ModelProvider> =
+        Arc::new(DynamicProvider::new(root.clone(), instance.id));
     Ok((provider, model))
 }
 

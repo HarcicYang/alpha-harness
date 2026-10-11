@@ -177,10 +177,10 @@ pub trait ModelProvider: Send + Sync + 'static {
     /// The default implementation calls [`ModelProvider::complete`] and emits
     /// the complete response as one or more chunks.
     fn stream(
-        &self,
+        self: Arc<Self>,
         request: CompletionRequest,
-    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
-        let completion = self.complete(request);
+    ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
+        let completion = async move { self.complete(request).await };
         Box::pin(
             futures::stream::once(completion).flat_map(|result| match result {
                 Ok(response) => {

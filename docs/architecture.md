@@ -475,6 +475,11 @@ surface. The core owns generated `auth_ref` values and removes credentials when
 an instance is removed. If keyring cleanup fails, the instance is still
 removed and the front reports the credential cleanup warning.
 
+Session loops hold a dynamic provider handle rather than a provider built once
+at session creation. Provider instance updates are therefore visible on the
+next model step, and a session does not need to be restarted for endpoint,
+header, or adapter changes.
+
 Provider instances are persisted under `[providers.instances.<id>]` in the
 user configuration file. Writes use last-write-wins with atomic rename; the
 in-memory registry is updated after a successful write.

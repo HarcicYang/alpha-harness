@@ -135,7 +135,7 @@ async fn sends_chat_completion_requests_and_parses_text() {
 #[tokio::test]
 async fn rejects_error_statuses_and_malformed_bodies() {
     let (_fake, http) = client_with(500, json!({ "error": { "message": "boom" } }));
-    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let error = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
@@ -151,7 +151,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
         headers: BTreeMap::new(),
         body: b"not json".to_vec(),
     });
-    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let error = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
@@ -187,7 +187,7 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
         .into_bytes(),
     };
     let (fake, http) = client_raw(response);
-    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let completion = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
@@ -249,7 +249,7 @@ async fn streams_text_deltas_and_requests_streaming_mode() {
         headers: BTreeMap::new(),
         body: body.as_bytes().to_vec(),
     });
-    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let chunks: Vec<Result<CompletionChunk, _>> = provider
         .stream(CompletionRequest {
             model: "stream-model".to_owned(),
@@ -286,7 +286,7 @@ async fn accumulates_tool_call_deltas_split_across_network_chunks() {
         chunks,
     });
     let http: Arc<dyn HttpClient> = raw.clone();
-    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let chunks: Vec<CompletionChunk> = provider
         .stream(CompletionRequest {
             model: "stream-model".to_owned(),
@@ -326,7 +326,7 @@ async fn rejects_malformed_stream_events() {
         headers: BTreeMap::new(),
         body: b"data: {not-json}\n\n".to_vec(),
     });
-    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let error = provider
         .stream(CompletionRequest {
             model: "stream-model".to_owned(),

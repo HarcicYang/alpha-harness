@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,7 +14,9 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde_json::{Value, json};
 
-struct FakeOpenAiHttp;
+struct FakeOpenAiHttp {
+    requests: Mutex<Vec<HttpRequest>>,
+}
 
 impl HttpClient for FakeOpenAiHttp {
     fn request(&self, _request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, HttpError>> {
@@ -29,8 +31,12 @@ impl HttpClient for FakeOpenAiHttp {
 
     fn request_stream(
         &self,
-        _request: HttpRequest,
+        request: HttpRequest,
     ) -> BoxFuture<'_, Result<HttpResponseStream, HttpError>> {
+        self.requests
+            .lock()
+            .expect("request lock poisoned")
+            .push(request);
         Box::pin(async move {
             let chunks = vec![
                 b"data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\n".to_vec(),
@@ -63,6 +69,10 @@ fn core_protocol_runs_a_turn_through_a_configured_provider() {
     let config = tempfile::tempdir().expect("config");
     let workspace = tempfile::tempdir().expect("workspace");
     let credential: Arc<dyn CredentialStore> = Arc::new(MemoryCredentialStore::default());
+    let http = Arc::new(FakeOpenAiHttp {
+        requests: Mutex::new(Vec::new()),
+    });
+    let server_http = http.clone();
     let server_thread = thread::spawn(move || {
         let mut server_reader = server_reader;
         serve_protocol_with_options(
@@ -71,7 +81,7 @@ fn core_protocol_runs_a_turn_through_a_configured_provider() {
             SessionStore::new(state.path()),
             CoreRuntimeOptions {
                 credential: Some(credential),
-                http: Some(Arc::new(FakeOpenAiHttp)),
+                http: Some(server_http),
                 provider_config_path: Some(config.path().join("config.toml")),
             },
         )
@@ -159,6 +169,68 @@ fn core_protocol_runs_a_turn_through_a_configured_provider() {
         }
     }
     assert_eq!(streamed, "hello from fake");
+
+    let listed = connection
+        .request("provider.list_instances", None)
+        .expect("list providers");
+    let mut updated = listed
+        .as_array()
+        .and_then(|instances| instances.first())
+        .cloned()
+        .expect("provider instance");
+    updated["config"]["base_url"] = json!("http://fake/v2");
+    connection
+        .request("provider.update_instance", Some(updated))
+        .expect("update provider");
+    connection
+        .request(
+            "session.submit",
+            Some(json!({ "sessionId": session_id, "prompt": "hello again" })),
+        )
+        .expect("submit second turn");
+    let mut second = String::new();
+    let second_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            Instant::now() < second_deadline,
+            "second turn did not finish"
+        );
+        match connection
+            .recv_timeout(Duration::from_millis(100))
+            .expect("connection event")
+        {
+            Some(ConnectionEvent::Notification(notification))
+                if notification.method == "session.event" =>
+            {
+                let params = notification.params.unwrap_or(Value::Null);
+                if params["kind"] == "live"
+                    && params["event"]["type"] == "text_delta"
+                    && let Some(text) = params["event"]["text"].as_str()
+                {
+                    second.push_str(text);
+                }
+                if params["kind"] == "durable" && params["event"]["payload"]["type"] == "turn_ended"
+                {
+                    break;
+                }
+            }
+            Some(ConnectionEvent::Request(request)) => {
+                connection
+                    .respond(request.id, Ok(json!({ "decision": "deny" })))
+                    .expect("deny interaction");
+            }
+            Some(ConnectionEvent::Closed(error)) => panic!("core closed: {error}"),
+            _ => {}
+        }
+    }
+    assert_eq!(second, "hello from fake");
+    let requests = http.requests.lock().expect("request lock poisoned");
+    assert!(
+        requests
+            .get(1)
+            .is_some_and(|request| request.url.contains("/v2/"))
+    );
+    drop(requests);
     connection
         .request("body.shutdown", None)
         .expect("shutdown core");

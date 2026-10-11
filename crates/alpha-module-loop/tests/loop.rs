@@ -119,9 +119,9 @@ impl ModelProvider for StreamingProvider {
     }
 
     fn stream(
-        &self,
+        self: Arc<Self>,
         request: CompletionRequest,
-    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+    ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
         self.requests.lock().expect("request lock").push(request);
         let chunks = self
             .streams
@@ -358,7 +358,7 @@ async fn streamed_tool_call_fragments_are_assembled() {
 
 #[tokio::test]
 async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
-    let provider = EchoProvider::default();
+    let provider = Arc::new(EchoProvider::default());
     let chunks: Vec<CompletionChunk> = provider
         .stream(CompletionRequest {
             model: "echo".to_owned(),

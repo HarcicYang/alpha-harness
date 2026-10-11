@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use alpha_kernel::Ctx;
 use alpha_module_agent_host::{
-    AgentHostError, AgentHostService, CreateSessionRequest, SessionRuntime,
-    SessionRuntimeFactory, SessionRuntimeRequest,
+    AgentHostError, AgentHostService, CreateSessionRequest, SessionRuntime, SessionRuntimeFactory,
+    SessionRuntimeRequest,
 };
 use alpha_module_loop::{AgentDriver, LoopError, TurnOutcome};
 use alpha_module_session::{

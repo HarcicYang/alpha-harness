@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
+use alpha_module_credential::CredentialStore;
 use alpha_module_http::HttpClient;
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
@@ -384,12 +385,108 @@ impl ModelProvider for AdapterProvider {
     }
 
     fn stream(
-        &self,
+        self: Arc<Self>,
         request: CompletionRequest,
-    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+    ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
         let adapter_request = self.adapter_request(request);
         let adapter = self.adapter_for(&adapter_request.model);
         adapter.stream(self.client.clone(), adapter_request)
+    }
+}
+
+/// Resolve one configured provider instance.
+pub fn resolve_provider_instance(
+    root: &Ctx,
+    instance_id: &str,
+) -> Result<ProviderInstance, ProviderError> {
+    let instances = root
+        .require::<ProviderInstanceRegistry>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    instances.get(instance_id).ok_or_else(|| {
+        ProviderError::Request(format!(
+            "provider instance `{instance_id}` is not configured"
+        ))
+    })
+}
+
+/// Build a model provider from the current provider instance state.
+pub fn build_provider_instance(
+    root: &Ctx,
+    instance_id: &str,
+) -> Result<Arc<dyn ModelProvider>, ProviderError> {
+    let instance = resolve_provider_instance(root, instance_id)?;
+    let kinds = root
+        .require::<ProviderKindRegistry>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    let kind = kinds.get(&instance.kind).ok_or_else(|| {
+        ProviderError::Request(format!("provider kind `{}` is missing", instance.kind))
+    })?;
+    let adapters = root
+        .require::<ApiAdapterRegistry>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    let http = root
+        .require::<dyn HttpClient>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    let credential = match instance.auth_ref.as_deref() {
+        Some(auth_ref) => {
+            let store = root
+                .require::<dyn CredentialStore>()
+                .map_err(|error| ProviderError::Request(error.to_string()))?;
+            Some(
+                store
+                    .read(auth_ref)
+                    .map_err(|error| ProviderError::Request(error.to_string()))?,
+            )
+        }
+        None => None,
+    };
+    kind.build(
+        &instance,
+        &ProviderBuildContext {
+            adapters,
+            http,
+            credential,
+        },
+    )
+    .map_err(|error| ProviderError::Request(error.to_string()))
+}
+
+/// Provider wrapper that rebuilds from the current registry on each request.
+pub struct DynamicProvider {
+    root: Ctx,
+    instance_id: String,
+}
+
+impl DynamicProvider {
+    /// Create a dynamic provider for one instance id.
+    pub fn new(root: Ctx, instance_id: impl Into<String>) -> Self {
+        Self {
+            root,
+            instance_id: instance_id.into(),
+        }
+    }
+}
+
+impl ModelProvider for DynamicProvider {
+    fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> BoxFuture<'_, Result<CompletionResponse, ProviderError>> {
+        let provider = match build_provider_instance(&self.root, &self.instance_id) {
+            Ok(provider) => provider,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+        Box::pin(async move { provider.complete(request).await })
+    }
+
+    fn stream(
+        self: Arc<Self>,
+        request: CompletionRequest,
+    ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
+        match build_provider_instance(&self.root, &self.instance_id) {
+            Ok(provider) => provider.stream(request),
+            Err(error) => Box::pin(futures::stream::iter(vec![Err(error)])),
+        }
     }
 }
 

@@ -117,9 +117,9 @@ impl ModelProvider for OpenAiProvider {
     }
 
     fn stream(
-        &self,
+        self: Arc<Self>,
         request: CompletionRequest,
-    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+    ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
         let body = match self.request_body(&request, true) {
             Ok(body) => body,
             Err(error) => return Box::pin(futures::stream::iter(vec![Err(error)])),
