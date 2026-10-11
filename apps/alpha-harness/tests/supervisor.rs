@@ -33,9 +33,18 @@ fn supervisor_reports_startup_attempts() {
 #[test]
 fn core_exposes_provider_registry_methods() {
     let executable = env!("CARGO_BIN_EXE_alpha");
-    let mut supervisor =
-        CoreSupervisor::start_with_executable(executable, SupervisorConfig::default())
-            .expect("start core");
+    let config_home = tempfile::tempdir().expect("temporary config home");
+    let mut supervisor = CoreSupervisor::start_with_executable(
+        executable,
+        SupervisorConfig {
+            environment: vec![(
+                "XDG_CONFIG_HOME".into(),
+                config_home.path().as_os_str().to_owned(),
+            )],
+            ..SupervisorConfig::default()
+        },
+    )
+    .expect("start core");
 
     let kinds = supervisor
         .request("provider.list_kinds", None)

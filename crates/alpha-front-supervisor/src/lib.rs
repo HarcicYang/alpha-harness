@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::ffi::OsString;
 use std::fmt;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -13,12 +14,14 @@ use alpha_protocol::{Id, RpcError};
 use serde_json::json;
 
 /// Core startup and retry configuration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupervisorConfig {
     /// Additional attempts after the initial attempt.
     pub retries: usize,
     /// Grace period before a core is forcibly terminated.
     pub shutdown_grace: Duration,
+    /// Environment variables applied to each core process.
+    pub environment: Vec<(OsString, OsString)>,
 }
 
 impl Default for SupervisorConfig {
@@ -26,6 +29,7 @@ impl Default for SupervisorConfig {
         Self {
             retries: 3,
             shutdown_grace: Duration::from_secs(2),
+            environment: Vec::new(),
         }
     }
 }
@@ -86,7 +90,7 @@ impl CoreSupervisor {
         let attempts = config.retries.saturating_add(1);
         let mut last_error = String::new();
         for _ in 0..attempts {
-            match Self::start_once(executable.as_ref(), config) {
+            match Self::start_once(executable.as_ref(), &config) {
                 Ok(supervisor) => return Ok(supervisor),
                 Err(error) => last_error = error.to_string(),
             }
@@ -152,7 +156,7 @@ impl CoreSupervisor {
         let attempts = self.config.retries.saturating_add(1);
         let mut last_error = String::new();
         for _ in 0..attempts {
-            match Self::start_once(&self.executable, self.config) {
+            match Self::start_once(&self.executable, &self.config) {
                 Ok(replacement) => {
                     let previous = std::mem::replace(self, replacement);
                     drop(previous);
@@ -167,10 +171,13 @@ impl CoreSupervisor {
         })
     }
 
-    fn start_once(executable: &Path, config: SupervisorConfig) -> Result<Self, SupervisorError> {
-        let mut child = Command::new(executable)
-            .arg("__core")
-            .arg("--stdio")
+    fn start_once(executable: &Path, config: &SupervisorConfig) -> Result<Self, SupervisorError> {
+        let mut command = Command::new(executable);
+        command.arg("__core").arg("--stdio");
+        for (key, value) in &config.environment {
+            command.env(key, value);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -196,7 +203,7 @@ impl CoreSupervisor {
             child,
             connection,
             info,
-            config,
+            config: config.clone(),
             executable: executable.to_path_buf(),
         })
     }
