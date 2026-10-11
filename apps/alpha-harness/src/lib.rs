@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
+use alpha_module_credential::{CredentialConfig, CredentialModule};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
 use alpha_module_loop::{AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
@@ -259,6 +260,7 @@ fn activate_core_modules(
     approval: Option<Arc<dyn ApprovalChannel>>,
     audit: Arc<CollectingAuditSink>,
 ) -> Result<(), RunError> {
+    CredentialModule.activate(ctx, &CredentialConfig::default())?;
     FsLocalModule.activate(
         ctx,
         &FsConfig {

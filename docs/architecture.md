@@ -419,6 +419,21 @@ restart the core process and restore durable session state only; an
 interrupted turn is never replayed automatically. The hidden core command is
 available for manual debugging but is not a supported user workflow.
 
+### D26: Credential storage
+
+Provider secrets are stored only through the credential module. The module
+exposes one `CredentialStore` service over platform keyring backends:
+Secret Service on Linux, Keychain on macOS, and Credential Manager on Windows.
+Tests use an in-memory backend.
+
+Provider instances store only an opaque `auth_ref`. They never store secret
+values, environment-variable names, or platform-specific credential details.
+If the keyring backend is unavailable, credential operations fail closed and
+the front reports `keyring_unavailable`; there is no plaintext-file fallback.
+
+The workspace MSRV is Rust 1.88 so the credential stack can use
+`keyring-core` with platform-specific store crates.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,
@@ -455,6 +470,7 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |
+| `alpha-module-credential` | cross-platform keyring-backed credential storage |
 | `alpha-module-prompt` | deterministic system-prompt assembly and project instructions |
 | `alpha-module-compaction` | budget estimation and durable context compaction |
 | `alpha-module-session` | append-only session log, projections, migrations |

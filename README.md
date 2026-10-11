@@ -14,6 +14,8 @@ live in [docs/architecture.md](docs/architecture.md).
 cargo build --release
 ```
 
+The workspace requires Rust 1.88 or newer.
+
 ## Run one prompt
 
 ```sh
