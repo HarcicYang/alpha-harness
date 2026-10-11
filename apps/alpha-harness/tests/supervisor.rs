@@ -86,3 +86,29 @@ fn supervisor_restarts_a_crashed_core_without_replaying_turns() {
     assert_eq!(pong["pong"], serde_json::json!(true));
     supervisor.shutdown().expect("shutdown core");
 }
+
+#[test]
+fn independent_supervisors_run_in_parallel() {
+    let executable = env!("CARGO_BIN_EXE_alpha");
+    let mut first = CoreSupervisor::start_with_executable(executable, SupervisorConfig::default())
+        .expect("start first core");
+    let mut second = CoreSupervisor::start_with_executable(executable, SupervisorConfig::default())
+        .expect("start second core");
+    assert_ne!(first.pid(), second.pid());
+    assert_eq!(
+        first.request("alpha.ping", None).expect("first ping")["pong"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        second.request("alpha.ping", None).expect("second ping")["pong"],
+        serde_json::json!(true)
+    );
+    first.shutdown().expect("shutdown first core");
+    assert_eq!(
+        second
+            .request("alpha.ping", None)
+            .expect("second ping again")["pong"],
+        serde_json::json!(true)
+    );
+    second.shutdown().expect("shutdown second core");
+}
