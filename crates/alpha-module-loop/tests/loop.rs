@@ -273,9 +273,7 @@ async fn stream_deltas_are_merged_into_one_durable_message() {
 
     let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = run_turn(&agent, &writer, &state, "hi")
-        .await
-        .expect("turn");
+    let outcome = run_turn(&agent, &writer, &state, "hi").await.expect("turn");
     assert_eq!(outcome.assistant_text, "hello");
     drop(writer);
 
