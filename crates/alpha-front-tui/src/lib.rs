@@ -62,6 +62,8 @@ pub struct ProviderView {
     pub auth_prompt: Option<AuthPrompt>,
     /// Active provider config editor.
     pub config_editor: Option<ConfigEditor>,
+    /// Instance waiting for delete confirmation.
+    pub confirm_remove: Option<String>,
     /// Credential backend status.
     pub credential_status: Option<CredentialStatusView>,
     /// Status or error line.
@@ -605,13 +607,19 @@ impl ProviderView {
         Ok(())
     }
 
-    fn remove_instance(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let Some(instance) = self.selected_instance() else {
-            return Err(TuiError::Protocol(
-                "no provider instance selected".to_owned(),
-            ));
+    fn begin_remove_instance(&mut self) -> Result<(), TuiError> {
+        let id = self
+            .selected_instance()
+            .map(|instance| instance.id.clone())
+            .ok_or_else(|| TuiError::Protocol("no provider instance selected".to_owned()))?;
+        self.confirm_remove = Some(id);
+        Ok(())
+    }
+
+    fn confirm_remove_instance(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+        let Some(id) = self.confirm_remove.take() else {
+            return Ok(());
         };
-        let id = instance.id.clone();
         let response = supervisor
             .request("provider.remove_instance", Some(json!({ "id": id })))
             .map_err(|error| TuiError::Protocol(error.to_string()))?;
@@ -924,6 +932,18 @@ fn handle_provider_key(
         }
         return Ok(());
     }
+    if app.providers.confirm_remove.is_some() {
+        match code {
+            KeyCode::Char('y') => {
+                if let Err(error) = app.providers.confirm_remove_instance(supervisor) {
+                    app.providers.status = Some(error.to_string());
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => app.providers.confirm_remove = None,
+            _ => {}
+        }
+        return Ok(());
+    }
     match code {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.screen = Screen::Chat;
@@ -947,7 +967,7 @@ fn handle_provider_key(
             }
         }
         KeyCode::Char('x') => {
-            if let Err(error) = app.providers.remove_instance(supervisor) {
+            if let Err(error) = app.providers.begin_remove_instance() {
                 app.providers.status = Some(error.to_string());
             }
         }
@@ -1448,6 +1468,9 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
     if let Some(editor) = &view.config_editor {
         draw_config_editor(frame, editor);
     }
+    if let Some(id) = &view.confirm_remove {
+        draw_remove_confirmation(frame, id);
+    }
 }
 
 fn draw_auth_prompt(frame: &mut ratatui::Frame<'_>, prompt: &AuthPrompt) {
@@ -1486,6 +1509,22 @@ fn draw_config_editor(frame: &mut ratatui::Frame<'_>, editor: &ConfigEditor) {
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title("Config JSON"))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_remove_confirmation(frame: &mut ratatui::Frame<'_>, instance_id: &str) {
+    let area = centered_rect(60, 7, frame.area());
+    frame.render_widget(Clear, area);
+    let text = Text::from(vec![
+        Line::from(format!("Remove provider instance `{instance_id}`?")),
+        Line::from(""),
+        Line::from("y confirm   n cancel"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(Block::default().borders(Borders::ALL).title("Confirm"))
             .wrap(Wrap { trim: false }),
         area,
     );

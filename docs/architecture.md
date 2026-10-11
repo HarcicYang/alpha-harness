@@ -430,9 +430,10 @@ The first TUI screen is a provider manager backed by `provider.list_kinds`,
 `provider.list_instances`, and `provider.credential_status`. It can create and
 remove instances, select the default instance, submit an API key through the
 credential module, validate an instance, edit the opaque provider config as
-schema-guided JSON, and refresh provider state. It uses a full-screen alternate
-terminal and starts and stops its own core process. Secrets are never returned
-by provider reads and never enter front state after submission.
+schema-guided JSON, refresh provider state, and confirm destructive removal.
+It uses a full-screen alternate terminal and starts and stops its own core
+process. Secrets are never returned by provider reads and never enter front
+state after submission.
 
 ### D26: Credential storage
 
