@@ -9,7 +9,9 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
-use alpha_module_loop::{AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
+use alpha_module_loop::{
+    AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry, TurnObserver,
+};
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
     PermissionConfig, PermissionModule,
@@ -18,7 +20,7 @@ use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
-    WorkspaceRef,
+    ToolStatus, WorkspaceRef,
 };
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
@@ -169,6 +171,7 @@ pub fn compose_openai_runtime(
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
+    provide_observer(&ctx)?;
     let agent = activate_loop(&ctx, PROVIDER_NAME, model)?;
     Ok(Composition { ctx, agent, audit })
 }
@@ -197,6 +200,7 @@ pub fn compose_openai_runtime_with_http(
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
+    provide_observer(&ctx)?;
     let agent = activate_loop(&ctx, PROVIDER_NAME, model)?;
     Ok(Composition { ctx, agent, audit })
 }
@@ -247,6 +251,44 @@ fn provide_provider_registry(ctx: &Ctx) -> Result<(), RunError> {
     Ok(())
 }
 
+fn provide_observer(ctx: &Ctx) -> Result<(), RunError> {
+    ctx.provide::<dyn TurnObserver>(Arc::new(StderrObserver))
+        .map_err(|error| RunError::Service(error.to_string()))?;
+    Ok(())
+}
+
+/// Reports turn progress on stderr.
+struct StderrObserver;
+
+impl TurnObserver for StderrObserver {
+    fn step_started(&self, step: usize) {
+        eprintln!("alpha run: step {step}: calling model...");
+    }
+
+    fn tool_started(&self, name: &str, input: &Value) {
+        let preview = serde_json::to_string(input).unwrap_or_default();
+        eprintln!("alpha run: -> {name} {}", snippet(&preview, 160));
+    }
+
+    fn tool_finished(&self, name: &str, status: ToolStatus, content: &str) {
+        let label = match status {
+            ToolStatus::Completed => "ok",
+            ToolStatus::Failed => "failed",
+            ToolStatus::Interrupted => "interrupted",
+        };
+        let first_line = content.lines().next().unwrap_or_default();
+        eprintln!("alpha run: <- {name} {label}: {}", snippet(first_line, 120));
+    }
+}
+
+fn snippet(text: &str, max_chars: usize) -> String {
+    let mut output: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
+}
+
 fn activate_core_modules(
     ctx: &Ctx,
     workspace: &Path,
@@ -291,6 +333,7 @@ fn activate_loop(ctx: &Ctx, provider: &str, model: &str) -> Result<Arc<dyn Agent
         &LoopConfig {
             provider: provider.to_owned(),
             model: model.to_owned(),
+            ..LoopConfig::default()
         },
     )?;
     ctx.require::<dyn AgentDriver>()

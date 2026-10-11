@@ -13,19 +13,36 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
-pub use agent::{AgentDriver, AgentLoop, LoopError, TurnOutcome};
+pub use agent::{AgentDriver, AgentLoop, LoopError, TurnObserver, TurnOutcome};
 pub use provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError,
     ProviderRegistry, RegistryError, ToolCall, ToolDefinition,
 };
 
 /// Configuration for the default loop module.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct LoopConfig {
     /// Provider name resolved from the registry.
     pub provider: String,
     /// Model identifier.
     pub model: String,
+    /// Maximum model steps in one turn.
+    #[serde(default = "default_max_steps")]
+    pub max_steps: usize,
+}
+
+fn default_max_steps() -> usize {
+    24
+}
+
+impl Default for LoopConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            max_steps: default_max_steps(),
+        }
+    }
 }
 
 /// Registers the provider registry and the default agent loop.
@@ -57,9 +74,13 @@ impl Module for LoopModule {
                 format!("provider `{}` is not registered", config.provider),
             )
         })?;
-        let mut agent = AgentLoop::new(provider, config.model.clone());
+        let mut agent =
+            AgentLoop::new(provider, config.model.clone()).with_max_steps(config.max_steps);
         if let Some(tools) = ctx.get::<alpha_module_tools::ToolRegistry>() {
             agent = agent.with_tools(tools);
+        }
+        if let Some(observer) = ctx.get::<dyn TurnObserver>() {
+            agent = agent.with_observer(observer);
         }
         let agent = Arc::new(agent);
         ctx.provide::<dyn AgentDriver>(agent.clone())

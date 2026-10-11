@@ -147,7 +147,6 @@ fn run_command(args: RunArgs) -> ExitCode {
             args.model,
             workspace.display()
         );
-        eprintln!("alpha run: waiting for the model...");
         let result = runtime.block_on(async move {
             let composition = compose_openai_runtime(
                 &workspace,
@@ -210,8 +209,6 @@ fn run_command(args: RunArgs) -> ExitCode {
         args.model,
         workspace.display()
     );
-    eprintln!("alpha run: waiting for the model...");
-
     let result = runtime.block_on(async move {
         let composition = compose_openai_runtime(
             &workspace,

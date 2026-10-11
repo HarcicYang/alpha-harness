@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{
     AgentLoop, ChatMessage, CompletionRequest, CompletionResponse, LoopConfig, LoopModule,
-    ModelProvider, ProviderError, ProviderRegistry, ToolCall,
+    ModelProvider, ProviderError, ProviderRegistry, ToolCall, TurnObserver,
 };
 use alpha_module_session::{
     SessionEvent, SessionHeader, SessionState, SessionStore, ToolStatus, TurnEndReason,
@@ -89,6 +89,33 @@ impl ModelProvider for ScriptedProvider {
 
 struct NoteTool {
     seen: Arc<Mutex<Vec<String>>>,
+}
+
+struct CollectingObserver {
+    events: Mutex<Vec<String>>,
+}
+
+impl TurnObserver for CollectingObserver {
+    fn step_started(&self, step: usize) {
+        self.events
+            .lock()
+            .expect("events lock")
+            .push(format!("step:{step}"));
+    }
+
+    fn tool_started(&self, name: &str, _input: &Value) {
+        self.events
+            .lock()
+            .expect("events lock")
+            .push(format!("start:{name}"));
+    }
+
+    fn tool_finished(&self, name: &str, status: ToolStatus, _content: &str) {
+        self.events
+            .lock()
+            .expect("events lock")
+            .push(format!("finish:{name}:{status:?}"));
+    }
 }
 
 impl Tool for NoteTool {
@@ -288,6 +315,94 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
     )));
 }
 
+#[tokio::test]
+async fn step_limit_wraps_up_without_tools() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        CompletionResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-1".to_owned(),
+                name: "write_note".to_owned(),
+                arguments: json!({ "value": "x" }),
+            }],
+        },
+        CompletionResponse {
+            text: "wrapped up".to_owned(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .register(Arc::new(NoteTool {
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }))
+        .expect("register");
+    let agent = AgentLoop::new(provider.clone(), "scripted")
+        .with_tools(registry)
+        .with_max_steps(1);
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    let outcome = agent
+        .run_turn(&mut writer, &state, "do it")
+        .await
+        .expect("wrap up");
+    assert_eq!(outcome.assistant_text, "wrapped up");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].tools.is_empty());
+}
+
+#[tokio::test]
+async fn observer_reports_steps_and_tools() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        CompletionResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-2".to_owned(),
+                name: "write_note".to_owned(),
+                arguments: json!({ "value": "y" }),
+            }],
+        },
+        CompletionResponse {
+            text: "done".to_owned(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .register(Arc::new(NoteTool {
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }))
+        .expect("register");
+    let observer = Arc::new(CollectingObserver {
+        events: Mutex::new(Vec::new()),
+    });
+    let agent = AgentLoop::new(provider, "scripted")
+        .with_tools(registry)
+        .with_observer(observer.clone());
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    agent
+        .run_turn(&mut writer, &state, "do it")
+        .await
+        .expect("turn");
+
+    let events = observer.events.lock().expect("events lock");
+    assert!(events.contains(&"step:1".to_owned()));
+    assert!(events.contains(&"start:write_note".to_owned()));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("finish:write_note:"))
+    );
+    assert!(events.contains(&"step:2".to_owned()));
+}
+
 #[test]
 fn loop_module_registers_the_agent_loop() {
     let ctx = Ctx::root();
@@ -303,6 +418,7 @@ fn loop_module_registers_the_agent_loop() {
             &LoopConfig {
                 provider: "echo".to_owned(),
                 model: "echo-model".to_owned(),
+                ..LoopConfig::default()
             },
         )
         .expect("activate");
@@ -321,6 +437,7 @@ fn loop_module_rejects_missing_providers() {
             &LoopConfig {
                 provider: "missing".to_owned(),
                 model: "echo-model".to_owned(),
+                ..LoopConfig::default()
             },
         )
         .expect_err("missing provider");

@@ -9,13 +9,14 @@ use alpha_module_session::{
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
 use alpha_schema::{MessageId, ToolCallId};
 use futures::future::BoxFuture;
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::provider::{
     ChatMessage, CompletionRequest, ModelProvider, ProviderError, ToolCall, ToolDefinition,
 };
 
-const MAX_STEPS: usize = 8;
+const DEFAULT_MAX_STEPS: usize = 24;
 
 /// Loop failure.
 #[derive(Debug, Error)]
@@ -49,6 +50,8 @@ pub struct AgentLoop {
     provider: Arc<dyn ModelProvider>,
     model: String,
     tools: Option<Arc<ToolRegistry>>,
+    observer: Option<Arc<dyn TurnObserver>>,
+    max_steps: usize,
 }
 
 impl AgentLoop {
@@ -58,7 +61,21 @@ impl AgentLoop {
             provider,
             model: model.into(),
             tools: None,
+            observer: None,
+            max_steps: DEFAULT_MAX_STEPS,
         }
+    }
+
+    /// Override the maximum number of model steps in one turn.
+    pub fn with_max_steps(mut self, max_steps: usize) -> Self {
+        self.max_steps = max_steps.max(1);
+        self
+    }
+
+    /// Attach a progress observer.
+    pub fn with_observer(mut self, observer: Arc<dyn TurnObserver>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// Attach a tool registry.
@@ -106,7 +123,10 @@ impl AgentLoop {
         let mut last_text = String::new();
         let mut last_message_id: Option<MessageId> = None;
 
-        for _ in 0..MAX_STEPS {
+        for step in 0..self.max_steps {
+            if let Some(observer) = &self.observer {
+                observer.step_started(step + 1);
+            }
             let request = CompletionRequest {
                 model: self.model.clone(),
                 messages: messages.clone(),
@@ -169,10 +189,34 @@ impl AgentLoop {
             }
         }
 
-        writer.append(SessionEvent::TurnEnded {
-            reason: TurnEndReason::Failed,
-        })?;
-        Err(LoopError::StepLimit(MAX_STEPS))
+        // Wrap up without tools so the user still gets a summary.
+        let request = CompletionRequest {
+            model: self.model.clone(),
+            messages: messages.clone(),
+            tools: Vec::new(),
+        };
+        match self.provider.complete(request).await {
+            Ok(response) if !response.text.is_empty() => {
+                let assistant_id = MessageId::new();
+                writer.append(SessionEvent::AssistantMessage {
+                    id: assistant_id,
+                    text: response.text.clone(),
+                })?;
+                writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Completed,
+                })?;
+                Ok(TurnOutcome {
+                    assistant_message: assistant_id,
+                    assistant_text: response.text,
+                })
+            }
+            _ => {
+                writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Failed,
+                })?;
+                Err(LoopError::StepLimit(self.max_steps))
+            }
+        }
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -207,6 +251,10 @@ impl AgentLoop {
             input: call.arguments.clone(),
         })?;
 
+        if let Some(observer) = &self.observer {
+            observer.tool_started(&call.name, &call.arguments);
+        }
+
         let outcome = match &self.tools {
             Some(registry) => match registry.get(&call.name) {
                 Some(tool) => {
@@ -228,6 +276,9 @@ impl AgentLoop {
                 return Err(LoopError::Tool(message));
             }
         };
+        if let Some(observer) = &self.observer {
+            observer.tool_finished(&call.name, status, &content);
+        }
         writer.append(SessionEvent::ToolResult {
             id: call_id,
             status,
@@ -239,6 +290,16 @@ impl AgentLoop {
         });
         Ok(())
     }
+}
+
+/// Progress observer for one turn. Implementations must not block.
+pub trait TurnObserver: Send + Sync + 'static {
+    /// A model step is about to start.
+    fn step_started(&self, step: usize);
+    /// A tool call is about to execute.
+    fn tool_started(&self, name: &str, input: &Value);
+    /// A tool call settled.
+    fn tool_finished(&self, name: &str, status: ToolStatus, content: &str);
 }
 
 /// Replaceable driver contract for one agent turn.
