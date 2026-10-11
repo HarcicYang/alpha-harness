@@ -13,6 +13,7 @@ alpha-front-client.workspace = true
 alpha-front-supervisor.workspace = true
 alpha-protocol.workspace = true
 alpha-provider-api.workspace = true
+alpha-schema.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true

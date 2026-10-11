@@ -10,6 +10,7 @@ use alpha_front_client::ConnectionEvent;
 use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
 use alpha_protocol::{Id, Request};
 use alpha_provider_api::{ProviderDescriptor, ProviderInstance};
+use alpha_schema::PermissionMode;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -121,6 +122,10 @@ pub struct ChatView {
     pub running_turn: Option<String>,
     /// Pending approval or other interaction.
     pub interaction: Option<InteractionPrompt>,
+    /// Provider instance or kind used for new sessions.
+    pub provider: String,
+    /// Model used for new sessions.
+    pub model: String,
 }
 
 impl ChatView {
@@ -136,8 +141,8 @@ impl ChatView {
                     "workspace": workspace,
                     "cwd": workspace,
                     "mode": "auto",
-                    "provider": "",
-                    "model": "",
+                    "provider": self.provider,
+                    "model": self.model,
                 })),
             )
             .map_err(|error| TuiError::Protocol(error.to_string()))?;
@@ -151,6 +156,64 @@ impl ChatView {
             ));
         }
         self.status = Some("session ready".to_owned());
+        Ok(())
+    }
+
+    fn new_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+        self.session_id = None;
+        self.transcript.clear();
+        self.streaming_assistant = None;
+        self.running_turn = None;
+        self.interaction = None;
+        self.ensure_session(supervisor)
+    }
+
+    fn resume_session(
+        &mut self,
+        supervisor: &mut CoreSupervisor,
+        session_id: &str,
+    ) -> Result<(), TuiError> {
+        let session_id = session_id
+            .parse::<alpha_schema::SessionId>()
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        let resumed = supervisor
+            .request("session.resume", Some(json!({ "sessionId": session_id })))
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.session_id = Some(session_id.to_string());
+        self.transcript.clear();
+        self.streaming_assistant = None;
+        self.running_turn = None;
+        supervisor
+            .request(
+                "session.attach",
+                Some(json!({ "sessionId": session_id, "afterSeq": 0 })),
+            )
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.status = Some(format!(
+            "resumed {session_id} ({} messages)",
+            resumed
+                .get("messages")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        ));
+        Ok(())
+    }
+
+    fn set_mode(
+        &mut self,
+        supervisor: &mut CoreSupervisor,
+        mode: PermissionMode,
+    ) -> Result<(), TuiError> {
+        let Some(session_id) = &self.session_id else {
+            return Err(TuiError::Protocol("no active session".to_owned()));
+        };
+        supervisor
+            .request(
+                "session.set_mode",
+                Some(json!({ "sessionId": session_id, "mode": mode })),
+            )
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.status = Some(format!("mode: {mode}"));
         Ok(())
     }
 
@@ -377,6 +440,15 @@ struct App {
     chat: ChatView,
     providers: ProviderView,
     screen: Screen,
+    palette: Option<String>,
+    session_picker: Option<SessionPicker>,
+    help: bool,
+    quit: bool,
+}
+
+struct SessionPicker {
+    sessions: Vec<Value>,
+    selected: usize,
 }
 
 impl ProviderView {
@@ -611,6 +683,10 @@ pub fn run_tui() -> Result<(), TuiError> {
         chat: ChatView::default(),
         providers: ProviderView::default(),
         screen: Screen::Providers,
+        palette: None,
+        session_picker: None,
+        help: false,
+        quit: false,
     };
     app.providers.refresh(&mut supervisor)?;
     if !app.providers.instances.is_empty() {
@@ -646,10 +722,27 @@ fn run_loop(
                     {
                         return Ok(());
                     }
+                    if app.help {
+                        if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                            app.help = false;
+                        }
+                        continue;
+                    }
+                    if app.session_picker.is_some() {
+                        handle_session_picker_key(app, supervisor, key.code)?;
+                        continue;
+                    }
+                    if app.palette.is_some() {
+                        handle_palette_key(app, supervisor, key.code, key.modifiers)?;
+                        continue;
+                    }
                     if app.screen == Screen::Providers {
                         handle_provider_key(app, supervisor, key.code, key.modifiers)?;
                     } else {
                         handle_chat_key(app, supervisor, key.code, key.modifiers)?;
+                    }
+                    if app.quit {
+                        return Ok(());
                     }
                 }
                 Event::Resize(_, _) => {}
@@ -779,8 +872,124 @@ fn handle_chat_key(
         KeyCode::Backspace => {
             app.chat.composer.pop();
         }
+        KeyCode::Char(':') => {
+            app.palette = Some(String::new());
+        }
         KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
             app.chat.composer.push(character);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_palette_key(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<(), TuiError> {
+    match code {
+        KeyCode::Esc => app.palette = None,
+        KeyCode::Enter => {
+            let command = app.palette.take().unwrap_or_default();
+            execute_palette_command(app, supervisor, &command)?;
+        }
+        KeyCode::Backspace => {
+            if let Some(palette) = &mut app.palette {
+                palette.pop();
+            }
+        }
+        KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(palette) = &mut app.palette {
+                palette.push(character);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn execute_palette_command(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    command: &str,
+) -> Result<(), TuiError> {
+    let command = command.trim();
+    let (name, argument) = command
+        .split_once(char::is_whitespace)
+        .map_or((command, ""), |(name, argument)| (name, argument.trim()));
+    match name {
+        "provider" if argument.is_empty() => {
+            app.screen = Screen::Providers;
+            app.providers.refresh(supervisor)?;
+        }
+        "provider" => {
+            app.chat.provider = argument.to_owned();
+            app.chat.status = Some(format!("provider: {argument}"));
+        }
+        "model" if !argument.is_empty() => {
+            app.chat.model = argument.to_owned();
+            app.chat.status = Some(format!("model: {argument}"));
+        }
+        "mode" => {
+            let mode = argument
+                .parse::<PermissionMode>()
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+            app.chat.set_mode(supervisor, mode)?;
+        }
+        "new" => {
+            app.chat.new_session(supervisor)?;
+            app.screen = Screen::Chat;
+        }
+        "resume" if !argument.is_empty() => {
+            app.chat.resume_session(supervisor, argument)?;
+            app.screen = Screen::Chat;
+        }
+        "sessions" => {
+            let sessions = supervisor
+                .request("session.list", None)
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+            let sessions = sessions.as_array().cloned().unwrap_or_default();
+            app.session_picker = Some(SessionPicker {
+                sessions,
+                selected: 0,
+            });
+        }
+        "help" => app.help = true,
+        "quit" => app.quit = true,
+        "" => {}
+        other => app.chat.status = Some(format!("unknown command: {other}")),
+    }
+    Ok(())
+}
+
+fn handle_session_picker_key(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    code: KeyCode,
+) -> Result<(), TuiError> {
+    let Some(picker) = &mut app.session_picker else {
+        return Ok(());
+    };
+    match code {
+        KeyCode::Esc => app.session_picker = None,
+        KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
+        KeyCode::Down => {
+            picker.selected = picker
+                .selected
+                .saturating_add(1)
+                .min(picker.sessions.len().saturating_sub(1));
+        }
+        KeyCode::Enter => {
+            let selected = picker.sessions.get(picker.selected).cloned();
+            if let Some(session) = selected {
+                if let Some(id) = session.get("id").and_then(Value::as_str) {
+                    app.chat.resume_session(supervisor, id)?;
+                    app.screen = Screen::Chat;
+                }
+            }
+            app.session_picker = None;
         }
         _ => {}
     }
@@ -791,6 +1000,15 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &App) {
     match app.screen {
         Screen::Chat => draw_chat_screen(frame, &app.chat),
         Screen::Providers => draw_provider_screen(frame, &app.providers),
+    }
+    if let Some(picker) = &app.session_picker {
+        draw_session_picker(frame, picker);
+    }
+    if app.help {
+        draw_help(frame);
+    }
+    if let Some(palette) = &app.palette {
+        draw_palette(frame, palette);
     }
     if let Some(prompt) = &app.chat.interaction {
         draw_interaction_prompt(frame, prompt);
@@ -864,6 +1082,69 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         layout[3],
+    );
+}
+
+fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
+    let area = centered_rect(80, 18, frame.area());
+    frame.render_widget(Clear, area);
+    let items: Vec<ListItem<'_>> = if picker.sessions.is_empty() {
+        vec![ListItem::new("No stored sessions")]
+    } else {
+        picker
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+                let marker = if index == picker.selected { ">" } else { " " };
+                let id = session.get("id").and_then(Value::as_str).unwrap_or("?");
+                let workspace = session
+                    .get("workspace")
+                    .and_then(|workspace| workspace.get("root"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                ListItem::new(format!("{marker} {id}  {workspace}"))
+            })
+            .collect()
+    };
+    frame.render_widget(
+        List::new(items).block(Block::default().borders(Borders::ALL).title("Sessions")),
+        area,
+    );
+}
+
+fn draw_help(frame: &mut ratatui::Frame<'_>) {
+    let area = centered_rect(70, 16, frame.area());
+    frame.render_widget(Clear, area);
+    let text = Text::from(vec![
+        Line::from("Commands"),
+        Line::from(""),
+        Line::from(":provider [ID]   open provider manager or select provider"),
+        Line::from(":model MODEL     select model for new sessions"),
+        Line::from(":mode MODE       set read, auto, or free"),
+        Line::from(":new             create a new session"),
+        Line::from(":resume ID       resume a session"),
+        Line::from(":sessions        open the session picker"),
+        Line::from(":help            show this help"),
+        Line::from(":quit            exit"),
+        Line::from(""),
+        Line::from("Esc deny/cancel   Ctrl-C quit"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(Block::default().borders(Borders::ALL).title("Help"))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_palette(frame: &mut ratatui::Frame<'_>, palette: &str) {
+    let area = centered_rect(70, 3, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(format!(":{palette}"))
+            .block(Block::default().borders(Borders::ALL).title("Command")),
+        area,
     );
 }
 
