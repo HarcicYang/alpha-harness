@@ -145,6 +145,7 @@ dependencies = [
  "alpha-front-supervisor",
  "alpha-protocol",
  "alpha-provider-api",
+ "alpha-schema",
  "crossterm",
  "ratatui",
  "serde_json",

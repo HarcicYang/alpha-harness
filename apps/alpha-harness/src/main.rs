@@ -151,10 +151,7 @@ fn run_command(args: RunArgs) -> ExitCode {
     };
 
     let session_id = if let Some(session_id) = args.resume {
-        match supervisor.request(
-            "session.resume",
-            Some(json!({ "sessionId": session_id })),
-        ) {
+        match supervisor.request("session.resume", Some(json!({ "sessionId": session_id }))) {
             Ok(resumed) => {
                 eprintln!(
                     "alpha run: resumed {} ({} messages, repairs={})",
@@ -205,9 +202,7 @@ fn run_command(args: RunArgs) -> ExitCode {
                 session_id
             }
             Err(error) => {
-                eprintln!(
-                    "alpha run: {error}. Configure a provider with `alpha tui` first."
-                );
+                eprintln!("alpha run: {error}. Configure a provider with `alpha tui` first.");
                 return ExitCode::FAILURE;
             }
         }
@@ -254,9 +249,7 @@ fn run_command(args: RunArgs) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
             }
-            Some(ConnectionEvent::Request(request))
-                if request.method == "interaction.request" =>
-            {
+            Some(ConnectionEvent::Request(request)) if request.method == "interaction.request" => {
                 let decision = read_approval_decision(&request.params);
                 if let Err(error) =
                     supervisor.respond(request.id, Ok(json!({ "decision": decision })))
@@ -291,35 +284,33 @@ fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
     let kind = params.get("kind").and_then(Value::as_str).unwrap_or("");
     let event = params.get("event").unwrap_or(&Value::Null);
     match kind {
-        "live" => {
-            match event.get("type").and_then(Value::as_str).unwrap_or("") {
-                "text_delta" => {
-                    if let Some(text) = event.get("text").and_then(Value::as_str) {
-                        print!("{text}");
-                        let _ = std::io::stdout().flush();
-                        *streamed = true;
-                    }
+        "live" => match event.get("type").and_then(Value::as_str).unwrap_or("") {
+            "text_delta" => {
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
+                    *streamed = true;
                 }
-                "step_started" => {
-                    if let Some(step) = event.get("step").and_then(Value::as_u64) {
-                        eprintln!("alpha run: step {step}: calling model...");
-                    }
-                }
-                "tool_started" => {
-                    let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    eprintln!("alpha run: -> {name}");
-                }
-                "tool_finished" => {
-                    let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    let status = event
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("finished");
-                    eprintln!("alpha run: <- {name} {status}");
-                }
-                _ => {}
             }
-        }
+            "step_started" => {
+                if let Some(step) = event.get("step").and_then(Value::as_u64) {
+                    eprintln!("alpha run: step {step}: calling model...");
+                }
+            }
+            "tool_started" => {
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+                eprintln!("alpha run: -> {name}");
+            }
+            "tool_finished" => {
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let status = event
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("finished");
+                eprintln!("alpha run: <- {name} {status}");
+            }
+            _ => {}
+        },
         "durable" => {
             let payload = event.get("payload").unwrap_or(&Value::Null);
             match payload.get("type").and_then(Value::as_str).unwrap_or("") {
@@ -330,7 +321,10 @@ fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
                         .map(str::to_owned);
                 }
                 "tool_call" => {
-                    let name = payload.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let name = payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
                     eprintln!("alpha run: -> {name}");
                 }
                 "tool_result" => {
