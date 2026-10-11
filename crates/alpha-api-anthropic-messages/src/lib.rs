@@ -302,8 +302,12 @@ fn process_event_line(
         *done = true;
         return Ok(());
     }
-    let event: StreamEvent = serde_json::from_slice(data)
-        .map_err(|error| ProviderError::Request(format!("invalid stream event: {error}")))?;
+    let event: StreamEvent = serde_json::from_slice(data).map_err(|error| {
+        ProviderError::Request(format!(
+            "invalid stream event: {error}: {}",
+            String::from_utf8_lossy(data)
+        ))
+    })?;
     match event.kind.as_str() {
         "content_block_start" => {
             if let Some(block) = event.content_block {
@@ -465,6 +469,7 @@ struct StreamContentBlock {
 #[derive(Default, Deserialize)]
 struct StreamDelta {
     #[serde(rename = "type")]
+    #[serde(default)]
     kind: String,
     #[serde(default)]
     text: Option<String>,
