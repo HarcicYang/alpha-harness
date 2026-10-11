@@ -49,6 +49,8 @@ pub enum MessageRecord {
 /// Projected session state, folded from durable events.
 #[derive(Clone, Debug)]
 pub struct SessionState {
+    /// Latest complete system prompt snapshot.
+    pub system_prompt: Option<String>,
     /// Effective permission mode.
     pub mode: PermissionMode,
     /// Effective workspace binding.
@@ -67,6 +69,7 @@ impl SessionState {
     /// Create an empty projection seeded from a session header.
     pub fn new(header: &SessionHeader) -> Self {
         Self {
+            system_prompt: None,
             mode: header.mode,
             workspace: header.workspace.clone(),
             messages: Vec::new(),
@@ -95,6 +98,7 @@ impl SessionState {
                 id: *id,
                 text: text.clone(),
             }),
+            SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::AssistantMessage { id, text } => {
                 self.messages.push(MessageRecord::Assistant {
                     id: *id,

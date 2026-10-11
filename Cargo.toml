@@ -22,6 +22,7 @@ alpha-module-fs = { path = "crates/alpha-module-fs", version = "0.1.0" }
 alpha-module-process = { path = "crates/alpha-module-process", version = "0.1.0" }
 alpha-module-http = { path = "crates/alpha-module-http", version = "0.1.0" }
 alpha-module-permission = { path = "crates/alpha-module-permission", version = "0.1.0" }
+alpha-module-prompt = { path = "crates/alpha-module-prompt", version = "0.1.0" }
 alpha-module-tools = { path = "crates/alpha-module-tools", version = "0.1.0" }
 alpha-module-provider-openai = { path = "crates/alpha-module-provider-openai", version = "0.1.0" }
 alpha-bundle-default = { path = "crates/alpha-bundle-default", version = "0.1.0" }

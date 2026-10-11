@@ -31,7 +31,8 @@ impl ModelProvider for EchoProvider {
             .rev()
             .find_map(|message| match message {
                 ChatMessage::User(text) => Some(text.clone()),
-                ChatMessage::Assistant(_)
+                ChatMessage::System(_)
+                | ChatMessage::Assistant(_)
                 | ChatMessage::AssistantToolCalls { .. }
                 | ChatMessage::ToolResult { .. } => None,
             })
@@ -206,6 +207,32 @@ async fn loop_records_completed_turns_and_replays_history() {
             ChatMessage::Assistant("echo: hello".to_owned()),
             ChatMessage::User("again".to_owned()),
         ]
+    );
+}
+
+#[tokio::test]
+async fn system_prompt_is_injected_before_history() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(EchoProvider::default());
+    let agent = AgentLoop::new(provider.clone(), "echo-model");
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let prompt = writer
+        .append(SessionEvent::SystemPromptSet {
+            text: "system rules".to_owned(),
+        })
+        .expect("append prompt");
+    let state = SessionState::from_events(&header, &[prompt]);
+
+    agent
+        .run_turn(&mut writer, &state, "hello")
+        .await
+        .expect("turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert_eq!(
+        requests[0].messages[0],
+        ChatMessage::System("system rules".to_owned())
     );
 }
 

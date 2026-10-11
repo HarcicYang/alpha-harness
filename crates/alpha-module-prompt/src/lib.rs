@@ -1,0 +1,199 @@
+//! Composable system-prompt assembly.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+
+use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Disposer, Module};
+use alpha_module_session::SessionState;
+use serde::Deserialize;
+
+mod builtin;
+
+pub use builtin::{
+    MandatoryRulesSection, OutputRulesSection, PersonaSection, StopConditionsSection,
+    ToolRulesSection,
+};
+
+/// Stable module key used by the generated composition table.
+pub const __ALPHA_MODULE__: &str = "prompt";
+
+/// Ordering tier for one prompt section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PromptPriority {
+    /// Runtime facts and environment.
+    Runtime = 10,
+    /// Mandatory framework rules.
+    Policy = 20,
+    /// Output contract.
+    Output = 30,
+    /// Tool-use policy.
+    Tools = 40,
+    /// Project-provided instructions.
+    Project = 50,
+    /// Optional capability notes.
+    Capability = 60,
+    /// Role and persona, rendered last.
+    Persona = 70,
+}
+
+/// One request to render a prompt section.
+pub struct PromptRequest<'a> {
+    /// Active context.
+    pub ctx: &'a Ctx,
+    /// Session state before the turn starts.
+    pub state: &'a SessionState,
+}
+
+/// One composable system-prompt section.
+pub trait PromptSectionProvider: Send + Sync + 'static {
+    /// Stable section key.
+    fn key(&self) -> &'static str;
+
+    /// Ordering tier.
+    fn priority(&self) -> PromptPriority;
+
+    /// Render the section. Returning `None` omits it.
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError>;
+}
+
+/// Registry of prompt-section providers.
+#[derive(Default)]
+pub struct PromptRegistry {
+    sections: Arc<RwLock<BTreeMap<String, Arc<dyn PromptSectionProvider>>>>,
+}
+
+impl PromptRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register one provider as a reversible effect of `ctx`.
+    pub fn register(
+        &self,
+        ctx: &Ctx,
+        provider: Arc<dyn PromptSectionProvider>,
+    ) -> Result<Disposer, PromptError> {
+        let key = provider.key().to_owned();
+        {
+            let mut sections = self.sections.write().expect("prompt lock poisoned");
+            if sections.contains_key(&key) {
+                return Err(PromptError::DuplicateSection(key));
+            }
+            sections.insert(key.clone(), provider);
+        }
+
+        let sections = self.sections.clone();
+        let cleanup_key = key.clone();
+        match ctx.scope().effect(move || {
+            sections
+                .write()
+                .expect("prompt lock poisoned")
+                .remove(&cleanup_key);
+        }) {
+            Ok(disposer) => Ok(disposer),
+            Err(error) => {
+                self.sections
+                    .write()
+                    .expect("prompt lock poisoned")
+                    .remove(&key);
+                Err(PromptError::Kernel(error.to_string()))
+            }
+        }
+    }
+
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Vec<String>, PromptError> {
+        let mut providers: Vec<Arc<dyn PromptSectionProvider>> = self
+            .sections
+            .read()
+            .expect("prompt lock poisoned")
+            .values()
+            .cloned()
+            .collect();
+        providers.sort_by(|left, right| {
+            left.priority()
+                .cmp(&right.priority())
+                .then_with(|| left.key().cmp(right.key()))
+        });
+
+        let mut output = Vec::new();
+        for provider in providers {
+            if let Some(section) = provider.render(request)? {
+                let section = section.trim();
+                if !section.is_empty() {
+                    output.push(section.to_owned());
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+/// Prompt assembly contract consumed by the application runtime.
+pub trait PromptAssembler: Send + Sync + 'static {
+    /// Assemble a deterministic system prompt for one session.
+    fn assemble(&self, ctx: &Ctx, state: &SessionState) -> Result<String, PromptError>;
+}
+
+/// Default prompt assembler over a section registry.
+pub struct DefaultPromptAssembler {
+    registry: Arc<PromptRegistry>,
+}
+
+impl DefaultPromptAssembler {
+    /// Create an assembler over one registry.
+    pub fn new(registry: Arc<PromptRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl PromptAssembler for DefaultPromptAssembler {
+    fn assemble(&self, ctx: &Ctx, state: &SessionState) -> Result<String, PromptError> {
+        let request = PromptRequest { ctx, state };
+        Ok(self.registry.render(&request)?.join("\n\n"))
+    }
+}
+
+/// Prompt assembly failures.
+#[derive(Debug, thiserror::Error)]
+pub enum PromptError {
+    /// Two providers use the same stable key.
+    #[error("prompt section `{0}` is already registered")]
+    DuplicateSection(String),
+    /// Kernel registration failed.
+    #[error("prompt registration failed: {0}")]
+    Kernel(String),
+}
+
+/// Configuration for prompt assembly.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct PromptConfig {}
+
+/// Registers the prompt assembler and its built-in sections.
+pub struct PromptModule;
+
+impl Module for PromptModule {
+    type Requirements = ();
+    type Config = PromptConfig;
+
+    const KEY: &'static str = "prompt";
+    const CAPABILITIES: &'static [CapabilitySpec] = &[
+        CapabilitySpec::singleton("prompt.assembler", CapabilityScope::Location),
+        CapabilitySpec::registry("prompt.section", CapabilityScope::Location),
+    ];
+
+    fn activate(&self, ctx: &Ctx, _config: &Self::Config) -> Result<(), ActivateError> {
+        let registry = Arc::new(PromptRegistry::new());
+        for section in builtin::sections() {
+            registry
+                .register(ctx, section)
+                .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        }
+        ctx.provide::<PromptRegistry>(registry.clone())
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        let assembler = Arc::new(DefaultPromptAssembler::new(registry));
+        ctx.provide::<dyn PromptAssembler>(assembler)
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        Ok(())
+    }
+}

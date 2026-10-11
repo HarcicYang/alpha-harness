@@ -17,6 +17,7 @@ use alpha_module_permission::{
     PermissionConfig, PermissionModule,
 };
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
+use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
@@ -51,6 +52,9 @@ pub enum RunError {
     /// Agent loop failure.
     #[error("loop error: {0}")]
     Loop(String),
+    /// Prompt assembly failure.
+    #[error("prompt error: {0}")]
+    Prompt(String),
 }
 
 /// Options for one headless turn.
@@ -302,6 +306,7 @@ fn activate_core_modules(
             root: workspace.to_path_buf(),
         },
     )?;
+    PromptModule.activate(ctx, &PromptConfig::default())?;
     ProcessLocalModule.activate(
         ctx,
         &ProcessConfig {
@@ -357,7 +362,8 @@ pub async fn run_prompt(
     );
     let session_id = header.id;
     let mut writer = store.create(header.clone())?;
-    let state = SessionState::new(&header);
+    let mut state = SessionState::new(&header);
+    ensure_system_prompt(composition, &mut writer, &mut state)?;
     let outcome = composition
         .agent
         .run_turn(&mut writer, &state, &options.prompt)
@@ -407,11 +413,12 @@ pub async fn resume_session(
     store: &SessionStore,
 ) -> Result<ResumeReport, RunError> {
     let reader = store.open_read(options.session_id)?;
-    let state = reader.state();
+    let mut state = reader.state();
     drop(reader);
 
     let mut writer = store.open_write(options.session_id)?;
     let repairs = writer.repairs().len();
+    ensure_system_prompt(composition, &mut writer, &mut state)?;
     let prompt = options
         .prompt
         .as_deref()
@@ -440,6 +447,25 @@ pub async fn resume_session(
         turn_open: final_state.turn_open,
         repairs,
     })
+}
+
+fn ensure_system_prompt(
+    composition: &Composition,
+    writer: &mut SessionWriter,
+    state: &mut SessionState,
+) -> Result<(), RunError> {
+    if state.system_prompt.is_some() {
+        return Ok(());
+    }
+    let Some(assembler) = composition.ctx.get::<dyn PromptAssembler>() else {
+        return Ok(());
+    };
+    let prompt = assembler
+        .assemble(&composition.ctx, state)
+        .map_err(|error| RunError::Prompt(error.to_string()))?;
+    let envelope = writer.append(SessionEvent::SystemPromptSet { text: prompt })?;
+    state.apply(&envelope);
+    Ok(())
 }
 
 /// Errors from the stdio server.

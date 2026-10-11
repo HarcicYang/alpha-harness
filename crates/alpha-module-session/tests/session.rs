@@ -59,6 +59,29 @@ fn create_append_and_reopen() {
 }
 
 #[test]
+fn system_prompt_snapshot_is_projected_from_the_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let id = header.id;
+
+    {
+        let mut writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::SystemPromptSet {
+                text: "framework rules".to_owned(),
+            })
+            .expect("append prompt");
+    }
+
+    let reader = store.open_read(id).expect("open read");
+    assert_eq!(
+        reader.state().system_prompt.as_deref(),
+        Some("framework rules")
+    );
+}
+
+#[test]
 fn read_open_does_not_modify_files() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());

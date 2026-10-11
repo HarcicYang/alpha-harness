@@ -10,6 +10,8 @@ use thiserror::Error;
 /// One chat message in provider-facing history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatMessage {
+    /// System instructions.
+    System(String),
     /// User message.
     User(String),
     /// Assistant message.
@@ -34,6 +36,7 @@ impl ChatMessage {
     /// Provider-facing role name.
     pub fn role(&self) -> &'static str {
         match self {
+            Self::System(_) => "system",
             Self::User(_) => "user",
             Self::Assistant(_) | Self::AssistantToolCalls { .. } => "assistant",
             Self::ToolResult { .. } => "tool",
@@ -43,7 +46,7 @@ impl ChatMessage {
     /// Message text.
     pub fn text(&self) -> &str {
         match self {
-            Self::User(text) | Self::Assistant(text) => text,
+            Self::System(text) | Self::User(text) | Self::Assistant(text) => text,
             Self::AssistantToolCalls { text, .. } => text,
             Self::ToolResult { content, .. } => content,
         }

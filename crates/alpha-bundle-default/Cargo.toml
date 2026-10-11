@@ -16,6 +16,7 @@ alpha-module-fs.workspace = true
 alpha-module-process.workspace = true
 alpha-module-http.workspace = true
 alpha-module-permission.workspace = true
+alpha-module-prompt.workspace = true
 alpha-module-tools.workspace = true
 alpha-module-provider-openai.workspace = true
 

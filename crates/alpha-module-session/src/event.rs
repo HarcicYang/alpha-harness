@@ -49,6 +49,11 @@ pub enum SessionEvent {
         /// Message text.
         text: String,
     },
+    /// The complete system prompt snapshot used by this session.
+    SystemPromptSet {
+        /// Full model-visible system prompt.
+        text: String,
+    },
     /// An assistant message entered the log.
     AssistantMessage {
         /// Message identity.

@@ -11,6 +11,7 @@ pub use alpha_module_http;
 pub use alpha_module_loop;
 pub use alpha_module_permission;
 pub use alpha_module_process;
+pub use alpha_module_prompt;
 pub use alpha_module_provider_openai;
 pub use alpha_module_session;
 pub use alpha_module_tools;

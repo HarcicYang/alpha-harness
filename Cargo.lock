@@ -38,6 +38,7 @@ dependencies = [
  "alpha-module-loop",
  "alpha-module-permission",
  "alpha-module-process",
+ "alpha-module-prompt",
  "alpha-module-provider-openai",
  "alpha-module-session",
  "alpha-module-tools",
@@ -55,6 +56,7 @@ dependencies = [
  "alpha-module-loop",
  "alpha-module-permission",
  "alpha-module-process",
+ "alpha-module-prompt",
  "alpha-module-provider-openai",
  "alpha-module-session",
  "alpha-module-tools",
@@ -152,6 +154,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "alpha-module-prompt"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-session",
+ "alpha-schema",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

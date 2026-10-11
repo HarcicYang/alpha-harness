@@ -107,6 +107,7 @@ impl ModelProvider for OpenAiProvider {
 
 fn wire_message(message: &ChatMessage) -> Value {
     match message {
+        ChatMessage::System(text) => json!({ "role": "system", "content": text }),
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
         ChatMessage::Assistant(text) => json!({ "role": "assistant", "content": text }),
         ChatMessage::AssistantToolCalls { text, calls } => json!({

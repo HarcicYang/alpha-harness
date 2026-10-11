@@ -339,6 +339,9 @@ struct HistoryBuilder {
 impl HistoryBuilder {
     fn from_state(state: &SessionState) -> Vec<ChatMessage> {
         let mut builder = Self::default();
+        if let Some(prompt) = &state.system_prompt {
+            builder.messages.push(ChatMessage::System(prompt.clone()));
+        }
         for record in &state.messages {
             builder.push(record);
         }
