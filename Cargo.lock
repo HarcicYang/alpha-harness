@@ -29,7 +29,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-api-anthropic-messages"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "alpha-provider-api",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "alpha-api-openai-chat"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "alpha-provider-api",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "alpha-api-openai-responses"
 version = "0.1.0"
 dependencies = [
  "alpha-kernel",
@@ -58,7 +88,9 @@ dependencies = [
 name = "alpha-bundle-default"
 version = "0.1.0"
 dependencies = [
+ "alpha-api-anthropic-messages",
  "alpha-api-openai-chat",
+ "alpha-api-openai-responses",
  "alpha-module-compaction",
  "alpha-module-config",
  "alpha-module-credential",

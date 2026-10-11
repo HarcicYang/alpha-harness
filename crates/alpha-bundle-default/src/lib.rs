@@ -5,7 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+pub use alpha_api_anthropic_messages;
 pub use alpha_api_openai_chat;
+pub use alpha_api_openai_responses;
 pub use alpha_module_compaction;
 pub use alpha_module_config;
 pub use alpha_module_credential;

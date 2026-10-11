@@ -33,6 +33,8 @@ alpha-front-client = { path = "crates/alpha-front-client", version = "0.1.0" }
 alpha-front-supervisor = { path = "crates/alpha-front-supervisor", version = "0.1.0" }
 alpha-provider-api = { path = "crates/alpha-provider-api", version = "0.1.0" }
 alpha-api-openai-chat = { path = "crates/alpha-api-openai-chat", version = "0.1.0" }
+alpha-api-openai-responses = { path = "crates/alpha-api-openai-responses", version = "0.1.0" }
+alpha-api-anthropic-messages = { path = "crates/alpha-api-anthropic-messages", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 cargo_metadata = "0.18"
 futures = "0.3"

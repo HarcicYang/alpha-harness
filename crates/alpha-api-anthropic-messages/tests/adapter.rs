@@ -1,0 +1,128 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use alpha_api_anthropic_messages::{ADAPTER_KEY, AnthropicMessagesApiModule};
+use alpha_kernel::{Ctx, Module};
+use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
+use alpha_module_loop::{ChatMessage, CompletionChunk};
+use alpha_provider_api::{AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule};
+use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
+use serde_json::json;
+
+struct StreamingHttp {
+    request: Mutex<Option<HttpRequest>>,
+    chunks: Vec<Vec<u8>>,
+}
+
+impl HttpClient for StreamingHttp {
+    fn request(&self, _request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, HttpError>> {
+        Box::pin(async move {
+            Ok(HttpResponse {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: Vec::new(),
+            })
+        })
+    }
+
+    fn request_stream(
+        &self,
+        request: HttpRequest,
+    ) -> BoxFuture<'_, Result<HttpResponseStream, HttpError>> {
+        *self.request.lock().expect("request lock") = Some(request);
+        let chunks = self.chunks.clone();
+        Box::pin(async move {
+            let body = futures::stream::iter(
+                chunks
+                    .into_iter()
+                    .map(Ok)
+                    .collect::<Vec<Result<Vec<u8>, HttpError>>>(),
+            );
+            Ok(HttpResponseStream {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: Box::pin(body) as BoxStream<'static, Result<Vec<u8>, HttpError>>,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn streams_text_and_tool_input_deltas() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![
+            b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read\",\"input\":{}}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"a.txt\\\"}\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"message_stop\"}\n\n".to_vec(),
+        ],
+    });
+    let adapter = alpha_api_anthropic_messages::AnthropicMessagesAdapter;
+    let chunks: Vec<CompletionChunk> = adapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.anthropic.test".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "claude-test".to_owned(),
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: vec!["web_search".to_owned()],
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(chunks[0], CompletionChunk::Text("hel".to_owned()));
+    assert_eq!(chunks[1], CompletionChunk::Text("lo".to_owned()));
+    assert!(matches!(
+        &chunks[2],
+        CompletionChunk::ToolCall(delta)
+            if delta.id.as_deref() == Some("tool_1") && delta.name.as_deref() == Some("read")
+    ));
+    assert!(matches!(
+        &chunks[3],
+        CompletionChunk::ToolCall(delta) if delta.arguments == "{\"path\":"
+    ));
+    assert!(matches!(
+        &chunks[4],
+        CompletionChunk::ToolCall(delta) if delta.arguments == "\"a.txt\"}"
+    ));
+
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    assert_eq!(request.url, "https://api.anthropic.test/v1/messages");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["stream"], json!(true));
+    assert_eq!(payload["tools"][0]["type"], json!("web_search_20250305"));
+}
+
+#[test]
+fn module_registers_the_adapter() {
+    let ctx = Ctx::root();
+    ProviderApiModule.activate(&ctx, &()).expect("provider api");
+    AnthropicMessagesApiModule
+        .activate(&ctx, &())
+        .expect("anthropic adapter");
+    let registry = ctx
+        .require::<ApiAdapterRegistry>()
+        .expect("adapter registry");
+    assert!(registry.get(ADAPTER_KEY).is_some());
+    ctx.dispose();
+    assert!(registry.get(ADAPTER_KEY).is_none());
+}

@@ -482,6 +482,8 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-front-supervisor` | managed core child process lifecycle |
 | `alpha-provider-api` | provider descriptors and API adapter contracts |
 | `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
+| `alpha-api-openai-responses` | OpenAI Responses adapter |
+| `alpha-api-anthropic-messages` | Anthropic Messages adapter |
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |
