@@ -64,7 +64,7 @@ fn create_append_and_reopen() {
     let id = header.id;
 
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::TurnStarted)
             .expect("append turn start");
@@ -104,7 +104,7 @@ fn system_prompt_snapshot_is_projected_from_the_log() {
     let id = header.id;
 
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::SystemPromptSet {
                 text: "framework rules".to_owned(),
@@ -127,7 +127,7 @@ fn context_compaction_is_projected_from_the_log() {
     let id = header.id;
 
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::ContextCompacted {
                 summary: "summary".to_owned(),
@@ -152,7 +152,7 @@ fn read_open_does_not_modify_files() {
     let id = header.id;
 
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::TurnStarted)
             .expect("append turn start");
@@ -187,7 +187,7 @@ fn torn_tail_is_dropped_and_write_open_publishes_a_successor() {
     let id = header.id;
 
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::TurnStarted)
             .expect("append turn start");
@@ -214,7 +214,7 @@ fn torn_tail_is_dropped_and_write_open_publishes_a_successor() {
     assert!(reader.tail_damage().is_some());
 
     {
-        let mut writer = store.open_write(id).expect("open write");
+        let writer = store.open_write(id).expect("open write");
         assert!(writer.repairs().is_empty());
         writer
             .append(SessionEvent::TurnStarted)
@@ -239,7 +239,7 @@ fn interrupted_turn_and_tool_call_are_repaired_on_write_open() {
     let call_id = ToolCallId::new();
 
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::TurnStarted)
             .expect("append turn start");

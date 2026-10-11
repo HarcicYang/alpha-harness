@@ -143,7 +143,7 @@ struct SummaryPreparer;
 impl ContextPreparer for SummaryPreparer {
     fn prepare<'a>(
         &'a self,
-        writer: &'a mut alpha_module_session::SessionWriter,
+        writer: &'a alpha_module_session::SessionWriter,
         state: &'a mut SessionState,
         _provider: &'a dyn ModelProvider,
         _model: &'a str,
@@ -214,7 +214,7 @@ fn store_and_header() -> (tempfile::TempDir, SessionStore, SessionHeader) {
 
 async fn run_turn(
     agent: &AgentLoop,
-    writer: &mut SessionWriter,
+    writer: &SessionWriter,
     state: &SessionState,
     prompt: &str,
 ) -> Result<TurnOutcome, alpha_module_loop::LoopError> {
@@ -229,9 +229,9 @@ async fn loop_records_completed_turns_and_replays_history() {
     let provider = Arc::new(EchoProvider::default());
     let agent = AgentLoop::new(provider.clone(), "echo-model");
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let first = run_turn(&agent, &mut writer, &state, "hello")
+    let first = run_turn(&agent, &writer, &state, "hello")
         .await
         .expect("first turn");
     assert_eq!(first.assistant_text, "echo: hello");
@@ -243,8 +243,8 @@ async fn loop_records_completed_turns_and_replays_history() {
     assert!(!state.turn_open);
     drop(reader);
 
-    let mut writer = store.open_write(id).expect("open write");
-    let second = run_turn(&agent, &mut writer, &state, "again")
+    let writer = store.open_write(id).expect("open write");
+    let second = run_turn(&agent, &writer, &state, "again")
         .await
         .expect("second turn");
     assert_eq!(second.assistant_text, "echo: again");
@@ -271,9 +271,9 @@ async fn stream_deltas_are_merged_into_one_durable_message() {
     ]]));
     let agent = AgentLoop::new(provider, "streamed");
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = run_turn(&agent, &mut writer, &state, "hi")
+    let outcome = run_turn(&agent, &writer, &state, "hi")
         .await
         .expect("turn");
     assert_eq!(outcome.assistant_text, "hello");
@@ -297,9 +297,9 @@ async fn stream_failure_preserves_the_received_text_prefix() {
     ]]));
     let agent = AgentLoop::new(provider, "streamed");
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let error = run_turn(&agent, &mut writer, &state, "hi")
+    let error = run_turn(&agent, &writer, &state, "hi")
         .await
         .expect_err("stream failure");
     assert!(error.to_string().contains("stream broke"));
@@ -348,9 +348,9 @@ async fn streamed_tool_call_fragments_are_assembled() {
         .expect("register");
     let agent = AgentLoop::new(provider, "streamed").with_tools(registry);
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = run_turn(&agent, &mut writer, &state, "write")
+    let outcome = run_turn(&agent, &writer, &state, "write")
         .await
         .expect("turn");
     assert_eq!(outcome.assistant_text, "done");
@@ -385,10 +385,10 @@ async fn session_provider_tool_override_reaches_the_request() {
     override_value.set(Some(vec!["web_search".to_owned()]));
     ctx.provide::<ProviderToolsOverride>(override_value)
         .expect("provider tools override");
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
     agent
-        .run_turn(&ctx, &mut writer, &state, "hello")
+        .run_turn(&ctx, &writer, &state, "hello")
         .await
         .expect("turn");
     let requests = provider.requests.lock().expect("request lock");
@@ -401,7 +401,7 @@ async fn system_prompt_is_injected_before_history() {
     let provider = Arc::new(EchoProvider::default());
     let agent = AgentLoop::new(provider.clone(), "echo-model");
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let prompt = writer
         .append(SessionEvent::SystemPromptSet {
             text: "system rules".to_owned(),
@@ -409,7 +409,7 @@ async fn system_prompt_is_injected_before_history() {
         .expect("append prompt");
     let state = SessionState::from_events(&header, &[prompt]);
 
-    run_turn(&agent, &mut writer, &state, "hello")
+    run_turn(&agent, &writer, &state, "hello")
         .await
         .expect("turn");
 
@@ -427,7 +427,7 @@ async fn context_preparer_updates_the_request_history() {
     let agent = AgentLoop::new(provider.clone(), "echo-model")
         .with_context_preparer(Arc::new(SummaryPreparer));
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let events = vec![
         writer
             .append(SessionEvent::UserMessage {
@@ -445,7 +445,7 @@ async fn context_preparer_updates_the_request_history() {
     ];
     let state = SessionState::from_events(&header, &events);
 
-    run_turn(&agent, &mut writer, &state, "hello")
+    run_turn(&agent, &writer, &state, "hello")
         .await
         .expect("turn");
 
@@ -473,9 +473,9 @@ async fn provider_failure_closes_the_turn() {
     let id = header.id;
     let agent = AgentLoop::new(Arc::new(FailingProvider), "failing-model");
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let error = run_turn(&agent, &mut writer, &state, "hello")
+    let error = run_turn(&agent, &writer, &state, "hello")
         .await
         .expect_err("provider failure");
     assert!(error.to_string().contains("boom"));
@@ -524,9 +524,9 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
         .expect("register");
     let agent = AgentLoop::new(provider.clone(), "scripted").with_tools(registry);
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = run_turn(&agent, &mut writer, &state, "write a note")
+    let outcome = run_turn(&agent, &writer, &state, "write a note")
         .await
         .expect("turn");
     assert_eq!(outcome.assistant_text, "done");
@@ -605,9 +605,9 @@ async fn step_limit_wraps_up_without_tools() {
         .with_tools(registry)
         .with_max_steps(1);
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = run_turn(&agent, &mut writer, &state, "do it")
+    let outcome = run_turn(&agent, &writer, &state, "do it")
         .await
         .expect("wrap up");
     assert_eq!(outcome.assistant_text, "wrapped up");
@@ -644,7 +644,7 @@ async fn live_events_report_steps_and_tools() {
         .expect("register");
     let agent = AgentLoop::new(provider, "scripted").with_tools(registry);
 
-    let mut writer = store.create(header.clone()).expect("create");
+    let writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
     let ctx = Ctx::root();
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -677,7 +677,7 @@ async fn live_events_report_steps_and_tools() {
     .expect("tool finish listener");
 
     agent
-        .run_turn(&ctx, &mut writer, &state, "do it")
+        .run_turn(&ctx, &writer, &state, "do it")
         .await
         .expect("turn");
 

@@ -113,6 +113,7 @@ async fn sends_chat_completion_requests_and_parses_text() {
             model: "gpt-test".to_owned(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .await
         .expect("complete");
@@ -141,6 +142,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
             model: "gpt-test".to_owned(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .await
         .expect_err("status");
@@ -157,6 +159,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
             model: "gpt-test".to_owned(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .await
         .expect_err("malformed");
@@ -211,6 +214,7 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
                 description: "Read a file".to_owned(),
                 input_schema: json!({ "type": "object" }),
             }],
+            provider_tools: Vec::new(),
         })
         .await
         .expect("complete");
@@ -255,6 +259,7 @@ async fn streams_text_deltas_and_requests_streaming_mode() {
             model: "stream-model".to_owned(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .collect()
         .await;
@@ -292,6 +297,7 @@ async fn accumulates_tool_call_deltas_split_across_network_chunks() {
             model: "stream-model".to_owned(),
             messages: vec![ChatMessage::User("read".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .collect::<Vec<_>>()
         .await
@@ -332,6 +338,7 @@ async fn rejects_malformed_stream_events() {
             model: "stream-model".to_owned(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .next()
         .await

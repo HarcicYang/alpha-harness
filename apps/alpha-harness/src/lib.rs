@@ -630,22 +630,22 @@ pub async fn run_prompt_in(
         },
     );
     let session_id = header.id;
-    let mut writer = store.create(header.clone())?;
+    let writer = store.create(header.clone())?;
     let mut state = SessionState::new(&header);
-    ensure_system_prompt(composition, &mut writer, &mut state)?;
+    ensure_system_prompt(composition, &writer, &mut state)?;
     let outcome = composition
         .agent
-        .run_turn(agent_ctx, &mut writer, &state, &options.prompt)
+        .run_turn(agent_ctx, &writer, &state, &options.prompt)
         .await
         .map_err(|error| RunError::Loop(error.to_string()))?;
-    record_audit(&mut writer, composition)?;
+    record_audit(&writer, composition)?;
     Ok(RunReport {
         session_id,
         assistant_text: outcome.assistant_text,
     })
 }
 
-fn record_audit(writer: &mut SessionWriter, composition: &Composition) -> Result<(), RunError> {
+fn record_audit(writer: &SessionWriter, composition: &Composition) -> Result<(), RunError> {
     for record in composition.audit.drain() {
         writer.append(SessionEvent::PermissionRequested {
             action: record.request.action.clone(),
@@ -701,9 +701,9 @@ pub async fn resume_session_in(
     let mut state = reader.state();
     drop(reader);
 
-    let mut writer = store.open_write(options.session_id)?;
+    let writer = store.open_write(options.session_id)?;
     let repairs = writer.repairs().len();
-    ensure_system_prompt(composition, &mut writer, &mut state)?;
+    ensure_system_prompt(composition, &writer, &mut state)?;
     let prompt = options
         .prompt
         .as_deref()
@@ -713,14 +713,14 @@ pub async fn resume_session_in(
         Some(prompt) => Some(
             composition
                 .agent
-                .run_turn(agent_ctx, &mut writer, &state, prompt)
+                .run_turn(agent_ctx, &writer, &state, prompt)
                 .await
                 .map_err(|error| RunError::Loop(error.to_string()))?
                 .assistant_text,
         ),
         None => None,
     };
-    record_audit(&mut writer, composition)?;
+    record_audit(&writer, composition)?;
     drop(writer);
 
     let reader = store.open_read(options.session_id)?;
@@ -736,7 +736,7 @@ pub async fn resume_session_in(
 
 fn ensure_system_prompt(
     composition: &Composition,
-    writer: &mut SessionWriter,
+    writer: &SessionWriter,
     state: &mut SessionState,
 ) -> Result<(), RunError> {
     if state.system_prompt.is_some() {

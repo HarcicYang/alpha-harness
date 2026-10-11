@@ -138,6 +138,7 @@ impl DefaultContextCompactor {
                         ChatMessage::User(input),
                     ],
                     tools: Vec::new(),
+                    provider_tools: Vec::new(),
                 })
                 .await
                 .map_err(|error| ContextError::message(error.to_string()))?;
@@ -184,7 +185,7 @@ impl DefaultContextCompactor {
 impl ContextPreparer for DefaultContextCompactor {
     fn prepare<'a>(
         &'a self,
-        writer: &'a mut SessionWriter,
+        writer: &'a SessionWriter,
         state: &'a mut SessionState,
         provider: &'a dyn ModelProvider,
         model: &'a str,

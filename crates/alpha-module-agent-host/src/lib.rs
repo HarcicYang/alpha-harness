@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -15,7 +15,7 @@ use alpha_module_session::{
     TurnEndReason, WorkspaceRef,
 };
 use alpha_protocol::OutboundTransport;
-use alpha_schema::{PermissionMode, SessionId, TurnId};
+use alpha_schema::{MessageId, PermissionMode, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
@@ -203,7 +203,6 @@ enum SessionCommand {
 }
 
 struct TurnCompletion {
-    writer: SessionWriter,
     result: Result<(), LoopError>,
 }
 
@@ -277,7 +276,7 @@ impl AgentHostService {
             model: request.model,
             steer_queue: steer_queue.clone(),
         })?;
-        self.spawn_actor(header, writer, runtime, steer_queue)?;
+        self.spawn_actor(header, writer, runtime, steer_queue, Vec::new())?;
         Ok(SessionCreated {
             session_id,
             mode,
@@ -307,6 +306,7 @@ impl AgentHostService {
             })?;
         let header = reader.header().clone();
         let state = reader.state();
+        let recovered_steers = pending_steers(reader.events());
         drop(reader);
         let writer = match self.store.open_write(session_id) {
             Ok(writer) => writer,
@@ -325,7 +325,14 @@ impl AgentHostService {
             model: header.model.clone(),
             steer_queue: steer_queue.clone(),
         })?;
-        self.spawn_actor_with_state(header, writer, runtime, state.clone(), steer_queue)?;
+        self.spawn_actor_with_state(
+            header,
+            writer,
+            runtime,
+            state.clone(),
+            steer_queue,
+            recovered_steers,
+        )?;
         Ok(SessionResumed {
             session_id,
             mode: state.mode,
@@ -501,18 +508,27 @@ impl AgentHostService {
         writer: SessionWriter,
         runtime: SessionRuntime,
         steer_queue: Arc<ActorSteerQueue>,
+        recovered_steers: Vec<SteerMessage>,
     ) -> Result<(), AgentHostError> {
         let state = SessionState::new(&header);
-        self.spawn_actor_with_state(header, writer, runtime, state, steer_queue)
+        self.spawn_actor_with_state(
+            header,
+            writer,
+            runtime,
+            state,
+            steer_queue,
+            recovered_steers,
+        )
     }
 
     fn spawn_actor_with_state(
         &self,
         header: SessionHeader,
-        mut writer: SessionWriter,
+        writer: SessionWriter,
         runtime: SessionRuntime,
         state: SessionState,
         steer_queue: Arc<ActorSteerQueue>,
+        recovered_steers: Vec<SteerMessage>,
     ) -> Result<(), AgentHostError> {
         let session_id = header.id;
         let state = Arc::new(Mutex::new(state));
@@ -523,12 +539,8 @@ impl AgentHostService {
             self.transport.clone(),
             current_turn.clone(),
         )?;
-        install_writer_observer(
-            &mut writer,
-            session_id,
-            self.transport.clone(),
-            state.clone(),
-        );
+        let writer = Arc::new(writer);
+        install_writer_observer(&writer, session_id, self.transport.clone(), state.clone());
         let (tx, rx) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
         let actor = Arc::new(SessionActor {
@@ -554,6 +566,7 @@ impl AgentHostService {
                 rx,
                 Arc::downgrade(&self.actors),
                 self.idle_timeout,
+                recovered_steers,
             ))
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         Ok(())
@@ -578,7 +591,7 @@ impl AgentHostService {
 }
 
 fn install_writer_observer(
-    writer: &mut SessionWriter,
+    writer: &SessionWriter,
     session_id: SessionId,
     transport: Arc<dyn OutboundTransport>,
     state: Arc<Mutex<SessionState>>,
@@ -597,6 +610,36 @@ fn install_writer_observer(
             }),
         );
     }));
+}
+
+fn pending_steers(events: &[alpha_schema::EventEnvelope<SessionEvent>]) -> Vec<SteerMessage> {
+    let mut queued = BTreeMap::new();
+    let mut settled = BTreeSet::new();
+    for envelope in events {
+        match &envelope.payload {
+            SessionEvent::SteerQueued {
+                steer_id,
+                turn_id,
+                text,
+            } => {
+                queued.insert(*steer_id, (*turn_id, text.clone()));
+            }
+            SessionEvent::SteerInjected { steer_id, .. }
+            | SessionEvent::SteerDiscarded { steer_id } => {
+                settled.insert(*steer_id);
+            }
+            _ => {}
+        }
+    }
+    queued
+        .into_iter()
+        .filter(|(steer_id, _)| !settled.contains(steer_id))
+        .map(|(steer_id, (turn_id, text))| SteerMessage {
+            steer_id,
+            turn_id,
+            text,
+        })
+        .collect()
 }
 
 fn install_live_observers(
@@ -721,7 +764,7 @@ fn install_live_observers(
 async fn actor_loop(
     session_id: SessionId,
     runtime: SessionRuntime,
-    writer: SessionWriter,
+    writer: Arc<SessionWriter>,
     state: Arc<Mutex<SessionState>>,
     current_turn: Arc<Mutex<Option<TurnId>>>,
     steer_queue: Arc<ActorSteerQueue>,
@@ -729,8 +772,8 @@ async fn actor_loop(
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
     actors: Weak<Mutex<HashMap<SessionId, Arc<SessionActor>>>>,
     idle_timeout: Duration,
+    mut recovered_steers: Vec<SteerMessage>,
 ) {
-    let mut writer = Some(writer);
     let (completion_tx, mut completions) = mpsc::unbounded_channel();
     let mut cancel: Option<CancellationToken> = None;
     let mut active_turn: Option<TurnId> = None;
@@ -744,7 +787,7 @@ async fn actor_loop(
                     SessionCommand::Submit { turn_id, prompt } => {
                         start_turn(
                             &runtime,
-                            &mut writer,
+                            &writer,
                             &state,
                             &current_turn,
                             &completion_tx,
@@ -769,21 +812,29 @@ async fn actor_loop(
                     }
                     SessionCommand::Steer { text, reply } => {
                         let turn_id = active_turn.unwrap_or_default();
-                        let result = steer_queue.push(SteerMessage { turn_id, text });
+                        let steer_id = MessageId::new();
+                        let result = writer
+                            .append(SessionEvent::SteerQueued {
+                                steer_id,
+                                turn_id,
+                                text: text.clone(),
+                            })
+                            .map(|_| ())
+                            .map_err(AgentHostError::Session)
+                            .and_then(|_| {
+                                steer_queue.push(SteerMessage {
+                                    steer_id,
+                                    turn_id,
+                                    text,
+                                })
+                            });
                         let _ = reply.send(result);
                     }
                     SessionCommand::SetMode { mode, reply } => {
                         let result = writer
-                            .as_mut()
-                            .ok_or_else(|| {
-                                AgentHostError::Invalid("session writer is busy".to_owned())
-                            })
-                            .and_then(|writer| {
-                                writer
-                                    .append(SessionEvent::ModeChanged { mode })
-                                    .map(|_| ())
-                                    .map_err(AgentHostError::Session)
-                            });
+                            .append(SessionEvent::ModeChanged { mode })
+                            .map(|_| ())
+                            .map_err(AgentHostError::Session);
                         let _ = reply.send(result);
                     }
                     SessionCommand::ConfirmSteers { accept, reply } => {
@@ -794,14 +845,33 @@ async fn actor_loop(
                             continue;
                         }
                         if !accept {
+                            for steer in recovered_steers.drain(..) {
+                                let _ = writer.append(SessionEvent::SteerDiscarded {
+                                    steer_id: steer.steer_id,
+                                });
+                            }
+                            for steer in steer_queue.drain() {
+                                let _ = writer.append(SessionEvent::SteerDiscarded {
+                                    steer_id: steer.steer_id,
+                                });
+                            }
                             steer_queue.clear();
                             let _ = reply.send(Ok(()));
                             continue;
                         }
-                        let queued = steer_queue.drain();
+                        let queued = if recovered_steers.is_empty() {
+                            steer_queue.drain()
+                        } else {
+                            std::mem::take(&mut recovered_steers)
+                        };
                         if queued.is_empty() {
                             let _ = reply.send(Ok(()));
                             continue;
+                        }
+                        for steer in &queued {
+                            let _ = writer.append(SessionEvent::SteerDiscarded {
+                                steer_id: steer.steer_id,
+                            });
                         }
                         let text = queued
                             .into_iter()
@@ -812,7 +882,7 @@ async fn actor_loop(
                         running.store(true, Ordering::SeqCst);
                         start_turn(
                             &runtime,
-                            &mut writer,
+                            &writer,
                             &state,
                             &current_turn,
                             &completion_tx,
@@ -830,16 +900,9 @@ async fn actor_loop(
                         let override_value = (!provider_tools.is_empty()).then_some(provider_tools.clone());
                         runtime.provider_tools_override.set(override_value);
                         let result = writer
-                            .as_mut()
-                            .ok_or_else(|| {
-                                AgentHostError::Invalid("session writer is busy".to_owned())
-                            })
-                            .and_then(|writer| {
-                                writer
-                                    .append(SessionEvent::CapabilitiesSet { provider_tools })
-                                    .map(|_| ())
-                                    .map_err(AgentHostError::Session)
-                            });
+                            .append(SessionEvent::CapabilitiesSet { provider_tools })
+                            .map(|_| ())
+                            .map_err(AgentHostError::Session);
                         let _ = reply.send(result);
                     }
                 }
@@ -848,7 +911,6 @@ async fn actor_loop(
                 let Some(completion) = completion else {
                     break;
                 };
-                writer = Some(completion.writer);
                 running.store(false, Ordering::SeqCst);
                 *current_turn.lock().expect("turn lock poisoned") = None;
                 cancel = None;
@@ -856,6 +918,11 @@ async fn actor_loop(
                 let _ = completion.result;
                 let queued = steer_queue.drain();
                 if !queued.is_empty() {
+                    for steer in &queued {
+                        let _ = writer.append(SessionEvent::SteerDiscarded {
+                            steer_id: steer.steer_id,
+                        });
+                    }
                     let text = queued
                         .into_iter()
                         .map(|message| message.text)
@@ -865,7 +932,7 @@ async fn actor_loop(
                     running.store(true, Ordering::SeqCst);
                     start_turn(
                         &runtime,
-                        &mut writer,
+                        &writer,
                         &state,
                         &current_turn,
                         &completion_tx,
@@ -892,7 +959,7 @@ async fn actor_loop(
 #[allow(clippy::too_many_arguments)]
 fn start_turn(
     runtime: &SessionRuntime,
-    writer: &mut Option<SessionWriter>,
+    writer: &Arc<SessionWriter>,
     state: &Arc<Mutex<SessionState>>,
     current_turn: &Arc<Mutex<Option<TurnId>>>,
     completion_tx: &mpsc::UnboundedSender<TurnCompletion>,
@@ -901,9 +968,7 @@ fn start_turn(
     cancel: &mut Option<CancellationToken>,
     active_turn: &mut Option<TurnId>,
 ) {
-    let Some(mut turn_writer) = writer.take() else {
-        return;
-    };
+    let turn_writer = writer.clone();
     let state_snapshot = state.lock().expect("session state lock poisoned").clone();
     let ctx = runtime.ctx.clone();
     let agent = runtime.agent.clone();
@@ -915,7 +980,7 @@ fn start_turn(
     let session_ctx = ctx.clone();
     let _ = session_ctx.scope().spawn(async move {
         let result = tokio::select! {
-            result = agent.run_turn(&ctx, &mut turn_writer, &state_snapshot, &prompt) => {
+            result = agent.run_turn(&ctx, &turn_writer, &state_snapshot, &prompt) => {
                 result.map(|_| ())
             }
             _ = token.cancelled() => {
@@ -925,9 +990,6 @@ fn start_turn(
                 Err(LoopError::Tool("turn cancelled".to_owned()))
             }
         };
-        let _ = completion_tx.send(TurnCompletion {
-            writer: turn_writer,
-            result,
-        });
+        let _ = completion_tx.send(TurnCompletion { result });
     });
 }

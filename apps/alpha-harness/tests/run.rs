@@ -424,7 +424,7 @@ impl AgentDriver for FixedDriver {
     fn run_turn<'a>(
         &'a self,
         _ctx: &'a Ctx,
-        writer: &'a mut SessionWriter,
+        writer: &'a SessionWriter,
         _state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {

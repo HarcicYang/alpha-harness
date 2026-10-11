@@ -87,7 +87,7 @@ fn attach_replays_events_after_a_sequence() {
     );
     let id = header.id;
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::TurnStarted)
             .expect("turn start");
@@ -129,7 +129,7 @@ fn resume_repairs_interrupted_work_and_reports_state() {
     );
     let id = header.id;
     {
-        let mut writer = store.create(header).expect("create");
+        let writer = store.create(header).expect("create");
         writer
             .append(SessionEvent::TurnStarted)
             .expect("turn start");

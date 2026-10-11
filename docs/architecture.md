@@ -524,6 +524,8 @@ Steers outside an active turn remain pending until
 `session.confirm_steers` accepts or discards them. Accepted steers start a new
 turn; discarded steers are removed without entering model history. The pending
 steer queue is bounded and rejects overflow instead of growing without limit.
+Queued and settled steer identities are durable, so a resumed actor rebuilds
+the pending set from the log and waits for confirmation before execution.
 
 ## 4. Runtime contract sketch
 

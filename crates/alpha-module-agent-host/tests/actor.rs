@@ -21,7 +21,7 @@ impl AgentDriver for EchoDriver {
     fn run_turn<'a>(
         &'a self,
         _ctx: &'a Ctx,
-        writer: &'a mut SessionWriter,
+        writer: &'a SessionWriter,
         _state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
@@ -251,6 +251,76 @@ fn pending_steers_require_confirmation() {
                 && params["kind"] == "durable"
                 && params["event"]["payload"]["type"] == "assistant_message"
                 && params["event"]["payload"]["blocks"][0]["text"] == "echo:confirmed"
+        }));
+    });
+}
+
+#[test]
+fn pending_steers_survive_actor_restart() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let first = AgentHostService::new(
+            store.clone(),
+            Arc::new(RecordingTransport::default()),
+            Arc::new(EchoFactory),
+        )
+        .with_idle_timeout(Duration::from_millis(20));
+        let created = first
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+            })
+            .expect("create");
+        first
+            .steer(created.session_id, "pending".to_owned())
+            .await
+            .expect("queue steer");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(first.session_count(), 0);
+        drop(first);
+
+        let transport = Arc::new(RecordingTransport::default());
+        let second = AgentHostService::new(store, transport.clone(), Arc::new(EchoFactory));
+        second
+            .resume_session(created.session_id)
+            .expect("resume session");
+        second
+            .confirm_steers(created.session_id, true)
+            .await
+            .expect("confirm recovered steer");
+        for _ in 0..50 {
+            let done = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned")
+                .iter()
+                .any(|(method, params)| {
+                    method == "session.event"
+                        && params["kind"] == "durable"
+                        && params["event"]["payload"]["type"] == "turn_ended"
+                });
+            if done {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let notifications = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned");
+        assert!(notifications.iter().any(|(method, params)| {
+            method == "session.event"
+                && params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "assistant_message"
+                && params["event"]["payload"]["blocks"][0]["text"] == "echo:pending"
         }));
     });
 }

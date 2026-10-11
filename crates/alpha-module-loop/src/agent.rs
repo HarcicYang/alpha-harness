@@ -25,6 +25,8 @@ const DEFAULT_MAX_STEPS: usize = 24;
 /// One steer message waiting for a safe injection boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SteerMessage {
+    /// Stable steer identity.
+    pub steer_id: MessageId,
     /// Turn receiving the steer.
     pub turn_id: TurnId,
     /// Steer text.
@@ -123,7 +125,7 @@ impl AgentLoop {
     pub async fn run_turn(
         &self,
         ctx: &Ctx,
-        writer: &mut SessionWriter,
+        writer: &SessionWriter,
         state: &SessionState,
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
@@ -133,7 +135,7 @@ impl AgentLoop {
     async fn run_turn_impl(
         &self,
         ctx: &Ctx,
-        writer: &mut SessionWriter,
+        writer: &SessionWriter,
         state: &SessionState,
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
@@ -452,19 +454,16 @@ impl AgentLoop {
 
     fn inject_steers(
         &self,
-        writer: &mut SessionWriter,
+        writer: &SessionWriter,
         messages: &mut Vec<ChatMessage>,
     ) -> Result<(), LoopError> {
         let Some(queue) = &self.steer_queue else {
             return Ok(());
         };
         for steer in queue.drain() {
-            writer.append(SessionEvent::SteerQueued {
-                turn_id: steer.turn_id,
-                text: steer.text.clone(),
-            })?;
             let message_id = MessageId::new();
             writer.append(SessionEvent::SteerInjected {
+                steer_id: steer.steer_id,
                 turn_id: steer.turn_id,
                 message_id,
                 text: steer.text.clone(),
@@ -477,7 +476,7 @@ impl AgentLoop {
     async fn execute_tool(
         &self,
         ctx: &Ctx,
-        writer: &mut SessionWriter,
+        writer: &SessionWriter,
         session_id: alpha_schema::SessionId,
         message_id: MessageId,
         messages: &mut Vec<ChatMessage>,
@@ -639,7 +638,7 @@ pub trait ContextPreparer: Send + Sync + 'static {
     /// Prepare context before the driver records a new user message.
     fn prepare<'a>(
         &'a self,
-        writer: &'a mut SessionWriter,
+        writer: &'a SessionWriter,
         state: &'a mut SessionState,
         provider: &'a dyn ModelProvider,
         model: &'a str,
@@ -656,7 +655,7 @@ pub trait AgentDriver: Send + Sync + 'static {
     fn run_turn<'a>(
         &'a self,
         ctx: &'a Ctx,
-        writer: &'a mut SessionWriter,
+        writer: &'a SessionWriter,
         state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>>;
@@ -666,7 +665,7 @@ impl AgentDriver for AgentLoop {
     fn run_turn<'a>(
         &'a self,
         ctx: &'a Ctx,
-        writer: &'a mut SessionWriter,
+        writer: &'a SessionWriter,
         state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {

@@ -69,7 +69,7 @@ fn header() -> SessionHeader {
     )
 }
 
-fn append_history(writer: &mut alpha_module_session::SessionWriter) -> SessionState {
+fn append_history(writer: &alpha_module_session::SessionWriter) -> SessionState {
     let header = writer.header().clone();
     let events = vec![
         writer
@@ -109,14 +109,14 @@ async fn compaction_replaces_a_complete_prefix() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());
     let header = header();
-    let mut writer = store.create(header).expect("create");
-    let mut state = append_history(&mut writer);
+    let writer = store.create(header).expect("create");
+    let mut state = append_history(&writer);
     let provider = SummaryProvider::new("compressed history");
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
     compactor
         .prepare(
-            &mut writer,
+            &writer,
             &mut state,
             &provider,
             "summary-model",
@@ -137,13 +137,13 @@ async fn compaction_does_not_run_below_the_threshold() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());
     let header = header();
-    let mut writer = store.create(header).expect("create");
+    let writer = store.create(header).expect("create");
     let mut state = SessionState::new(writer.header());
     let provider = SummaryProvider::new("unused");
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
     compactor
-        .prepare(&mut writer, &mut state, &provider, "summary-model", "small")
+        .prepare(&writer, &mut state, &provider, "summary-model", "small")
         .await
         .expect("prepare");
 
@@ -158,14 +158,14 @@ async fn failed_summarization_leaves_history_untouched() {
     let store = SessionStore::new(dir.path());
     let header = header();
     let id = header.id;
-    let mut writer = store.create(header).expect("create");
-    let mut state = append_history(&mut writer);
+    let writer = store.create(header).expect("create");
+    let mut state = append_history(&writer);
     let provider = SummaryProvider::failing();
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
     let error = compactor
         .prepare(
-            &mut writer,
+            &writer,
             &mut state,
             &provider,
             "summary-model",

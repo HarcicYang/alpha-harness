@@ -51,6 +51,9 @@ pub enum SessionEvent {
     },
     /// A steer message entered the bounded queue.
     SteerQueued {
+        /// Stable steer identity.
+        #[serde(default = "default_steer_id")]
+        steer_id: MessageId,
         /// Turn receiving the steer.
         turn_id: TurnId,
         /// Steer text.
@@ -58,12 +61,21 @@ pub enum SessionEvent {
     },
     /// A queued steer was injected at a safe boundary.
     SteerInjected {
+        /// Stable steer identity.
+        #[serde(default = "default_steer_id")]
+        steer_id: MessageId,
         /// Turn receiving the steer.
         turn_id: TurnId,
         /// Message identity used in model history.
         message_id: MessageId,
         /// Steer text.
         text: String,
+    },
+    /// A queued steer was discarded before injection.
+    SteerDiscarded {
+        /// Stable steer identity.
+        #[serde(default = "default_steer_id")]
+        steer_id: MessageId,
     },
     /// The complete system prompt snapshot used by this session.
     SystemPromptSet {
@@ -178,4 +190,8 @@ impl SessionEvent {
             _ => None,
         }
     }
+}
+
+fn default_steer_id() -> MessageId {
+    MessageId::new()
 }

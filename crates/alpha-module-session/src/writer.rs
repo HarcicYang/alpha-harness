@@ -3,7 +3,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alpha_schema::{EventEnvelope, Seq};
 use fs2::FileExt;
@@ -49,10 +49,14 @@ impl Lease {
 pub struct SessionWriter {
     header: SessionHeader,
     dir: PathBuf,
-    file: File,
+    inner: Mutex<WriterInner>,
     _lease: Lease,
-    last_seq: Seq,
     repairs: Vec<EventEnvelope<SessionEvent>>,
+}
+
+struct WriterInner {
+    file: File,
+    last_seq: Seq,
     observer: Option<SessionEventObserver>,
 }
 
@@ -68,11 +72,13 @@ impl SessionWriter {
         Self {
             header,
             dir,
-            file,
+            inner: Mutex::new(WriterInner {
+                file,
+                last_seq,
+                observer: None,
+            }),
             _lease: lease,
-            last_seq,
             repairs,
-            observer: None,
         }
     }
 
@@ -88,7 +94,10 @@ impl SessionWriter {
 
     /// The last allocated sequence number.
     pub fn last_seq(&self) -> Seq {
-        self.last_seq
+        self.inner
+            .lock()
+            .expect("session writer lock poisoned")
+            .last_seq
     }
 
     /// Repair events appended when this writer opened the session.
@@ -97,18 +106,23 @@ impl SessionWriter {
     }
 
     /// Install an observer for durable events appended by this writer.
-    pub fn set_observer(&mut self, observer: SessionEventObserver) {
-        self.observer = Some(observer);
+    pub fn set_observer(&self, observer: SessionEventObserver) {
+        self.inner
+            .lock()
+            .expect("session writer lock poisoned")
+            .observer = Some(observer);
     }
 
     /// Append one durable event and return its envelope.
-    pub fn append(
-        &mut self,
-        event: SessionEvent,
-    ) -> Result<EventEnvelope<SessionEvent>, SessionError> {
-        let envelope = append_event(&mut self.file, self.last_seq.next(), event)?;
-        self.last_seq = envelope.seq;
-        if let Some(observer) = &self.observer {
+    pub fn append(&self, event: SessionEvent) -> Result<EventEnvelope<SessionEvent>, SessionError> {
+        let (envelope, observer) = {
+            let mut inner = self.inner.lock().expect("session writer lock poisoned");
+            let seq = inner.last_seq.next();
+            let envelope = append_event(&mut inner.file, seq, event)?;
+            inner.last_seq = envelope.seq;
+            (envelope, inner.observer.clone())
+        };
+        if let Some(observer) = observer {
             observer(&envelope);
         }
         Ok(envelope)

@@ -138,6 +138,7 @@ impl SessionState {
                 text: text.clone(),
             }),
             SessionEvent::SteerQueued { .. } => {}
+            SessionEvent::SteerDiscarded { .. } => {}
             SessionEvent::SteerInjected {
                 message_id, text, ..
             } => self.messages.push(MessageRecord::User {
