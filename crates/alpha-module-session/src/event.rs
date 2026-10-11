@@ -70,6 +70,15 @@ pub enum SessionEvent {
         /// Full model-visible system prompt.
         text: String,
     },
+    /// Frozen request capabilities for one model step.
+    RequestHeader {
+        /// Model identifier.
+        model: String,
+        /// Local tool names.
+        tools: Vec<String>,
+        /// Provider-native tool names.
+        provider_tools: Vec<String>,
+    },
     /// Older context was replaced by a model-generated summary.
     ContextCompacted {
         /// Summary that replaces the recorded range.

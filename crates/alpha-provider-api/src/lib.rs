@@ -10,7 +10,7 @@ use alpha_module_credential::CredentialStore;
 use alpha_module_http::HttpClient;
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
-    ProviderError, ToolCall, ToolDefinition,
+    ProviderCapabilities, ProviderError, ToolCall, ToolDefinition,
 };
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -372,6 +372,12 @@ impl AdapterProvider {
 }
 
 impl ModelProvider for AdapterProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            provider_tools: self.provider_tools.clone(),
+        }
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,
@@ -530,6 +536,12 @@ impl DynamicProvider {
 }
 
 impl ModelProvider for DynamicProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        build_provider_instance(&self.root, &self.instance_id)
+            .map(|provider| provider.capabilities())
+            .unwrap_or_default()
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,

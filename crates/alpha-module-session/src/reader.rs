@@ -131,14 +131,13 @@ fn push_envelope(
         });
     }
     if envelope.schema < CURRENT_EVENT_SCHEMA {
-        if envelope.schema == 1 {
-            envelope.schema = CURRENT_EVENT_SCHEMA;
-        } else {
+        if envelope.schema == 0 {
             return Err(SessionError::MigrationRequired {
                 found: envelope.schema,
                 supported: CURRENT_EVENT_SCHEMA,
             });
         }
+        envelope.schema = CURRENT_EVENT_SCHEMA;
     }
     if let Some(previous) = events.last() {
         if envelope.seq <= previous.seq {

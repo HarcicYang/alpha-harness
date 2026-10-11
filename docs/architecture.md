@@ -499,10 +499,14 @@ and citations. Local tool calls still produce independent `ToolCall` and
 and never enter the local tool registry.
 
 Schema 1 assistant messages with a plain `text` field are migrated at read
-time into a single text block. The current durable schema is version 2.
+time into a single text block. The current durable schema is version 3.
 Provider-native tools, including Anthropic `web_search`, are represented as
 provider tool blocks so the transcript and replay path do not need
 provider-specific event types.
+
+Before each model step the loop appends a durable `request_header` event with
+the model, local tool names, and provider-native tool names. The event is the
+capability snapshot for that request.
 
 Session actors are resident only while active or recently used. Idle actors are
 evicted by `alpha-module-agent-host`; a later `session.resume` rebuilds the

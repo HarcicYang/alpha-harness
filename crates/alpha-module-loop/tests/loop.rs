@@ -468,7 +468,7 @@ async fn provider_failure_closes_the_turn() {
     assert!(matches!(events[0], SessionEvent::TurnStarted));
     assert!(matches!(events[1], SessionEvent::UserMessage { .. }));
     assert!(matches!(
-        events[2],
+        events[3],
         SessionEvent::TurnEnded {
             reason: TurnEndReason::Failed
         }
@@ -518,6 +518,7 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
         .map(|envelope| match &envelope.payload {
             SessionEvent::TurnStarted => "turn_started",
             SessionEvent::UserMessage { .. } => "user",
+            SessionEvent::RequestHeader { .. } => "request_header",
             SessionEvent::ToolCall { .. } => "tool_call",
             SessionEvent::ToolResult {
                 status: ToolStatus::Completed,
@@ -533,8 +534,10 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
         [
             "turn_started",
             "user",
+            "request_header",
             "tool_call",
             "tool_result",
+            "request_header",
             "assistant",
             "turn_end"
         ]

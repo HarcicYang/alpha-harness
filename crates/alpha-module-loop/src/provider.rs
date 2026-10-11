@@ -67,6 +67,13 @@ pub struct ToolDefinition {
     pub input_schema: Value,
 }
 
+/// Provider capabilities that affect one model request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// Provider-native tools enabled for the request.
+    pub provider_tools: Vec<String>,
+}
+
 /// One tool call requested by the model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCall {
@@ -166,6 +173,11 @@ pub enum ProviderError {
 
 /// Model provider contract.
 pub trait ModelProvider: Send + Sync + 'static {
+    /// Capabilities applied to each request.
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
+
     /// Produce a completion for the request.
     fn complete(
         &self,

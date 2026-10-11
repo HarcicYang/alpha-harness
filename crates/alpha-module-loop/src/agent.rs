@@ -166,6 +166,12 @@ impl AgentLoop {
 
         for step in 0..self.max_steps {
             self.inject_steers(writer, &mut messages)?;
+            let capabilities = self.provider.capabilities();
+            writer.append(SessionEvent::RequestHeader {
+                model: self.model.clone(),
+                tools: tools.iter().map(|tool| tool.name.clone()).collect(),
+                provider_tools: capabilities.provider_tools,
+            })?;
             ctx.parallel(AgentStepStarted { step: step + 1 }).await;
             let request = CompletionRequest {
                 model: self.model.clone(),
@@ -252,6 +258,12 @@ impl AgentLoop {
         }
 
         // Wrap up without tools so the user still gets a summary.
+        let capabilities = self.provider.capabilities();
+        writer.append(SessionEvent::RequestHeader {
+            model: self.model.clone(),
+            tools: Vec::new(),
+            provider_tools: capabilities.provider_tools,
+        })?;
         let request = CompletionRequest {
             model: self.model.clone(),
             messages: messages.clone(),
