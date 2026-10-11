@@ -1,5 +1,7 @@
 //! JSON-RPC 2.0 message types.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -139,6 +141,12 @@ pub struct RpcError {
     /// Optional structured details.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+impl fmt::Display for RpcError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} ({})", self.message, self.code)
+    }
 }
 
 impl RpcError {

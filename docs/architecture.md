@@ -149,7 +149,7 @@ below the workspace may invent its own cwd:
 Headless and SDK first:
 
 - `alpha run`: one-shot and streaming stdout, for scripts and CI.
-- `alpha serve --stdio`: JSON-RPC server for editors and external clients.
+- `alpha __core --stdio`: hidden core process managed by a front.
 - Rust SDK embeds the core crates directly.
 
 A TUI is the second profile; a daemon can come later because protocol and
@@ -159,8 +159,9 @@ transport are separate.
 
 JSON-RPC 2.0 over stdio with newline-delimited JSON framing. stdout carries
 protocol messages only; logs go to stderr. The `alpha-schema` crate owns
-public shapes and durable payloads. The first carrier is stdio; UDS or TCP can
-be added later without protocol changes.
+public shapes and durable payloads. The first carrier is the private stdio
+pipe between a front supervisor and its core child. Other carriers can be
+added later without protocol changes.
 
 Methods include session lifecycle (`session.create`, `session.list`,
 `session.resume`, `session.attach`, `session.events`), message submission,
@@ -401,6 +402,23 @@ preserved as an interrupted prefix.
 The CLI subscribes to live events: stdout receives assistant deltas and stderr
 receives progress. Protocol stdio mode keeps stdout protocol-only.
 
+### D25: Front and core
+
+The public `alpha` binary is the only user entry point. `alpha-core` and
+`alpha-front` are internal crate layers, not separate executables. A front
+supervisor starts one hidden `alpha __core --stdio` child, performs the
+`body.hello` handshake, and owns the child lifecycle.
+
+All front modes (`run`, `chat`, `tui`, `sessions`) use the same managed-core
+path. Each front+core pair is an independent instance. A front never attaches
+to another instance's core, and a second writer for the same session fails
+with `session_busy`.
+
+Core startup defaults to three retries after the initial attempt. Retries
+restart the core process and restore durable session state only; an
+interrupted turn is never replayed automatically. The hidden core command is
+available for manual debugging but is not a supported user workflow.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,
@@ -432,6 +450,8 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-kernel` | context, services, events, effects, scopes, structured spawn |
 | `alpha-schema` | public shapes, durable event payloads, protocol method types |
 | `alpha-protocol` | JSON-RPC 2.0 and NDJSON framing, request routing |
+| `alpha-front-client` | blocking alpha-protocol client used by fronts |
+| `alpha-front-supervisor` | managed core child process lifecycle |
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |

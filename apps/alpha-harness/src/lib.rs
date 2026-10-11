@@ -515,6 +515,16 @@ pub fn serve_with<R: BufRead, W: Write>(
 fn build_router(store: SessionStore) -> Router {
     let store = Arc::new(store);
     Router::new()
+        .method("body.hello", |_params: Value| async move {
+            Ok::<Value, RpcError>(json!({
+                "protocol": "alpha-protocol/1",
+                "coreInstanceId": format!("core-{}", std::process::id()),
+                "pid": std::process::id(),
+            }))
+        })
+        .method("body.shutdown", |_params: Value| async move {
+            Ok::<Value, RpcError>(json!({ "ok": true }))
+        })
         .method("alpha.ping", |_params: Value| async move {
             Ok::<Value, RpcError>(json!({
                 "pong": true,

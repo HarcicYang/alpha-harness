@@ -34,8 +34,16 @@ enum Command {
     Run(RunArgs),
     /// List stored sessions.
     Sessions,
-    /// Serve JSON-RPC 2.0 over NDJSON on stdio.
-    Serve,
+    /// Internal core process entry point.
+    #[command(name = "__core", hide = true)]
+    Core(CoreArgs),
+}
+
+#[derive(Debug, Args)]
+struct CoreArgs {
+    /// Serve alpha-protocol over stdin/stdout.
+    #[arg(long)]
+    stdio: bool,
 }
 
 #[derive(Debug, Args)]
@@ -86,7 +94,11 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Serve => {
+        Command::Core(args) => {
+            if !args.stdio {
+                eprintln!("alpha __core: --stdio is required");
+                return ExitCode::FAILURE;
+            }
             let store = SessionStore::new(SessionStore::default_root());
             match serve_stdio(store) {
                 Ok(()) => ExitCode::SUCCESS,

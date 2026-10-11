@@ -48,15 +48,6 @@ alpha run --resume <SESSION_ID>       # reopen idle and repair interrupted work
 alpha run --resume <SESSION_ID> "continue"
 ```
 
-## JSON-RPC over stdio
-
-```sh
-echo '{"jsonrpc":"2.0","id":1,"method":"alpha.ping"}' | alpha serve
-```
-
-Methods: `alpha.ping`, `session.list`, `session.resume { sessionId }`,
-`session.attach { sessionId, afterSeq }`.
-
 ## Common commands
 
 ```sh

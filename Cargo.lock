@@ -46,11 +46,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-front-client"
+version = "0.1.0"
+dependencies = [
+ "alpha-protocol",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "alpha-front-supervisor"
+version = "0.1.0"
+dependencies = [
+ "alpha-front-client",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "alpha-harness"
 version = "0.1.0"
 dependencies = [
  "alpha-build",
  "alpha-bundle-default",
+ "alpha-front-supervisor",
  "alpha-kernel",
  "alpha-module-compaction",
  "alpha-module-fs",
