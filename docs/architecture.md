@@ -149,6 +149,7 @@ below the workspace may invent its own cwd:
 Headless and SDK first:
 
 - `alpha run`: one-shot and streaming stdout, for scripts and CI.
+- `alpha chat`: interactive managed-core chat front.
 - `alpha tui`: full-screen terminal profile backed by a managed core.
 - `alpha __core --stdio`: hidden core process managed by a front.
 - Rust SDK embeds the core crates directly.
@@ -411,7 +412,9 @@ supervisor starts one hidden `alpha __core --stdio` child, performs the
 `body.hello` handshake, and owns the child lifecycle.
 
 All front modes (`run`, `chat`, `tui`, `sessions`) use the same managed-core
-path. Each front+core pair is an independent instance. A front never attaches
+path. `alpha run`, `alpha chat`, and `alpha tui` start their own core process;
+`alpha sessions` uses the managed core to list durable state. Each front+core
+pair is an independent instance. A front never attaches
 to another instance's core, and a second writer for the same session fails
 with `session_busy`.
 

@@ -19,14 +19,18 @@ The workspace requires Rust 1.88 or newer.
 ## Run one prompt
 
 ```sh
-export OPENAI_API_KEY=...
-alpha run --mode free --model deepseek-chat \
-  --base-url https://api.deepseek.com/v1 "add a README section"
+alpha run --mode free "add a README section"
 ```
 
 - `--mode read|auto|free` selects the permission mode (`auto` is the default).
 - `--workspace <path>` selects the workspace root; it defaults to the current
   directory.
+- `--provider <ID>` selects a configured provider instance; otherwise the
+  configured default is used.
+- `--model <MODEL>` selects a model; otherwise the provider catalog default is
+  used.
+- Provider credentials are stored in the platform keyring and configured from
+  `alpha tui`. Environment credentials are not used.
 - Interactive terminals get approval prompts in `auto` mode. Non-interactive
   runs fail closed and need `--mode free` or explicit policy rules.
 - Shell commands run inside a bubblewrap sandbox when it is available.
@@ -66,7 +70,7 @@ alpha run --resume <SESSION_ID> "continue"
 ```sh
 cargo build       # Build
 cargo run -- --help                                  # CLI help
-cargo run -- run --mode free "add a README section"  # One prompt (needs OPENAI_API_KEY)
+cargo run -- run --mode free "add a README section"  # One prompt
 cargo test        # Test
 cargo fmt         # Format
 cargo clippy      # Lint

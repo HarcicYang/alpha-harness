@@ -1,22 +1,14 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use alpha_front_client::ConnectionEvent;
+use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig};
 use alpha_front_tui::run_tui;
-use alpha_harness::{
-    ResumeOptions, RunOptions, TtyApprovalChannel, compose_openai_runtime, list_sessions,
-    resume_session_in, run_prompt_in, serve_stdio,
-};
-use alpha_kernel::Ctx;
-use alpha_module_loop::{
-    AgentError, AgentStepStarted, AgentTextDelta, AgentToolFinished, AgentToolStarted,
-};
-use alpha_module_permission::ApprovalChannel;
-use alpha_module_session::SessionStore;
 use alpha_schema::{PermissionMode, SessionId};
 use clap::{Args, Parser, Subcommand};
+use serde_json::{Value, json};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,6 +25,8 @@ struct Cli {
 enum Command {
     /// Run one prompt and exit.
     Run(RunArgs),
+    /// Open the interactive chat front.
+    Chat,
     /// Open the full-screen terminal interface.
     Tui,
     /// List stored sessions.
@@ -57,12 +51,12 @@ struct RunArgs {
     /// Workspace root. Defaults to the current directory.
     #[arg(long)]
     workspace: Option<PathBuf>,
-    /// Model identifier.
-    #[arg(long, default_value = "gpt-4o-mini")]
-    model: String,
-    /// OpenAI-compatible base URL.
+    /// Provider instance or provider kind. Defaults to the configured default.
     #[arg(long)]
-    base_url: Option<String>,
+    provider: Option<String>,
+    /// Model identifier. Defaults to the provider catalog.
+    #[arg(long)]
+    model: Option<String>,
     /// Resume an existing session instead of starting a new one.
     #[arg(long, value_name = "SESSION_ID")]
     resume: Option<SessionId>,
@@ -79,41 +73,26 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args),
-        Command::Tui => match run_tui() {
+        Command::Chat | Command::Tui => match run_tui() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("alpha tui: {error}");
+                eprintln!("alpha: {error}");
                 ExitCode::FAILURE
             }
         },
-        Command::Sessions => {
-            let store = SessionStore::new(SessionStore::default_root());
-            match list_sessions(&store) {
-                Ok(sessions) => {
-                    for summary in sessions {
-                        println!(
-                            "{}\t{}\t{}\t{}",
-                            summary.id, summary.mode, summary.created_at_ms, summary.workspace
-                        );
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("alpha sessions: {error}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
+        Command::Sessions => list_sessions_command(),
         Command::Core(args) => {
             if !args.stdio {
                 eprintln!("alpha __core: --stdio is required");
                 return ExitCode::FAILURE;
             }
-            let store = SessionStore::new(SessionStore::default_root());
-            match serve_stdio(store) {
+            let store = alpha_module_session::SessionStore::new(
+                alpha_module_session::SessionStore::default_root(),
+            );
+            match alpha_harness::serve_stdio(store) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!("alpha serve: {error}");
+                    eprintln!("alpha __core: {error}");
                     ExitCode::FAILURE
                 }
             }
@@ -121,240 +100,282 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_command(args: RunArgs) -> ExitCode {
-    let base_url = args
-        .base_url
-        .clone()
-        .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
-    let api_key = match std::env::var("OPENAI_API_KEY") {
-        Ok(key) => key,
-        Err(_) => {
-            eprintln!("alpha run: set OPENAI_API_KEY to use the openai-compatible provider");
-            return ExitCode::FAILURE;
-        }
-    };
-    let prompt = args.prompt.join(" ");
-
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
+fn list_sessions_command() -> ExitCode {
+    let mut supervisor = match CoreSupervisor::start(SupervisorConfig::default()) {
+        Ok(supervisor) => supervisor,
         Err(error) => {
-            eprintln!("alpha run: cannot start the async runtime: {error}");
+            eprintln!("alpha sessions: {error}");
             return ExitCode::FAILURE;
         }
     };
-
-    let approval: Option<Arc<dyn ApprovalChannel>> = if std::io::stdin().is_terminal() {
-        Some(Arc::new(TtyApprovalChannel))
-    } else {
-        None
-    };
-
-    if let Some(session_id) = args.resume {
-        let store = SessionStore::new(SessionStore::default_root());
-        let header = match store.open_read(session_id) {
-            Ok(reader) => reader.header().clone(),
-            Err(error) => {
-                eprintln!("alpha run: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        if args.workspace.is_some() {
-            eprintln!("alpha run: ignoring --workspace; the session binding wins");
+    let sessions = match supervisor.request("session.list", None) {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            eprintln!("alpha sessions: {error}");
+            return ExitCode::FAILURE;
         }
-        let workspace = PathBuf::from(&header.workspace.root);
-        let mode = header.mode;
-        let prompt = (!prompt.trim().is_empty()).then_some(prompt);
-        eprintln!(
-            "alpha run: resume {} (mode={mode}, model={}, workspace={})",
-            session_id,
-            args.model,
-            workspace.display()
-        );
-        let result = runtime.block_on(async move {
-            let composition = compose_openai_runtime(
-                &workspace,
-                mode,
-                &args.model,
-                &base_url,
-                &api_key,
-                approval,
-            )?;
-            let ctx = composition
-                .ctx
-                .child()
-                .map_err(|error| alpha_harness::RunError::Service(error.to_string()))?;
-            let streamed = install_cli_listeners(&ctx);
-            let result = resume_session_in(
-                &ctx,
-                ResumeOptions { session_id, prompt },
-                &composition,
-                &store,
-            )
-            .await;
-            ctx.dispose();
-            Ok::<_, alpha_harness::RunError>((result, streamed))
-        });
-        return match result {
-            Ok((Ok(report), streamed)) => {
-                match &report.assistant_text {
-                    Some(text) if !streamed.load(Ordering::Relaxed) => println!("{text}"),
-                    Some(_) => println!(),
-                    None => eprintln!(
-                        "session {} resumed: {} messages, turn_open={}, repairs={}",
-                        report.session_id, report.messages, report.turn_open, report.repairs
-                    ),
-                }
-                eprintln!("session: {}", report.session_id);
-                ExitCode::SUCCESS
-            }
-            Ok((Err(error), _)) | Err(error) => {
-                eprintln!("alpha run: {error}");
-                ExitCode::FAILURE
-            }
-        };
+    };
+    let Some(sessions) = sessions.as_array() else {
+        eprintln!("alpha sessions: invalid session list");
+        return ExitCode::FAILURE;
+    };
+    for header in sessions {
+        let id = header.get("id").and_then(Value::as_str).unwrap_or("?");
+        let mode = header.get("mode").and_then(Value::as_str).unwrap_or("?");
+        let created = header
+            .get("created_at")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let workspace = header
+            .get("workspace")
+            .and_then(|workspace| workspace.get("root"))
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        println!("{id}\t{mode}\t{created}\t{workspace}");
     }
+    ExitCode::SUCCESS
+}
 
-    if prompt.trim().is_empty() {
+fn run_command(args: RunArgs) -> ExitCode {
+    let prompt = args.prompt.join(" ");
+    if prompt.trim().is_empty() && args.resume.is_none() {
         eprintln!("alpha run: provide a prompt or use --resume <SESSION_ID>");
         return ExitCode::FAILURE;
     }
-
-    let workspace = match args.workspace {
-        Some(path) => path,
-        None => match std::env::current_dir() {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("alpha run: cannot resolve the workspace: {error}");
-                return ExitCode::FAILURE;
-            }
-        },
-    };
-    let workspace = match std::fs::canonicalize(&workspace) {
-        Ok(path) => path,
+    let mut supervisor = match CoreSupervisor::start(SupervisorConfig::default()) {
+        Ok(supervisor) => supervisor,
         Err(error) => {
-            eprintln!(
-                "alpha run: workspace `{}` is not accessible: {error}",
-                workspace.display()
-            );
+            eprintln!("alpha run: {error}");
             return ExitCode::FAILURE;
         }
     };
 
-    eprintln!(
-        "alpha run: mode={}, model={}, workspace={}",
-        args.mode,
-        args.model,
-        workspace.display()
-    );
-    let result = runtime.block_on(async move {
-        let composition = compose_openai_runtime(
-            &workspace,
-            args.mode,
-            &args.model,
-            &base_url,
-            &api_key,
-            approval,
-        )?;
-        let store = SessionStore::new(SessionStore::default_root());
-        let ctx = composition
-            .ctx
-            .child()
-            .map_err(|error| alpha_harness::RunError::Service(error.to_string()))?;
-        let streamed = install_cli_listeners(&ctx);
-        let result = run_prompt_in(
-            &ctx,
-            RunOptions {
-                workspace,
-                mode: args.mode,
-                model: args.model,
-                prompt,
-            },
-            &composition,
-            &store,
-        )
-        .await;
-        ctx.dispose();
-        Ok::<_, alpha_harness::RunError>((result, streamed))
-    });
-
-    match result {
-        Ok((Ok(report), streamed)) => {
-            if streamed.load(Ordering::Relaxed) {
-                println!();
-            } else {
-                println!("{}", report.assistant_text);
+    let session_id = if let Some(session_id) = args.resume {
+        match supervisor.request(
+            "session.resume",
+            Some(json!({ "sessionId": session_id })),
+        ) {
+            Ok(resumed) => {
+                eprintln!(
+                    "alpha run: resumed {} ({} messages, repairs={})",
+                    session_id,
+                    resumed
+                        .get("messages")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    resumed
+                        .get("repairs")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default()
+                );
+                session_id
             }
-            eprintln!("session: {}", report.session_id);
-            ExitCode::SUCCESS
+            Err(error) => {
+                eprintln!("alpha run: {error}");
+                return ExitCode::FAILURE;
+            }
         }
-        Ok((Err(error), _)) | Err(error) => {
-            eprintln!("alpha run: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn install_cli_listeners(ctx: &Ctx) -> Arc<AtomicBool> {
-    let streamed = Arc::new(AtomicBool::new(false));
-    let saw_text = streamed.clone();
-    ctx.on_parallel::<AgentTextDelta, _>(move |event| {
-        saw_text.store(true, Ordering::Relaxed);
-        let text = event.text.clone();
-        Box::pin(async move {
-            use tokio::io::AsyncWriteExt;
-            let mut stdout = tokio::io::stdout();
-            let _ = stdout.write_all(text.as_bytes()).await;
-            let _ = stdout.flush().await;
-        })
-    })
-    .expect("text listener");
-
-    ctx.on_parallel::<AgentStepStarted, _>(move |event| {
-        eprintln!("alpha run: step {}: calling model...", event.step);
-        Box::pin(async {})
-    })
-    .expect("step listener");
-
-    ctx.on_parallel::<AgentToolStarted, _>(move |event| {
-        let preview = serde_json::to_string(&event.input).unwrap_or_default();
-        eprintln!("alpha run: -> {} {}", event.name, snippet(&preview, 160));
-        Box::pin(async {})
-    })
-    .expect("tool start listener");
-
-    ctx.on_parallel::<AgentToolFinished, _>(move |event| {
-        let label = match event.status {
-            alpha_module_session::ToolStatus::Completed => "ok",
-            alpha_module_session::ToolStatus::Failed => "failed",
-            alpha_module_session::ToolStatus::Interrupted => "interrupted",
+    } else {
+        let workspace = match resolve_workspace(args.workspace) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                eprintln!("alpha run: {error}");
+                return ExitCode::FAILURE;
+            }
         };
-        let first_line = event.content.lines().next().unwrap_or_default();
-        eprintln!(
-            "alpha run: <- {} {}: {}",
-            event.name,
-            label,
-            snippet(first_line, 120)
-        );
-        Box::pin(async {})
-    })
-    .expect("tool finish listener");
+        match supervisor.request(
+            "session.create",
+            Some(json!({
+                "workspace": workspace,
+                "cwd": workspace,
+                "mode": args.mode,
+                "provider": args.provider.unwrap_or_default(),
+                "model": args.model.unwrap_or_default(),
+            })),
+        ) {
+            Ok(created) => {
+                let Some(session_id) = created
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .and_then(|id| id.parse::<SessionId>().ok())
+                else {
+                    eprintln!("alpha run: session.create returned no session id");
+                    return ExitCode::FAILURE;
+                };
+                session_id
+            }
+            Err(error) => {
+                eprintln!(
+                    "alpha run: {error}. Configure a provider with `alpha tui` first."
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    };
 
-    ctx.on_parallel::<AgentError, _>(move |event| {
-        eprintln!("alpha run: {}", event.message);
-        Box::pin(async {})
-    })
-    .expect("error listener");
-    streamed
+    if prompt.trim().is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    if let Err(error) = supervisor.request(
+        "session.submit",
+        Some(json!({ "sessionId": session_id, "prompt": prompt })),
+    ) {
+        eprintln!("alpha run: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    let mut streamed = false;
+    let mut final_text = String::new();
+    loop {
+        let event = match supervisor.recv_event_timeout(Duration::from_millis(100)) {
+            Ok(event) => event,
+            Err(error) => {
+                eprintln!("alpha run: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match event {
+            Some(ConnectionEvent::Notification(notification))
+                if notification.method == "session.event" =>
+            {
+                let Some(params) = notification.params else {
+                    continue;
+                };
+                if let Some(text) = handle_run_event(&params, &mut streamed) {
+                    final_text = text;
+                }
+                if turn_finished(&params) {
+                    if streamed {
+                        println!();
+                    } else if !final_text.is_empty() {
+                        println!("{final_text}");
+                    }
+                    eprintln!("session: {session_id}");
+                    return ExitCode::SUCCESS;
+                }
+            }
+            Some(ConnectionEvent::Request(request))
+                if request.method == "interaction.request" =>
+            {
+                let decision = read_approval_decision(&request.params);
+                if let Err(error) =
+                    supervisor.respond(request.id, Ok(json!({ "decision": decision })))
+                {
+                    eprintln!("alpha run: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Some(ConnectionEvent::Closed(error)) => {
+                eprintln!("alpha run: core disconnected: {error}");
+                return ExitCode::FAILURE;
+            }
+            _ => {}
+        }
+    }
 }
 
-fn snippet(text: &str, max_chars: usize) -> String {
-    let mut output: String = text.chars().take(max_chars).collect();
-    if text.chars().count() > max_chars {
-        output.push_str("...");
+fn resolve_workspace(workspace: Option<PathBuf>) -> Result<PathBuf, String> {
+    let workspace = match workspace {
+        Some(path) => path,
+        None => std::env::current_dir().map_err(|error| error.to_string())?,
+    };
+    std::fs::canonicalize(&workspace).map_err(|error| {
+        format!(
+            "workspace `{}` is not accessible: {error}",
+            workspace.display()
+        )
+    })
+}
+
+fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
+    let kind = params.get("kind").and_then(Value::as_str).unwrap_or("");
+    let event = params.get("event").unwrap_or(&Value::Null);
+    match kind {
+        "live" => {
+            match event.get("type").and_then(Value::as_str).unwrap_or("") {
+                "text_delta" => {
+                    if let Some(text) = event.get("text").and_then(Value::as_str) {
+                        print!("{text}");
+                        let _ = std::io::stdout().flush();
+                        *streamed = true;
+                    }
+                }
+                "step_started" => {
+                    if let Some(step) = event.get("step").and_then(Value::as_u64) {
+                        eprintln!("alpha run: step {step}: calling model...");
+                    }
+                }
+                "tool_started" => {
+                    let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    eprintln!("alpha run: -> {name}");
+                }
+                "tool_finished" => {
+                    let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let status = event
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("finished");
+                    eprintln!("alpha run: <- {name} {status}");
+                }
+                _ => {}
+            }
+        }
+        "durable" => {
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+            match payload.get("type").and_then(Value::as_str).unwrap_or("") {
+                "assistant_message" => {
+                    return payload
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                }
+                "tool_call" => {
+                    let name = payload.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    eprintln!("alpha run: -> {name}");
+                }
+                "tool_result" => {
+                    let status = payload
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("finished");
+                    eprintln!("alpha run: <- {status}");
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
-    output
+    None
+}
+
+fn turn_finished(params: &Value) -> bool {
+    params.get("kind").and_then(Value::as_str) == Some("durable")
+        && params
+            .get("event")
+            .and_then(|event| event.get("payload"))
+            .and_then(|payload| payload.get("type"))
+            .and_then(Value::as_str)
+            == Some("turn_ended")
+}
+
+fn read_approval_decision(params: &Option<Value>) -> &'static str {
+    if !std::io::stdin().is_terminal() {
+        return "deny";
+    }
+    if let Some(params) = params {
+        eprintln!(
+            "alpha run: permission requested: {}",
+            serde_json::to_string(params).unwrap_or_default()
+        );
+    }
+    eprintln!("[a]llow once  [s]ession  [d]eny");
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return "deny";
+    }
+    match line.trim().to_ascii_lowercase().as_str() {
+        "a" | "y" | "yes" => "once",
+        "s" | "session" => "session",
+        _ => "deny",
+    }
 }
