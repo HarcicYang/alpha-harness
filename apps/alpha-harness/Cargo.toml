@@ -22,6 +22,7 @@ alpha-module-prompt.workspace = true
 alpha-module-process.workspace = true
 alpha-module-provider-openai.workspace = true
 alpha-module-tools.workspace = true
+alpha-provider-api.workspace = true
 alpha-schema.workspace = true
 alpha-protocol.workspace = true
 alpha-kernel.workspace = true

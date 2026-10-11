@@ -1,0 +1,24 @@
+[package]
+name = "alpha-provider-api"
+description = "Provider and API adapter contracts for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "provider", "adapter"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-kernel.workspace = true
+alpha-module-http.workspace = true
+alpha-module-loop.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "provider.api"
+provides = [{ key = "api.adapter", kind = "registry", scope = "global" }]

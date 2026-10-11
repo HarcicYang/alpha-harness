@@ -434,6 +434,19 @@ the front reports `keyring_unavailable`; there is no plaintext-file fallback.
 The workspace MSRV is Rust 1.88 so the credential stack can use
 `keyring-core` with platform-specific store crates.
 
+### D27: Provider API adapters
+
+Provider kinds and API adapters are separate module layers. A provider kind
+owns authentication, provider configuration, model metadata, compatibility
+options, and request hooks. An API adapter owns one wire protocol, including
+message conversion, streaming, tool-call accumulation, usage normalization,
+and provider error mapping.
+
+Adapters register under the global `api.adapter` registry capability. Provider
+modules declare required and optional adapter keys and select an adapter per
+instance or model. Adapter crates do not depend on provider modules, and
+provider modules do not copy adapter protocol implementations.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,
@@ -467,6 +480,8 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-protocol` | JSON-RPC 2.0 and NDJSON framing, request routing |
 | `alpha-front-client` | blocking alpha-protocol client used by fronts |
 | `alpha-front-supervisor` | managed core child process lifecycle |
+| `alpha-provider-api` | provider descriptors and API adapter contracts |
+| `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |

@@ -29,6 +29,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-api-openai-chat"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "alpha-provider-api",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "alpha-build"
 version = "0.1.0"
 dependencies = [
@@ -43,6 +58,7 @@ dependencies = [
 name = "alpha-bundle-default"
 version = "0.1.0"
 dependencies = [
+ "alpha-api-openai-chat",
  "alpha-module-compaction",
  "alpha-module-config",
  "alpha-module-credential",
@@ -55,6 +71,7 @@ dependencies = [
  "alpha-module-provider-openai",
  "alpha-module-session",
  "alpha-module-tools",
+ "alpha-provider-api",
 ]
 
 [[package]]
@@ -95,6 +112,7 @@ dependencies = [
  "alpha-module-session",
  "alpha-module-tools",
  "alpha-protocol",
+ "alpha-provider-api",
  "alpha-schema",
  "clap",
  "futures",
@@ -285,6 +303,19 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "alpha-provider-api"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
