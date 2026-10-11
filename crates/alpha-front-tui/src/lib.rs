@@ -60,6 +60,8 @@ pub struct ProviderView {
     pub selected_instance: usize,
     /// Active secret input.
     pub auth_prompt: Option<AuthPrompt>,
+    /// Active provider config editor.
+    pub config_editor: Option<ConfigEditor>,
     /// Credential backend status.
     pub credential_status: Option<CredentialStatusView>,
     /// Status or error line.
@@ -75,6 +77,17 @@ pub struct CredentialStatusView {
     pub available: bool,
     /// Optional diagnostic detail.
     pub detail: Option<String>,
+}
+
+/// Opaque provider config editor state.
+#[derive(Clone, Debug)]
+pub struct ConfigEditor {
+    /// Instance being edited.
+    pub instance: ProviderInstance,
+    /// Editable JSON text.
+    pub text: String,
+    /// Validation or update error.
+    pub error: Option<String>,
 }
 
 /// One visible line in the chat transcript.
@@ -661,6 +674,52 @@ impl ProviderView {
         Ok(())
     }
 
+    fn begin_config_edit(&mut self) -> Result<(), TuiError> {
+        let instance = self
+            .selected_instance()
+            .cloned()
+            .ok_or_else(|| TuiError::Protocol("no provider instance selected".to_owned()))?;
+        let text = serde_json::to_string_pretty(&instance.config)
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.config_editor = Some(ConfigEditor {
+            instance,
+            text,
+            error: None,
+        });
+        Ok(())
+    }
+
+    fn submit_config_edit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+        let Some(mut editor) = self.config_editor.take() else {
+            return Ok(());
+        };
+        let config: Value = match serde_json::from_str(&editor.text) {
+            Ok(config) => config,
+            Err(error) => {
+                editor.error = Some(error.to_string());
+                self.config_editor = Some(editor);
+                return Ok(());
+            }
+        };
+        let original = editor.instance.clone();
+        editor.instance.config = config;
+        supervisor
+            .request("provider.update_instance", Some(json!(editor.instance)))
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        if let Err(error) = supervisor.request(
+            "provider.test_instance",
+            Some(json!({ "id": editor.instance.id })),
+        ) {
+            let _ = supervisor.request("provider.update_instance", Some(json!(original)));
+            editor.error = Some(error.to_string());
+            self.config_editor = Some(editor);
+            return Ok(());
+        }
+        self.refresh(supervisor)?;
+        self.status = Some(format!("updated {}", editor.instance.id));
+        Ok(())
+    }
+
     fn credential_hint(&self) -> Option<String> {
         let status = self.credential_status.as_ref()?;
         if status.available {
@@ -787,6 +846,40 @@ fn handle_provider_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<(), TuiError> {
+    if app.providers.config_editor.is_some() {
+        match code {
+            KeyCode::Esc => app.providers.config_editor = None,
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Err(error) = app.providers.submit_config_edit(supervisor) {
+                    if let Some(editor) = &mut app.providers.config_editor {
+                        editor.error = Some(error.to_string());
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(editor) = &mut app.providers.config_editor {
+                    editor.text.push('\n');
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(editor) = &mut app.providers.config_editor {
+                    editor.text.push_str("  ");
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(editor) = &mut app.providers.config_editor {
+                    editor.text.pop();
+                }
+            }
+            KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(editor) = &mut app.providers.config_editor {
+                    editor.text.push(character);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
     if app.providers.auth_prompt.is_some() {
         match code {
             KeyCode::Enter => {
@@ -848,6 +941,11 @@ fn handle_provider_key(
         }
         KeyCode::Char('c') => {
             if let Err(error) = app.providers.begin_auth() {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('e') => {
+            if let Err(error) = app.providers.begin_config_edit() {
                 app.providers.status = Some(error.to_string());
             }
         }
@@ -1288,7 +1386,7 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
         .unwrap_or(if view.instances.is_empty() {
             "No providers configured. Press n to create one, or q to return."
         } else {
-            "n new  x remove  c credential  t test  s default  r refresh  q back"
+            "n new  e config  c credential  t test  s default  x remove  r refresh  q back"
         });
     let status_style = if view.status.is_some() || view.credential_hint().is_some() {
         Style::default().fg(Color::Red)
@@ -1313,6 +1411,9 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
     if let Some(prompt) = &view.auth_prompt {
         draw_auth_prompt(frame, prompt);
     }
+    if let Some(editor) = &view.config_editor {
+        draw_config_editor(frame, editor);
+    }
 }
 
 fn draw_auth_prompt(frame: &mut ratatui::Frame<'_>, prompt: &AuthPrompt) {
@@ -1327,6 +1428,30 @@ fn draw_auth_prompt(frame: &mut ratatui::Frame<'_>, prompt: &AuthPrompt) {
     frame.render_widget(
         Paragraph::new(text)
             .block(Block::default().borders(Borders::ALL).title("API key"))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_config_editor(frame: &mut ratatui::Frame<'_>, editor: &ConfigEditor) {
+    let area = centered_rect(80, 22, frame.area());
+    frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(format!("Provider: {}", editor.instance.id)),
+        Line::from(""),
+    ];
+    for line in editor.text.lines() {
+        lines.push(Line::from(line.to_owned()));
+    }
+    if let Some(error) = &editor.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("error: {error}")));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("Ctrl-S save   Esc cancel"));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(Block::default().borders(Borders::ALL).title("Config JSON"))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -1379,6 +1504,17 @@ fn kind_details(kind: Option<&ProviderDescriptor>) -> Text<'static> {
     lines.push(Line::from("Auth:"));
     for auth in &kind.auth_methods {
         lines.push(Line::from(format!("  {}  {}", auth.key, auth.label)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("Config fields:"));
+    if let Some(properties) = kind
+        .config_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for key in properties.keys() {
+            lines.push(Line::from(format!("  {key}")));
+        }
     }
     Text::from(lines)
 }
@@ -1504,5 +1640,24 @@ mod tests {
             view.transcript,
             vec![TranscriptEntry::Assistant("hello".to_owned())]
         );
+    }
+
+    #[test]
+    fn config_editor_starts_from_the_selected_instance() {
+        let mut view = ProviderView {
+            kinds: vec![descriptor()],
+            instances: vec![ProviderInstance {
+                id: "test".to_owned(),
+                kind: "test".to_owned(),
+                config_version: 1,
+                config: serde_json::json!({ "base_url": "https://example.test" }),
+                auth_ref: None,
+                model_overrides: serde_json::json!({}),
+            }],
+            ..ProviderView::default()
+        };
+        view.begin_config_edit().expect("begin edit");
+        let editor = view.config_editor.expect("editor");
+        assert!(editor.text.contains("https://example.test"));
     }
 }
