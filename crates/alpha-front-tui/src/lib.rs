@@ -68,6 +68,10 @@ pub struct ProviderView {
     pub credential_status: Option<CredentialStatusView>,
     /// Status or error line.
     pub status: Option<String>,
+    /// When the current status line was first observed.
+    status_changed_at: Option<Instant>,
+    /// Last status text observed by the UI loop.
+    last_status: Option<String>,
 }
 
 /// Credential backend state rendered by the provider screen.
@@ -141,6 +145,10 @@ pub struct ChatView {
     pub provider: String,
     /// Model used for new sessions.
     pub model: String,
+    /// When the current status line was first observed.
+    status_changed_at: Option<Instant>,
+    /// Last status text observed by the UI loop.
+    last_status: Option<String>,
 }
 
 impl ChatView {
@@ -437,7 +445,32 @@ impl ChatView {
                 let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
                 self.status = Some(format!("finished {name}"));
             }
+            "error" => {
+                let message = event
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("model request failed");
+                self.transcript
+                    .push(TranscriptEntry::Error(message.to_owned()));
+                self.status = Some(message.to_owned());
+                self.running_turn = None;
+            }
             _ => {}
+        }
+    }
+
+    fn tick_status(&mut self) {
+        if self.status != self.last_status {
+            self.last_status = self.status.clone();
+            self.status_changed_at = Some(Instant::now());
+        }
+        if self
+            .status_changed_at
+            .is_some_and(|changed| changed.elapsed() >= Duration::from_secs(6))
+        {
+            self.status = None;
+            self.last_status = None;
+            self.status_changed_at = None;
         }
     }
 
@@ -790,6 +823,21 @@ impl ProviderView {
             })
         }
     }
+
+    fn tick_status(&mut self) {
+        if self.status != self.last_status {
+            self.last_status = self.status.clone();
+            self.status_changed_at = Some(Instant::now());
+        }
+        if self
+            .status_changed_at
+            .is_some_and(|changed| changed.elapsed() >= Duration::from_secs(6))
+        {
+            self.status = None;
+            self.last_status = None;
+            self.status_changed_at = None;
+        }
+    }
 }
 
 fn parse_credential_status(value: &serde_json::Value) -> CredentialStatusView {
@@ -845,6 +893,8 @@ fn run_loop(
     loop {
         terminal.draw(|frame| draw_app(frame, app))?;
         app.chat.expire_interaction(supervisor);
+        app.chat.tick_status();
+        app.providers.tick_status();
         if let Some(connection_event) = supervisor.recv_event_timeout(Duration::from_millis(10))? {
             match connection_event {
                 ConnectionEvent::Closed(error) => {
@@ -1068,7 +1118,7 @@ fn handle_chat_key(
         KeyCode::Backspace => {
             app.chat.composer.pop();
         }
-        KeyCode::Char(':') => {
+        KeyCode::Char(':') | KeyCode::Char('/') => {
             app.palette = Some(String::new());
         }
         KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1253,32 +1303,36 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
         layout[0],
     );
 
-    let transcript = if view.transcript.is_empty() {
-        Text::from("No messages yet")
+    let transcript: Vec<Line<'static>> = if view.transcript.is_empty() {
+        vec![Line::from("No messages yet")]
     } else {
-        Text::from(
-            view.transcript
-                .iter()
-                .flat_map(|entry| match entry {
-                    TranscriptEntry::User(text) => {
-                        vec![Line::from(format!("you: {text}"))]
-                    }
-                    TranscriptEntry::Assistant(text) => {
-                        vec![Line::from(format!("alpha: {text}"))]
-                    }
-                    TranscriptEntry::Progress(text) => {
-                        vec![Line::from(format!("... {text}"))]
-                    }
-                    TranscriptEntry::Error(text) => {
-                        vec![Line::from(format!("error: {text}"))]
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
+        view.transcript
+            .iter()
+            .flat_map(|entry| match entry {
+                TranscriptEntry::User(text) => {
+                    vec![Line::from(format!("you: {text}"))]
+                }
+                TranscriptEntry::Assistant(text) => {
+                    vec![Line::from(format!("alpha: {text}"))]
+                }
+                TranscriptEntry::Progress(text) => {
+                    vec![Line::from(format!("... {text}"))]
+                }
+                TranscriptEntry::Error(text) => {
+                    vec![Line::from(format!("error: {text}"))]
+                }
+            })
+            .collect()
     };
+    let transcript_height = layout[1].height.saturating_sub(2) as usize;
+    let scroll = transcript
+        .len()
+        .saturating_sub(transcript_height)
+        .min(u16::MAX as usize) as u16;
     frame.render_widget(
-        Paragraph::new(transcript)
+        Paragraph::new(Text::from(transcript))
             .block(Block::default().borders(Borders::ALL).title("Transcript"))
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
         layout[1],
     );
@@ -1291,7 +1345,7 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
     let status = view
         .status
         .as_deref()
-        .unwrap_or("Enter submit  Esc cancel  Ctrl-P providers  Ctrl-C quit");
+        .unwrap_or("Enter submit  / commands  Esc cancel  Ctrl-P providers  Ctrl-C quit");
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         layout[3],
@@ -1332,18 +1386,18 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
     let text = Text::from(vec![
         Line::from("Commands"),
         Line::from(""),
-        Line::from(":provider [ID]   open provider manager or select provider"),
-        Line::from(":model MODEL     select model for new sessions"),
-        Line::from(":mode MODE       set read, auto, or free"),
-        Line::from(":confirm         run pending steers"),
-        Line::from(":discard         discard pending steers"),
-        Line::from(":capabilities T  set provider tools, for example web_search"),
-        Line::from(":new             create a new session"),
-        Line::from(":resume ID       resume a session"),
-        Line::from(":sessions        open the session picker"),
-        Line::from(":diagnostics     show core connection details"),
-        Line::from(":help            show this help"),
-        Line::from(":quit            exit"),
+        Line::from("/provider [ID]   open provider manager or select provider"),
+        Line::from("/model MODEL     select model for new sessions"),
+        Line::from("/mode MODE       set read, auto, or free"),
+        Line::from("/confirm         run pending steers"),
+        Line::from("/discard         discard pending steers"),
+        Line::from("/capabilities T  set provider tools, for example web_search"),
+        Line::from("/new             create a new session"),
+        Line::from("/resume ID       resume a session"),
+        Line::from("/sessions        open the session picker"),
+        Line::from("/diagnostics     show core connection details"),
+        Line::from("/help            show this help"),
+        Line::from("/quit            exit"),
         Line::from(""),
         Line::from("Esc deny/cancel   Ctrl-C quit"),
     ]);
@@ -1359,7 +1413,7 @@ fn draw_palette(frame: &mut ratatui::Frame<'_>, palette: &str) {
     let area = centered_rect(70, 3, frame.area());
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(format!(":{palette}"))
+        Paragraph::new(format!("/{palette}"))
             .block(Block::default().borders(Borders::ALL).title("Command")),
         area,
     );
