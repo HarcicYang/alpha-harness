@@ -141,6 +141,13 @@ fn run_command(args: RunArgs) -> ExitCode {
         let workspace = PathBuf::from(&header.workspace.root);
         let mode = header.mode;
         let prompt = (!prompt.trim().is_empty()).then_some(prompt);
+        eprintln!(
+            "alpha run: resume {} (mode={mode}, model={}, workspace={})",
+            session_id,
+            args.model,
+            workspace.display()
+        );
+        eprintln!("alpha run: waiting for the model...");
         let result = runtime.block_on(async move {
             let composition = compose_openai_runtime(
                 &workspace,
@@ -196,6 +203,14 @@ fn run_command(args: RunArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    eprintln!(
+        "alpha run: mode={}, model={}, workspace={}",
+        args.mode,
+        args.model,
+        workspace.display()
+    );
+    eprintln!("alpha run: waiting for the model...");
 
     let result = runtime.block_on(async move {
         let composition = compose_openai_runtime(
