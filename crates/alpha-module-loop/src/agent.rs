@@ -714,7 +714,7 @@ impl HistoryBuilder {
         }
         if let Some(compaction) = &state.compaction {
             builder.messages.push(ChatMessage::System(format!(
-                "# 历史压缩摘要\n\n{}",
+                "# Compacted History Summary\n\n{}",
                 compaction.summary
             )));
         }

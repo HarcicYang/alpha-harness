@@ -450,7 +450,7 @@ async fn context_preparer_updates_the_request_history() {
     let requests = provider.requests.lock().expect("request lock");
     assert_eq!(
         requests[0].messages[0],
-        ChatMessage::System("# 历史压缩摘要\n\nolder history".to_owned())
+        ChatMessage::System("# Compacted History Summary\n\nolder history".to_owned())
     );
     assert!(
         requests[0].messages.iter().any(

@@ -29,12 +29,14 @@ fn module_assembles_builtin_sections_in_stable_order() {
         .expect("prompt assembler");
     let prompt = assembler.assemble(&ctx, &state()).expect("assemble");
 
-    let runtime = prompt.find("# 你的运行环境与使用方式").expect("runtime");
-    let rules = prompt.find("# 强制规则").expect("rules");
-    let output = prompt.find("# 你的输出").expect("output");
-    let tools = prompt.find("# 工具使用").expect("tools");
-    let stop = prompt.find("# 停止条件").expect("stop");
-    let persona = prompt.find("# 角色").expect("persona");
+    let runtime = prompt
+        .find("# Your Runtime and Operating Model")
+        .expect("runtime");
+    let rules = prompt.find("# Mandatory Rules").expect("rules");
+    let output = prompt.find("# Your Output").expect("output");
+    let tools = prompt.find("# Tool Use").expect("tools");
+    let stop = prompt.find("# Stop Conditions").expect("stop");
+    let persona = prompt.find("# Persona").expect("persona");
 
     assert!(runtime < rules);
     assert!(rules < output);
@@ -55,7 +57,7 @@ fn sections_are_removed_when_the_context_is_disposed() {
         .require::<dyn PromptAssembler>()
         .expect("prompt assembler");
     let before = assembler.assemble(&ctx, &state()).expect("before");
-    assert!(before.contains("# 你的输出"));
+    assert!(before.contains("# Your Output"));
 
     ctx.dispose();
     assert!(ctx.get::<dyn PromptAssembler>().is_none());

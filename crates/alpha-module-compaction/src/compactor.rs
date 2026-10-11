@@ -125,9 +125,9 @@ impl DefaultContextCompactor {
         for chunk in chunks {
             let mut input = String::new();
             if !summary.is_empty() {
-                input.push_str("已有摘要：\n");
+                input.push_str("Existing summary:\n");
                 input.push_str(&summary);
-                input.push_str("\n\n需要合并的新记录：\n");
+                input.push_str("\n\nNew records to merge:\n");
             }
             input.push_str(&chunk);
             let response = provider
@@ -271,18 +271,18 @@ fn truncate_to_tokens(text: &str, max_tokens: usize, estimator: &dyn TokenEstima
 }
 
 const SUMMARY_PROMPT: &str = "\
-你是 coding agent 的上下文压缩器。把输入记录整理成一份供后续任务继续工作的事实性摘要。
+You are the context compactor for a coding agent. Condense the input records into a factual summary that lets later tasks continue the work.
 
-必须保留：
-- 用户目标、明确约束和当前任务状态
-- 已确认的架构决定、实现方案和文件路径
-- 已修改或读取的重要文件，以及修改目的
-- 已运行或必须运行的验证命令和结果
-- 未解决问题、风险、阻塞点和下一步
+Must preserve:
+- The user's goals, explicit constraints, and current task state
+- Confirmed architectural decisions, implementation approaches, and file paths
+- Important files that were modified or read, and why
+- Verification commands that were run or must be run, and their results
+- Unresolved issues, risks, blockers, and next steps
 
-规则：
-- 不添加记录中没有的信息，不推测。
-- 区分已完成、失败和未执行的事项。
-- 保留精确的路径、命令、错误文本和标识符。
-- 删除寒暄、重复过程和无关输出。
-- 使用紧凑的 Markdown 分节输出。";
+Rules:
+- Do not add information absent from the records and do not speculate.
+- Distinguish completed, failed, and not-yet-executed items.
+- Keep exact paths, commands, error text, and identifiers.
+- Remove pleasantries, repeated process, and irrelevant output.
+- Output compact Markdown sections.";
