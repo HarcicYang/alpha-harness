@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, Ctx, Module};
+use alpha_module_compaction::{CompactionConfig, CompactionModule};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
 use alpha_module_loop::{
@@ -329,6 +330,7 @@ fn activate_core_modules(
         },
     )?;
     ToolsModule.activate(ctx, &ToolsConfig::default())?;
+    CompactionModule.activate(ctx, &CompactionConfig::default())?;
     Ok(())
 }
 

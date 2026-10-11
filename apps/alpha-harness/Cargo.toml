@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 alpha-module-session.workspace = true
+alpha-module-compaction.workspace = true
 alpha-module-fs.workspace = true
 alpha-module-http.workspace = true
 alpha-module-loop.workspace = true

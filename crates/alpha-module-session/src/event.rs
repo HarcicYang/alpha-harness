@@ -54,6 +54,15 @@ pub enum SessionEvent {
         /// Full model-visible system prompt.
         text: String,
     },
+    /// Older context was replaced by a model-generated summary.
+    ContextCompacted {
+        /// Summary that replaces the recorded range.
+        summary: String,
+        /// First durable sequence replaced by the summary.
+        from_seq: alpha_schema::Seq,
+        /// Last durable sequence replaced by the summary.
+        through_seq: alpha_schema::Seq,
+    },
     /// An assistant message entered the log.
     AssistantMessage {
         /// Message identity.

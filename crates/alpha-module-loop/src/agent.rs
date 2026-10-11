@@ -51,6 +51,7 @@ pub struct AgentLoop {
     model: String,
     tools: Option<Arc<ToolRegistry>>,
     observer: Option<Arc<dyn TurnObserver>>,
+    context_preparer: Option<Arc<dyn ContextPreparer>>,
     max_steps: usize,
 }
 
@@ -62,6 +63,7 @@ impl AgentLoop {
             model: model.into(),
             tools: None,
             observer: None,
+            context_preparer: None,
             max_steps: DEFAULT_MAX_STEPS,
         }
     }
@@ -81,6 +83,12 @@ impl AgentLoop {
     /// Attach a tool registry.
     pub fn with_tools(mut self, tools: Arc<ToolRegistry>) -> Self {
         self.tools = Some(tools);
+        self
+    }
+
+    /// Attach a context-preparation pipeline.
+    pub fn with_context_preparer(mut self, preparer: Arc<dyn ContextPreparer>) -> Self {
+        self.context_preparer = Some(preparer);
         self
     }
 
@@ -109,6 +117,18 @@ impl AgentLoop {
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
         let session_id = writer.header().id;
+        let mut effective_state = state.clone();
+        if let Some(preparer) = &self.context_preparer {
+            let _ = preparer
+                .prepare(
+                    writer,
+                    &mut effective_state,
+                    self.provider.as_ref(),
+                    &self.model,
+                    prompt,
+                )
+                .await;
+        }
         writer.append(SessionEvent::TurnStarted)?;
         let user_id = MessageId::new();
         writer.append(SessionEvent::UserMessage {
@@ -116,7 +136,7 @@ impl AgentLoop {
             text: prompt.to_owned(),
         })?;
 
-        let mut messages = HistoryBuilder::from_state(state);
+        let mut messages = HistoryBuilder::from_state(&effective_state);
         messages.push(ChatMessage::User(prompt.to_owned()));
 
         let tools = self.tool_definitions();
@@ -302,6 +322,34 @@ pub trait TurnObserver: Send + Sync + 'static {
     fn tool_finished(&self, name: &str, status: ToolStatus, content: &str);
 }
 
+/// Failure from an optional context-preparation step.
+#[derive(Debug, Error)]
+#[error("context preparation failed: {0}")]
+pub struct ContextError(String);
+
+impl ContextError {
+    /// Create an error from a plain message.
+    pub fn message(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+/// Optional pre-turn context transformation.
+///
+/// Implementations may append durable context events and update the supplied
+/// session projection. Returning an error leaves the original history intact.
+pub trait ContextPreparer: Send + Sync + 'static {
+    /// Prepare context before the driver records a new user message.
+    fn prepare<'a>(
+        &'a self,
+        writer: &'a mut SessionWriter,
+        state: &'a mut SessionState,
+        provider: &'a dyn ModelProvider,
+        model: &'a str,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<(), ContextError>>;
+}
+
 /// Replaceable driver contract for one agent turn.
 ///
 /// Consumers depend on this trait, so a composition can mount a different
@@ -342,7 +390,20 @@ impl HistoryBuilder {
         if let Some(prompt) = &state.system_prompt {
             builder.messages.push(ChatMessage::System(prompt.clone()));
         }
+        if let Some(compaction) = &state.compaction {
+            builder.messages.push(ChatMessage::System(format!(
+                "# 历史压缩摘要\n\n{}",
+                compaction.summary
+            )));
+        }
         for record in &state.messages {
+            if state
+                .compaction
+                .as_ref()
+                .is_some_and(|compaction| record.seq() <= compaction.through_seq)
+            {
+                continue;
+            }
             builder.push(record);
         }
         builder.finish()
@@ -354,7 +415,7 @@ impl HistoryBuilder {
                 self.flush();
                 self.messages.push(ChatMessage::User(text.clone()));
             }
-            MessageRecord::Assistant { id, text } => {
+            MessageRecord::Assistant { id, text, .. } => {
                 self.flush();
                 self.pending_text = Some((*id, text.clone()));
             }
@@ -363,6 +424,7 @@ impl HistoryBuilder {
                 id,
                 name,
                 input,
+                ..
             } => {
                 if self.calls_for != Some(*message_id) {
                     self.flush();

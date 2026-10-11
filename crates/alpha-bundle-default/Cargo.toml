@@ -10,6 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-module-config.workspace = true
+alpha-module-compaction.workspace = true
 alpha-module-session.workspace = true
 alpha-module-loop.workspace = true
 alpha-module-fs.workspace = true

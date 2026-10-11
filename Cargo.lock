@@ -32,6 +32,7 @@ dependencies = [
 name = "alpha-bundle-default"
 version = "0.1.0"
 dependencies = [
+ "alpha-module-compaction",
  "alpha-module-config",
  "alpha-module-fs",
  "alpha-module-http",
@@ -51,6 +52,7 @@ dependencies = [
  "alpha-build",
  "alpha-bundle-default",
  "alpha-kernel",
+ "alpha-module-compaction",
  "alpha-module-fs",
  "alpha-module-http",
  "alpha-module-loop",
@@ -85,6 +87,21 @@ dependencies = [
 [[package]]
 name = "alpha-macros"
 version = "0.1.0"
+
+[[package]]
+name = "alpha-module-compaction"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-loop",
+ "alpha-module-session",
+ "alpha-schema",
+ "futures",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "alpha-module-config"

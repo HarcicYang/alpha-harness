@@ -19,7 +19,7 @@ pub mod writer;
 pub use event::{SessionEvent, ToolStatus, TurnEndReason};
 pub use header::{HEADER_SCHEMA, SessionHeader, WorkspaceRef};
 pub use reader::{SessionReader, TailDamage};
-pub use state::{MessageRecord, SessionState};
+pub use state::{CompactionRecord, MessageRecord, SessionState};
 pub use store::{SessionError, SessionStore};
 pub use writer::SessionWriter;
 

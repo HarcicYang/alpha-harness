@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub use alpha_module_compaction;
 pub use alpha_module_config;
 pub use alpha_module_fs;
 pub use alpha_module_http;

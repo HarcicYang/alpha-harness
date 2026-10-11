@@ -16,6 +16,7 @@ alpha-protocol = { path = "crates/alpha-protocol", version = "0.1.0" }
 alpha-macros = { path = "crates/alpha-macros", version = "0.1.0" }
 alpha-build = { path = "crates/alpha-build", version = "0.1.0" }
 alpha-module-config = { path = "crates/alpha-module-config", version = "0.1.0" }
+alpha-module-compaction = { path = "crates/alpha-module-compaction", version = "0.1.0" }
 alpha-module-session = { path = "crates/alpha-module-session", version = "0.1.0" }
 alpha-module-loop = { path = "crates/alpha-module-loop", version = "0.1.0" }
 alpha-module-fs = { path = "crates/alpha-module-fs", version = "0.1.0" }

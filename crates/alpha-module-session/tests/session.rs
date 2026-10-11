@@ -82,6 +82,31 @@ fn system_prompt_snapshot_is_projected_from_the_log() {
 }
 
 #[test]
+fn context_compaction_is_projected_from_the_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let id = header.id;
+
+    {
+        let mut writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::ContextCompacted {
+                summary: "summary".to_owned(),
+                from_seq: alpha_schema::Seq::new(1),
+                through_seq: alpha_schema::Seq::new(2),
+            })
+            .expect("append compaction");
+    }
+
+    let reader = store.open_read(id).expect("open read");
+    let compaction = reader.state().compaction.expect("compaction");
+    assert_eq!(compaction.summary, "summary");
+    assert_eq!(compaction.from_seq.get(), 1);
+    assert_eq!(compaction.through_seq.get(), 2);
+}
+
+#[test]
 fn read_open_does_not_modify_files() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());

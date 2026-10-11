@@ -3,15 +3,15 @@ use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{
-    AgentLoop, ChatMessage, CompletionRequest, CompletionResponse, LoopConfig, LoopModule,
-    ModelProvider, ProviderError, ProviderRegistry, ToolCall, TurnObserver,
+    AgentLoop, ChatMessage, CompletionRequest, CompletionResponse, ContextError, ContextPreparer,
+    LoopConfig, LoopModule, ModelProvider, ProviderError, ProviderRegistry, ToolCall, TurnObserver,
 };
 use alpha_module_session::{
     SessionEvent, SessionHeader, SessionState, SessionStore, ToolStatus, TurnEndReason,
     WorkspaceRef,
 };
 use alpha_module_tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResponse};
-use alpha_schema::{PermissionMode, SessionId};
+use alpha_schema::{MessageId, PermissionMode, Seq, SessionId};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
@@ -94,6 +94,31 @@ struct NoteTool {
 
 struct CollectingObserver {
     events: Mutex<Vec<String>>,
+}
+
+struct SummaryPreparer;
+
+impl ContextPreparer for SummaryPreparer {
+    fn prepare<'a>(
+        &'a self,
+        writer: &'a mut alpha_module_session::SessionWriter,
+        state: &'a mut SessionState,
+        _provider: &'a dyn ModelProvider,
+        _model: &'a str,
+        _prompt: &'a str,
+    ) -> BoxFuture<'a, Result<(), ContextError>> {
+        Box::pin(async move {
+            let envelope = writer
+                .append(SessionEvent::ContextCompacted {
+                    summary: "older history".to_owned(),
+                    from_seq: Seq::new(1),
+                    through_seq: Seq::new(1),
+                })
+                .expect("append compaction");
+            state.apply(&envelope);
+            Ok(())
+        })
+    }
 }
 
 impl TurnObserver for CollectingObserver {
@@ -233,6 +258,53 @@ async fn system_prompt_is_injected_before_history() {
     assert_eq!(
         requests[0].messages[0],
         ChatMessage::System("system rules".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn context_preparer_updates_the_request_history() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(EchoProvider::default());
+    let agent = AgentLoop::new(provider.clone(), "echo-model")
+        .with_context_preparer(Arc::new(SummaryPreparer));
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let events = vec![
+        writer
+            .append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: "old user".to_owned(),
+            })
+            .expect("old user"),
+        writer
+            .append(SessionEvent::AssistantMessage {
+                id: MessageId::new(),
+                text: "old assistant".to_owned(),
+            })
+            .expect("old assistant"),
+    ];
+    let state = SessionState::from_events(&header, &events);
+
+    agent
+        .run_turn(&mut writer, &state, "hello")
+        .await
+        .expect("turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert_eq!(
+        requests[0].messages[0],
+        ChatMessage::System("# 历史压缩摘要\n\nolder history".to_owned())
+    );
+    assert!(
+        requests[0].messages.iter().any(
+            |message| matches!(message, ChatMessage::Assistant(text) if text == "old assistant")
+        )
+    );
+    assert!(
+        !requests[0]
+            .messages
+            .iter()
+            .any(|message| matches!(message, ChatMessage::User(text) if text == "old user"))
     );
 }
 

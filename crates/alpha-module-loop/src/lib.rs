@@ -13,7 +13,9 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
-pub use agent::{AgentDriver, AgentLoop, LoopError, TurnObserver, TurnOutcome};
+pub use agent::{
+    AgentDriver, AgentLoop, ContextError, ContextPreparer, LoopError, TurnObserver, TurnOutcome,
+};
 pub use provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError,
     ProviderRegistry, RegistryError, ToolCall, ToolDefinition,
@@ -81,6 +83,9 @@ impl Module for LoopModule {
         }
         if let Some(observer) = ctx.get::<dyn TurnObserver>() {
             agent = agent.with_observer(observer);
+        }
+        if let Some(preparer) = ctx.get::<dyn ContextPreparer>() {
+            agent = agent.with_context_preparer(preparer);
         }
         let agent = Arc::new(agent);
         ctx.provide::<dyn AgentDriver>(agent.clone())
