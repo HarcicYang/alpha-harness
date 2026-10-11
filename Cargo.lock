@@ -160,6 +160,7 @@ dependencies = [
  "alpha-api-openai-responses",
  "alpha-build",
  "alpha-bundle-default",
+ "alpha-front-client",
  "alpha-front-supervisor",
  "alpha-front-tui",
  "alpha-kernel",
