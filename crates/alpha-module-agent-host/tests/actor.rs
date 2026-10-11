@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use alpha_kernel::Ctx;
 use alpha_module_agent_host::{
-    AgentHostService, CreateSessionRequest, SessionRuntime, SessionRuntimeFactory,
-    SessionRuntimeRequest,
+    AgentHostError, AgentHostService, CreateSessionRequest, SessionRuntime,
+    SessionRuntimeFactory, SessionRuntimeRequest,
 };
 use alpha_module_loop::{AgentDriver, LoopError, TurnOutcome};
 use alpha_module_session::{
@@ -150,5 +150,44 @@ fn actor_streams_durable_events_and_completes_a_turn() {
         drop(reader);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(host.session_count(), 0);
+        let resumed = host
+            .resume_session(created.session_id)
+            .expect("resume after eviction");
+        assert_eq!(resumed.messages, 2);
+    });
+}
+
+#[test]
+fn a_second_host_reports_session_busy() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let first = AgentHostService::new(
+            store.clone(),
+            Arc::new(RecordingTransport::default()),
+            Arc::new(EchoFactory),
+        );
+        let created = first
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+            })
+            .expect("create");
+        let second = AgentHostService::new(
+            store,
+            Arc::new(RecordingTransport::default()),
+            Arc::new(EchoFactory),
+        );
+        assert!(matches!(
+            second.resume_session(created.session_id),
+            Err(AgentHostError::SessionBusy(_))
+        ));
     });
 }
