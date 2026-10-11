@@ -21,26 +21,17 @@ pub use provider::{OpenAiProvider, PROVIDER_NAME};
 pub struct OpenAiConfig {
     /// API base URL, for example `https://api.openai.com/v1`.
     pub base_url: String,
-    /// Environment variable holding the API key.
-    #[serde(default = "default_api_key_env")]
-    pub api_key_env: String,
-    /// Explicit API key, intended for tests and CI. Prefer the environment.
-    #[serde(default)]
-    pub api_key: Option<String>,
+    /// Explicit API key supplied by the caller or credential seam.
+    pub api_key: String,
 }
 
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
             base_url: "https://api.openai.com/v1".to_owned(),
-            api_key_env: default_api_key_env(),
-            api_key: None,
+            api_key: String::new(),
         }
     }
-}
-
-fn default_api_key_env() -> String {
-    "OPENAI_API_KEY".to_owned()
 }
 
 /// Registers the OpenAI-compatible provider into the loop provider registry.
@@ -60,19 +51,13 @@ impl Module for OpenAiProviderModule {
         let client = ctx
             .require::<dyn HttpClient>()
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
-        let api_key = config
-            .api_key
-            .clone()
-            .or_else(|| std::env::var(&config.api_key_env).ok())
-            .ok_or_else(|| {
-                ActivateError::message(
-                    Self::KEY,
-                    format!(
-                        "set `{}` or configure `api_key` for the provider",
-                        config.api_key_env
-                    ),
-                )
-            })?;
+        if config.api_key.trim().is_empty() {
+            return Err(ActivateError::message(
+                Self::KEY,
+                "configure `api_key` for the provider",
+            ));
+        }
+        let api_key = config.api_key.clone();
 
         let provider = Arc::new(OpenAiProvider::new(
             client,

@@ -361,8 +361,7 @@ fn module_registers_and_unregisters_the_provider() {
             &ctx,
             &OpenAiConfig {
                 base_url: "https://api.test/v1".to_owned(),
-                api_key_env: "ALPHA_TEST_UNUSED_KEY".to_owned(),
-                api_key: Some("test-key".to_owned()),
+                api_key: "test-key".to_owned(),
             },
         )
         .expect("activate");
@@ -385,14 +384,9 @@ fn module_rejects_missing_api_keys() {
             &ctx,
             &OpenAiConfig {
                 base_url: "https://api.test/v1".to_owned(),
-                api_key_env: "ALPHA_TEST_DEFINITELY_MISSING_KEY".to_owned(),
-                api_key: None,
+                api_key: String::new(),
             },
         )
         .expect_err("missing key");
-    assert!(
-        error
-            .to_string()
-            .contains("ALPHA_TEST_DEFINITELY_MISSING_KEY")
-    );
+    assert!(error.to_string().contains("configure `api_key`"));
 }
