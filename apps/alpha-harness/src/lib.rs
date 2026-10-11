@@ -10,9 +10,7 @@ use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
-use alpha_module_loop::{
-    AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry, TurnObserver,
-};
+use alpha_module_loop::{AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
     PermissionConfig, PermissionModule,
@@ -22,7 +20,7 @@ use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
-    ToolStatus, WorkspaceRef,
+    WorkspaceRef,
 };
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
@@ -176,7 +174,6 @@ pub fn compose_openai_runtime(
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
-    provide_observer(&ctx)?;
     let agent = activate_loop(&ctx, PROVIDER_NAME, model)?;
     Ok(Composition { ctx, agent, audit })
 }
@@ -205,7 +202,6 @@ pub fn compose_openai_runtime_with_http(
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
-    provide_observer(&ctx)?;
     let agent = activate_loop(&ctx, PROVIDER_NAME, model)?;
     Ok(Composition { ctx, agent, audit })
 }
@@ -254,44 +250,6 @@ fn provide_provider_registry(ctx: &Ctx) -> Result<(), RunError> {
     ctx.provide::<ProviderRegistry>(Arc::new(ProviderRegistry::new()))
         .map_err(|error| RunError::Service(error.to_string()))?;
     Ok(())
-}
-
-fn provide_observer(ctx: &Ctx) -> Result<(), RunError> {
-    ctx.provide::<dyn TurnObserver>(Arc::new(StderrObserver))
-        .map_err(|error| RunError::Service(error.to_string()))?;
-    Ok(())
-}
-
-/// Reports turn progress on stderr.
-struct StderrObserver;
-
-impl TurnObserver for StderrObserver {
-    fn step_started(&self, step: usize) {
-        eprintln!("alpha run: step {step}: calling model...");
-    }
-
-    fn tool_started(&self, name: &str, input: &Value) {
-        let preview = serde_json::to_string(input).unwrap_or_default();
-        eprintln!("alpha run: -> {name} {}", snippet(&preview, 160));
-    }
-
-    fn tool_finished(&self, name: &str, status: ToolStatus, content: &str) {
-        let label = match status {
-            ToolStatus::Completed => "ok",
-            ToolStatus::Failed => "failed",
-            ToolStatus::Interrupted => "interrupted",
-        };
-        let first_line = content.lines().next().unwrap_or_default();
-        eprintln!("alpha run: <- {name} {label}: {}", snippet(first_line, 120));
-    }
-}
-
-fn snippet(text: &str, max_chars: usize) -> String {
-    let mut output: String = text.chars().take(max_chars).collect();
-    if text.chars().count() > max_chars {
-        output.push_str("...");
-    }
-    output
 }
 
 fn activate_core_modules(
@@ -353,6 +311,22 @@ pub async fn run_prompt(
     composition: &Composition,
     store: &SessionStore,
 ) -> Result<RunReport, RunError> {
+    let agent_ctx = composition
+        .ctx
+        .child()
+        .map_err(|error| RunError::Service(error.to_string()))?;
+    let result = run_prompt_in(&agent_ctx, options, composition, store).await;
+    agent_ctx.dispose();
+    result
+}
+
+/// Run one turn inside an existing agent-scoped context.
+pub async fn run_prompt_in(
+    agent_ctx: &Ctx,
+    options: RunOptions,
+    composition: &Composition,
+    store: &SessionStore,
+) -> Result<RunReport, RunError> {
     let path = options.workspace.display().to_string();
     let header = SessionHeader::new(
         SessionId::new(),
@@ -368,7 +342,7 @@ pub async fn run_prompt(
     ensure_system_prompt(composition, &mut writer, &mut state)?;
     let outcome = composition
         .agent
-        .run_turn(&mut writer, &state, &options.prompt)
+        .run_turn(agent_ctx, &mut writer, &state, &options.prompt)
         .await
         .map_err(|error| RunError::Loop(error.to_string()))?;
     record_audit(&mut writer, composition)?;
@@ -414,6 +388,22 @@ pub async fn resume_session(
     composition: &Composition,
     store: &SessionStore,
 ) -> Result<ResumeReport, RunError> {
+    let agent_ctx = composition
+        .ctx
+        .child()
+        .map_err(|error| RunError::Service(error.to_string()))?;
+    let result = resume_session_in(&agent_ctx, options, composition, store).await;
+    agent_ctx.dispose();
+    result
+}
+
+/// Resume a session inside an existing agent-scoped context.
+pub async fn resume_session_in(
+    agent_ctx: &Ctx,
+    options: ResumeOptions,
+    composition: &Composition,
+    store: &SessionStore,
+) -> Result<ResumeReport, RunError> {
     let reader = store.open_read(options.session_id)?;
     let mut state = reader.state();
     drop(reader);
@@ -430,7 +420,7 @@ pub async fn resume_session(
         Some(prompt) => Some(
             composition
                 .agent
-                .run_turn(&mut writer, &state, prompt)
+                .run_turn(agent_ctx, &mut writer, &state, prompt)
                 .await
                 .map_err(|error| RunError::Loop(error.to_string()))?
                 .assistant_text,

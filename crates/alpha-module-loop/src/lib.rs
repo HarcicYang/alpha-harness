@@ -14,11 +14,12 @@ use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
 pub use agent::{
-    AgentDriver, AgentLoop, ContextError, ContextPreparer, LoopError, TurnObserver, TurnOutcome,
+    AgentDriver, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentToolFinished,
+    AgentToolStarted, AgentTurnFinished, ContextError, ContextPreparer, LoopError, TurnOutcome,
 };
 pub use provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError,
-    ProviderRegistry, RegistryError, ToolCall, ToolDefinition,
+    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
+    ProviderError, ProviderRegistry, RegistryError, ToolCall, ToolCallDelta, ToolDefinition,
 };
 
 /// Configuration for the default loop module.
@@ -80,9 +81,6 @@ impl Module for LoopModule {
             AgentLoop::new(provider, config.model.clone()).with_max_steps(config.max_steps);
         if let Some(tools) = ctx.get::<alpha_module_tools::ToolRegistry>() {
             agent = agent.with_tools(tools);
-        }
-        if let Some(observer) = ctx.get::<dyn TurnObserver>() {
-            agent = agent.with_observer(observer);
         }
         if let Some(preparer) = ctx.get::<dyn ContextPreparer>() {
             agent = agent.with_context_preparer(preparer);

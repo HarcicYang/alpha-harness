@@ -1,19 +1,23 @@
 //! Default agent driver.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use alpha_kernel::{Ctx, Event, ParallelEvent};
 use alpha_module_session::{
     MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
     TurnEndReason,
 };
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
 use alpha_schema::{MessageId, ToolCallId};
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::provider::{
-    ChatMessage, CompletionRequest, ModelProvider, ProviderError, ToolCall, ToolDefinition,
+    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
+    ToolDefinition,
 };
 
 const DEFAULT_MAX_STEPS: usize = 24;
@@ -50,7 +54,6 @@ pub struct AgentLoop {
     provider: Arc<dyn ModelProvider>,
     model: String,
     tools: Option<Arc<ToolRegistry>>,
-    observer: Option<Arc<dyn TurnObserver>>,
     context_preparer: Option<Arc<dyn ContextPreparer>>,
     max_steps: usize,
 }
@@ -62,7 +65,6 @@ impl AgentLoop {
             provider,
             model: model.into(),
             tools: None,
-            observer: None,
             context_preparer: None,
             max_steps: DEFAULT_MAX_STEPS,
         }
@@ -71,12 +73,6 @@ impl AgentLoop {
     /// Override the maximum number of model steps in one turn.
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = max_steps.max(1);
-        self
-    }
-
-    /// Attach a progress observer.
-    pub fn with_observer(mut self, observer: Arc<dyn TurnObserver>) -> Self {
-        self.observer = Some(observer);
         self
     }
 
@@ -103,15 +99,17 @@ impl AgentLoop {
     /// step limit is reached. `state` is the projection before this turn.
     pub async fn run_turn(
         &self,
+        ctx: &Ctx,
         writer: &mut SessionWriter,
         state: &SessionState,
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
-        self.run_turn_impl(writer, state, prompt).await
+        self.run_turn_impl(ctx, writer, state, prompt).await
     }
 
     async fn run_turn_impl(
         &self,
+        ctx: &Ctx,
         writer: &mut SessionWriter,
         state: &SessionState,
         prompt: &str,
@@ -144,21 +142,29 @@ impl AgentLoop {
         let mut last_message_id: Option<MessageId> = None;
 
         for step in 0..self.max_steps {
-            if let Some(observer) = &self.observer {
-                observer.step_started(step + 1);
-            }
+            ctx.parallel(AgentStepStarted { step: step + 1 }).await;
             let request = CompletionRequest {
                 model: self.model.clone(),
                 messages: messages.clone(),
                 tools: tools.clone(),
             };
-            let response = match self.provider.complete(request).await {
+            let response = match self.stream_response(ctx, request).await {
                 Ok(response) => response,
-                Err(error) => {
+                Err(failure) => {
+                    if !failure.text.is_empty() {
+                        writer.append(SessionEvent::AssistantMessage {
+                            id: MessageId::new(),
+                            text: failure.text.clone(),
+                        })?;
+                    }
                     writer.append(SessionEvent::TurnEnded {
                         reason: TurnEndReason::Failed,
                     })?;
-                    return Err(LoopError::Provider(error));
+                    ctx.parallel(AgentError {
+                        message: failure.error.to_string(),
+                    })
+                    .await;
+                    return Err(LoopError::Provider(failure.error));
                 }
             };
 
@@ -193,6 +199,10 @@ impl AgentLoop {
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Completed,
                 })?;
+                ctx.parallel(AgentTurnFinished {
+                    assistant_message: assistant_id,
+                })
+                .await;
                 return Ok(TurnOutcome {
                     assistant_message: assistant_id,
                     assistant_text: last_text,
@@ -204,7 +214,7 @@ impl AgentLoop {
                 calls: calls.clone(),
             });
             for call in calls {
-                self.execute_tool(writer, session_id, message_id, &mut messages, call)
+                self.execute_tool(ctx, writer, session_id, message_id, &mut messages, call)
                     .await?;
             }
         }
@@ -215,7 +225,7 @@ impl AgentLoop {
             messages: messages.clone(),
             tools: Vec::new(),
         };
-        match self.provider.complete(request).await {
+        match self.stream_response(ctx, request).await {
             Ok(response) if !response.text.is_empty() => {
                 let assistant_id = MessageId::new();
                 writer.append(SessionEvent::AssistantMessage {
@@ -225,18 +235,103 @@ impl AgentLoop {
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Completed,
                 })?;
+                ctx.parallel(AgentTurnFinished {
+                    assistant_message: assistant_id,
+                })
+                .await;
                 Ok(TurnOutcome {
                     assistant_message: assistant_id,
                     assistant_text: response.text,
                 })
             }
-            _ => {
+            Err(failure) => {
+                if !failure.text.is_empty() {
+                    writer.append(SessionEvent::AssistantMessage {
+                        id: MessageId::new(),
+                        text: failure.text,
+                    })?;
+                }
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Failed,
                 })?;
+                ctx.parallel(AgentError {
+                    message: failure.error.to_string(),
+                })
+                .await;
+                Err(LoopError::Provider(failure.error))
+            }
+            Ok(_) => {
+                writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Failed,
+                })?;
+                ctx.parallel(AgentError {
+                    message: format!("turn exceeded {} model steps", self.max_steps),
+                })
+                .await;
                 Err(LoopError::StepLimit(self.max_steps))
             }
         }
+    }
+
+    async fn stream_response(
+        &self,
+        ctx: &Ctx,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, StreamFailure> {
+        let mut stream = self.provider.stream(request);
+        let mut text = String::new();
+        let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| StreamFailure {
+                error,
+                text: text.clone(),
+            })?;
+            match chunk {
+                crate::provider::CompletionChunk::Text(delta) => {
+                    if !delta.is_empty() {
+                        text.push_str(&delta);
+                        ctx.parallel(AgentTextDelta { text: delta }).await;
+                    }
+                }
+                crate::provider::CompletionChunk::ToolCall(delta) => {
+                    let call = calls.entry(delta.index).or_default();
+                    if let Some(id) = delta.id {
+                        call.id = Some(id);
+                    }
+                    if let Some(name) = delta.name {
+                        call.name = Some(name);
+                    }
+                    call.arguments.push_str(&delta.arguments);
+                }
+            }
+        }
+
+        let mut tool_calls = Vec::with_capacity(calls.len());
+        for (index, call) in calls {
+            let id = call.id.unwrap_or_else(|| format!("call_{index}"));
+            let name = call.name.ok_or_else(|| StreamFailure {
+                error: ProviderError::Request(format!("stream tool call {index} has no name")),
+                text: text.clone(),
+            })?;
+            let arguments = if call.arguments.trim().is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(&call.arguments).map_err(|error| StreamFailure {
+                    error: ProviderError::Request(format!(
+                        "invalid tool arguments for `{name}`: {error}"
+                    )),
+                    text: text.clone(),
+                })?
+            };
+            tool_calls.push(ToolCall {
+                id,
+                name,
+                arguments,
+            });
+        }
+
+        Ok(CompletionResponse { text, tool_calls })
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -257,6 +352,7 @@ impl AgentLoop {
 
     async fn execute_tool(
         &self,
+        ctx: &Ctx,
         writer: &mut SessionWriter,
         session_id: alpha_schema::SessionId,
         message_id: MessageId,
@@ -271,9 +367,11 @@ impl AgentLoop {
             input: call.arguments.clone(),
         })?;
 
-        if let Some(observer) = &self.observer {
-            observer.tool_started(&call.name, &call.arguments);
-        }
+        ctx.parallel(AgentToolStarted {
+            name: call.name.clone(),
+            input: call.arguments.clone(),
+        })
+        .await;
 
         let outcome = match &self.tools {
             Some(registry) => match registry.get(&call.name) {
@@ -293,12 +391,19 @@ impl AgentLoop {
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Failed,
                 })?;
+                ctx.parallel(AgentError {
+                    message: message.clone(),
+                })
+                .await;
                 return Err(LoopError::Tool(message));
             }
         };
-        if let Some(observer) = &self.observer {
-            observer.tool_finished(&call.name, status, &content);
-        }
+        ctx.parallel(AgentToolFinished {
+            name: call.name.clone(),
+            status,
+            content: content.clone(),
+        })
+        .await;
         writer.append(SessionEvent::ToolResult {
             id: call_id,
             status,
@@ -312,15 +417,83 @@ impl AgentLoop {
     }
 }
 
-/// Progress observer for one turn. Implementations must not block.
-pub trait TurnObserver: Send + Sync + 'static {
-    /// A model step is about to start.
-    fn step_started(&self, step: usize);
-    /// A tool call is about to execute.
-    fn tool_started(&self, name: &str, input: &Value);
-    /// A tool call settled.
-    fn tool_finished(&self, name: &str, status: ToolStatus, content: &str);
+#[derive(Default)]
+struct ToolCallBuilder {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
 }
+
+struct StreamFailure {
+    error: ProviderError,
+    text: String,
+}
+
+/// A model step is about to start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentStepStarted {
+    /// One-based model step.
+    pub step: usize,
+}
+
+impl ParallelEvent for AgentStepStarted {}
+impl Event for AgentStepStarted {}
+
+/// Assistant text was received.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentTextDelta {
+    /// Text fragment.
+    pub text: String,
+}
+
+impl ParallelEvent for AgentTextDelta {}
+impl Event for AgentTextDelta {}
+
+/// A completed tool call is about to execute.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentToolStarted {
+    /// Tool name.
+    pub name: String,
+    /// Decoded tool input.
+    pub input: Value,
+}
+
+impl ParallelEvent for AgentToolStarted {}
+impl Event for AgentToolStarted {}
+
+/// A tool call settled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentToolFinished {
+    /// Tool name.
+    pub name: String,
+    /// Tool status.
+    pub status: ToolStatus,
+    /// Model-visible result.
+    pub content: String,
+}
+
+impl ParallelEvent for AgentToolFinished {}
+impl Event for AgentToolFinished {}
+
+/// One turn completed successfully.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AgentTurnFinished {
+    /// Final assistant message.
+    pub assistant_message: MessageId,
+}
+
+impl ParallelEvent for AgentTurnFinished {}
+impl Event for AgentTurnFinished {}
+
+/// One turn failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentError {
+    /// Human-readable failure.
+    pub message: String,
+}
+
+impl ParallelEvent for AgentError {}
+impl Event for AgentError {}
 
 /// Failure from an optional context-preparation step.
 #[derive(Debug, Error)]
@@ -358,6 +531,7 @@ pub trait AgentDriver: Send + Sync + 'static {
     /// Run one turn and record it in the session log.
     fn run_turn<'a>(
         &'a self,
+        ctx: &'a Ctx,
         writer: &'a mut SessionWriter,
         state: &'a SessionState,
         prompt: &'a str,
@@ -367,11 +541,12 @@ pub trait AgentDriver: Send + Sync + 'static {
 impl AgentDriver for AgentLoop {
     fn run_turn<'a>(
         &'a self,
+        ctx: &'a Ctx,
         writer: &'a mut SessionWriter,
         state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
-        Box::pin(self.run_turn_impl(writer, state, prompt))
+        Box::pin(self.run_turn_impl(ctx, writer, state, prompt))
     }
 }
 

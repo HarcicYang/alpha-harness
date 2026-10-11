@@ -3,16 +3,19 @@ use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{
-    AgentLoop, ChatMessage, CompletionRequest, CompletionResponse, ContextError, ContextPreparer,
-    LoopConfig, LoopModule, ModelProvider, ProviderError, ProviderRegistry, ToolCall, TurnObserver,
+    AgentLoop, AgentStepStarted, AgentToolFinished, AgentToolStarted, ChatMessage, CompletionChunk,
+    CompletionRequest, CompletionResponse, ContextError, ContextPreparer, LoopConfig, LoopModule,
+    ModelProvider, ProviderError, ProviderRegistry, ToolCall, ToolCallDelta, TurnOutcome,
 };
 use alpha_module_session::{
-    SessionEvent, SessionHeader, SessionState, SessionStore, ToolStatus, TurnEndReason,
-    WorkspaceRef,
+    SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
+    TurnEndReason, WorkspaceRef,
 };
 use alpha_module_tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResponse};
 use alpha_schema::{MessageId, PermissionMode, Seq, SessionId};
+use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -88,12 +91,49 @@ impl ModelProvider for ScriptedProvider {
     }
 }
 
-struct NoteTool {
-    seen: Arc<Mutex<Vec<String>>>,
+struct StreamingProvider {
+    streams: Mutex<VecDeque<Vec<Result<CompletionChunk, ProviderError>>>>,
+    requests: Mutex<Vec<CompletionRequest>>,
 }
 
-struct CollectingObserver {
-    events: Mutex<Vec<String>>,
+impl StreamingProvider {
+    fn new(streams: Vec<Vec<Result<CompletionChunk, ProviderError>>>) -> Self {
+        Self {
+            streams: Mutex::new(streams.into_iter().collect()),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ModelProvider for StreamingProvider {
+    fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> BoxFuture<'_, Result<CompletionResponse, ProviderError>> {
+        Box::pin(async move {
+            Err(ProviderError::Request(
+                "streaming provider does not support complete".to_owned(),
+            ))
+        })
+    }
+
+    fn stream(
+        &self,
+        request: CompletionRequest,
+    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+        self.requests.lock().expect("request lock").push(request);
+        let chunks = self
+            .streams
+            .lock()
+            .expect("stream lock")
+            .pop_front()
+            .expect("scripted stream");
+        Box::pin(futures::stream::iter(chunks))
+    }
+}
+
+struct NoteTool {
+    seen: Arc<Mutex<Vec<String>>>,
 }
 
 struct SummaryPreparer;
@@ -118,29 +158,6 @@ impl ContextPreparer for SummaryPreparer {
             state.apply(&envelope);
             Ok(())
         })
-    }
-}
-
-impl TurnObserver for CollectingObserver {
-    fn step_started(&self, step: usize) {
-        self.events
-            .lock()
-            .expect("events lock")
-            .push(format!("step:{step}"));
-    }
-
-    fn tool_started(&self, name: &str, _input: &Value) {
-        self.events
-            .lock()
-            .expect("events lock")
-            .push(format!("start:{name}"));
-    }
-
-    fn tool_finished(&self, name: &str, status: ToolStatus, _content: &str) {
-        self.events
-            .lock()
-            .expect("events lock")
-            .push(format!("finish:{name}:{status:?}"));
     }
 }
 
@@ -193,6 +210,16 @@ fn store_and_header() -> (tempfile::TempDir, SessionStore, SessionHeader) {
     (dir, store, header)
 }
 
+async fn run_turn(
+    agent: &AgentLoop,
+    writer: &mut SessionWriter,
+    state: &SessionState,
+    prompt: &str,
+) -> Result<TurnOutcome, alpha_module_loop::LoopError> {
+    let ctx = Ctx::root();
+    agent.run_turn(&ctx, writer, state, prompt).await
+}
+
 #[tokio::test]
 async fn loop_records_completed_turns_and_replays_history() {
     let (_dir, store, header) = store_and_header();
@@ -202,8 +229,7 @@ async fn loop_records_completed_turns_and_replays_history() {
 
     let mut writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let first = agent
-        .run_turn(&mut writer, &state, "hello")
+    let first = run_turn(&agent, &mut writer, &state, "hello")
         .await
         .expect("first turn");
     assert_eq!(first.assistant_text, "echo: hello");
@@ -216,8 +242,7 @@ async fn loop_records_completed_turns_and_replays_history() {
     drop(reader);
 
     let mut writer = store.open_write(id).expect("open write");
-    let second = agent
-        .run_turn(&mut writer, &state, "again")
+    let second = run_turn(&agent, &mut writer, &state, "again")
         .await
         .expect("second turn");
     assert_eq!(second.assistant_text, "echo: again");
@@ -236,6 +261,119 @@ async fn loop_records_completed_turns_and_replays_history() {
 }
 
 #[tokio::test]
+async fn stream_deltas_are_merged_into_one_durable_message() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(StreamingProvider::new(vec![vec![
+        Ok(CompletionChunk::Text("hel".to_owned())),
+        Ok(CompletionChunk::Text("lo".to_owned())),
+    ]]));
+    let agent = AgentLoop::new(provider, "streamed");
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    let outcome = run_turn(&agent, &mut writer, &state, "hi")
+        .await
+        .expect("turn");
+    assert_eq!(outcome.assistant_text, "hello");
+    drop(writer);
+
+    let reader = store.open_read(header.id).expect("read");
+    let assistant: Vec<&str> = reader
+        .events()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            SessionEvent::AssistantMessage { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(assistant, vec!["hello"]);
+}
+
+#[tokio::test]
+async fn stream_failure_preserves_the_received_text_prefix() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(StreamingProvider::new(vec![vec![
+        Ok(CompletionChunk::Text("partial".to_owned())),
+        Err(ProviderError::Request("stream broke".to_owned())),
+    ]]));
+    let agent = AgentLoop::new(provider, "streamed");
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    let error = run_turn(&agent, &mut writer, &state, "hi")
+        .await
+        .expect_err("stream failure");
+    assert!(error.to_string().contains("stream broke"));
+    drop(writer);
+
+    let reader = store.open_read(header.id).expect("read");
+    assert!(reader.events().iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::AssistantMessage { text, .. } if text == "partial"
+    )));
+    assert!(reader.events().iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::TurnEnded {
+            reason: TurnEndReason::Failed
+        }
+    )));
+}
+
+#[tokio::test]
+async fn streamed_tool_call_fragments_are_assembled() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(StreamingProvider::new(vec![
+        vec![
+            Ok(CompletionChunk::Text("working".to_owned())),
+            Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                index: 0,
+                id: Some("call-stream".to_owned()),
+                name: Some("write_note".to_owned()),
+                arguments: "{\"value\":\"".to_owned(),
+            })),
+            Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: "hi\"}".to_owned(),
+            })),
+        ],
+        vec![Ok(CompletionChunk::Text("done".to_owned()))],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .register(Arc::new(NoteTool { seen: seen.clone() }))
+        .expect("register");
+    let agent = AgentLoop::new(provider, "streamed").with_tools(registry);
+
+    let mut writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    let outcome = run_turn(&agent, &mut writer, &state, "write")
+        .await
+        .expect("turn");
+    assert_eq!(outcome.assistant_text, "done");
+    assert_eq!(*seen.lock().expect("seen lock"), vec!["hi".to_owned()]);
+}
+
+#[tokio::test]
+async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
+    let provider = EchoProvider::default();
+    let chunks: Vec<CompletionChunk> = provider
+        .stream(CompletionRequest {
+            model: "echo".to_owned(),
+            messages: vec![ChatMessage::User("hi".to_owned())],
+            tools: Vec::new(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(chunks, vec![CompletionChunk::Text("echo: hi".to_owned())]);
+}
+
+#[tokio::test]
 async fn system_prompt_is_injected_before_history() {
     let (_dir, store, header) = store_and_header();
     let provider = Arc::new(EchoProvider::default());
@@ -249,8 +387,7 @@ async fn system_prompt_is_injected_before_history() {
         .expect("append prompt");
     let state = SessionState::from_events(&header, &[prompt]);
 
-    agent
-        .run_turn(&mut writer, &state, "hello")
+    run_turn(&agent, &mut writer, &state, "hello")
         .await
         .expect("turn");
 
@@ -285,8 +422,7 @@ async fn context_preparer_updates_the_request_history() {
     ];
     let state = SessionState::from_events(&header, &events);
 
-    agent
-        .run_turn(&mut writer, &state, "hello")
+    run_turn(&agent, &mut writer, &state, "hello")
         .await
         .expect("turn");
 
@@ -316,8 +452,7 @@ async fn provider_failure_closes_the_turn() {
 
     let mut writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let error = agent
-        .run_turn(&mut writer, &state, "hello")
+    let error = run_turn(&agent, &mut writer, &state, "hello")
         .await
         .expect_err("provider failure");
     assert!(error.to_string().contains("boom"));
@@ -366,8 +501,7 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
 
     let mut writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = agent
-        .run_turn(&mut writer, &state, "write a note")
+    let outcome = run_turn(&agent, &mut writer, &state, "write a note")
         .await
         .expect("turn");
     assert_eq!(outcome.assistant_text, "done");
@@ -443,8 +577,7 @@ async fn step_limit_wraps_up_without_tools() {
 
     let mut writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
-    let outcome = agent
-        .run_turn(&mut writer, &state, "do it")
+    let outcome = run_turn(&agent, &mut writer, &state, "do it")
         .await
         .expect("wrap up");
     assert_eq!(outcome.assistant_text, "wrapped up");
@@ -455,7 +588,7 @@ async fn step_limit_wraps_up_without_tools() {
 }
 
 #[tokio::test]
-async fn observer_reports_steps_and_tools() {
+async fn live_events_report_steps_and_tools() {
     let (_dir, store, header) = store_and_header();
     let provider = Arc::new(ScriptedProvider::new(vec![
         CompletionResponse {
@@ -477,21 +610,46 @@ async fn observer_reports_steps_and_tools() {
             seen: Arc::new(Mutex::new(Vec::new())),
         }))
         .expect("register");
-    let observer = Arc::new(CollectingObserver {
-        events: Mutex::new(Vec::new()),
-    });
-    let agent = AgentLoop::new(provider, "scripted")
-        .with_tools(registry)
-        .with_observer(observer.clone());
+    let agent = AgentLoop::new(provider, "scripted").with_tools(registry);
 
     let mut writer = store.create(header.clone()).expect("create");
     let state = SessionState::new(&header);
+    let ctx = Ctx::root();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let collected = events.clone();
+    ctx.on_parallel::<AgentStepStarted, _>(move |event| {
+        collected
+            .lock()
+            .expect("events lock")
+            .push(format!("step:{}", event.step));
+        Box::pin(async {})
+    })
+    .expect("step listener");
+    let collected = events.clone();
+    ctx.on_parallel::<AgentToolStarted, _>(move |event| {
+        collected
+            .lock()
+            .expect("events lock")
+            .push(format!("start:{}", event.name));
+        Box::pin(async {})
+    })
+    .expect("tool start listener");
+    let collected = events.clone();
+    ctx.on_parallel::<AgentToolFinished, _>(move |event| {
+        collected
+            .lock()
+            .expect("events lock")
+            .push(format!("finish:{}:{:?}", event.name, event.status));
+        Box::pin(async {})
+    })
+    .expect("tool finish listener");
+
     agent
-        .run_turn(&mut writer, &state, "do it")
+        .run_turn(&ctx, &mut writer, &state, "do it")
         .await
         .expect("turn");
 
-    let events = observer.events.lock().expect("events lock");
+    let events = events.lock().expect("events lock");
     assert!(events.contains(&"step:1".to_owned()));
     assert!(events.contains(&"start:write_note".to_owned()));
     assert!(

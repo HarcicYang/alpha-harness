@@ -3,12 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use alpha_harness::{
     ResumeOptions, RunOptions, compose_openai_runtime_with_http, compose_with_driver,
-    compose_with_provider, resume_session, run_prompt,
+    compose_with_provider, resume_session, run_prompt, run_prompt_in,
 };
+use alpha_kernel::Ctx;
 use alpha_module_http::{Cassette, CassetteEntry, HttpClient, ReplayHttpClient};
 use alpha_module_loop::{
-    AgentDriver, ChatMessage, CompletionRequest, CompletionResponse, LoopError, ModelProvider,
-    ProviderError, ToolCall, TurnOutcome,
+    AgentDriver, AgentTextDelta, ChatMessage, CompletionChunk, CompletionRequest,
+    CompletionResponse, LoopError, ModelProvider, ProviderError, ToolCall, TurnOutcome,
 };
 use alpha_module_permission::{ApprovalChannel, ApprovalDecision, ApprovalPrompt};
 use alpha_module_session::{
@@ -17,6 +18,7 @@ use alpha_module_session::{
 };
 use alpha_schema::{EventEnvelope, MessageId, PermissionMode};
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use serde_json::json;
 
 struct ScriptedProvider {
@@ -46,6 +48,32 @@ impl ModelProvider for ScriptedProvider {
             .pop_front()
             .expect("scripted response");
         Box::pin(async move { Ok(response) })
+    }
+}
+
+struct DeltaProvider;
+
+impl ModelProvider for DeltaProvider {
+    fn complete(
+        &self,
+        _request: CompletionRequest,
+    ) -> BoxFuture<'_, Result<CompletionResponse, ProviderError>> {
+        Box::pin(async move {
+            Ok(CompletionResponse {
+                text: "hello".to_owned(),
+                tool_calls: Vec::new(),
+            })
+        })
+    }
+
+    fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+        Box::pin(futures::stream::iter(vec![
+            Ok(CompletionChunk::Text("hel".to_owned())),
+            Ok(CompletionChunk::Text("lo".to_owned())),
+        ]))
     }
 }
 
@@ -154,6 +182,49 @@ async fn run_prompt_edits_a_file_end_to_end() {
         ChatMessage::ToolResult { content, .. }
             if content == "Wrote 12 bytes to hello.txt"
     )));
+}
+
+#[tokio::test]
+async fn run_prompt_in_streams_text_deltas_through_kernel_events() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("state");
+    let composition = compose_with_provider(
+        workspace.path(),
+        PermissionMode::Free,
+        "delta",
+        "delta",
+        None,
+        Arc::new(DeltaProvider),
+    )
+    .expect("compose");
+    let ctx = composition.ctx.child().expect("agent context");
+    let deltas = Arc::new(Mutex::new(Vec::new()));
+    let collected = deltas.clone();
+    ctx.on_parallel::<AgentTextDelta, _>(move |event| {
+        collected
+            .lock()
+            .expect("delta lock")
+            .push(event.text.clone());
+        Box::pin(async {})
+    })
+    .expect("delta listener");
+
+    let report = run_prompt_in(
+        &ctx,
+        RunOptions {
+            workspace: workspace.path().to_path_buf(),
+            mode: PermissionMode::Free,
+            model: "delta".to_owned(),
+            prompt: "hello".to_owned(),
+        },
+        &composition,
+        &SessionStore::new(state.path()),
+    )
+    .await
+    .expect("run");
+
+    assert_eq!(report.assistant_text, "hello");
+    assert_eq!(*deltas.lock().expect("delta lock"), vec!["hel", "lo"]);
 }
 
 #[tokio::test]
@@ -348,6 +419,7 @@ struct FixedDriver;
 impl AgentDriver for FixedDriver {
     fn run_turn<'a>(
         &'a self,
+        _ctx: &'a Ctx,
         writer: &'a mut SessionWriter,
         _state: &'a SessionState,
         prompt: &'a str,
