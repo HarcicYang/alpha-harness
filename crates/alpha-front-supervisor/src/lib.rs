@@ -5,10 +5,11 @@
 use std::fmt;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use alpha_front_client::{ClientError, CoreInfo, ProtocolClient};
+use alpha_front_client::{ClientError, ConnectionEvent, CoreInfo, ProtocolConnection};
+use alpha_protocol::{Id, RpcError};
 use serde_json::json;
 
 /// Core startup and retry configuration.
@@ -54,7 +55,7 @@ pub enum SupervisorError {
 /// A managed core process and its alpha-protocol connection.
 pub struct CoreSupervisor {
     child: Child,
-    client: ProtocolClient<BufReader<ChildStdout>, ChildStdin>,
+    connection: ProtocolConnection,
     info: CoreInfo,
     shutdown_grace: Duration,
 }
@@ -111,13 +112,30 @@ impl CoreSupervisor {
         method: impl Into<String>,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, SupervisorError> {
-        Ok(self.client.request(method, params)?)
+        Ok(self.connection.request(method, params)?)
+    }
+
+    /// Receive one core event without blocking indefinitely.
+    pub fn recv_event_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<ConnectionEvent>, SupervisorError> {
+        Ok(self.connection.recv_timeout(timeout)?)
+    }
+
+    /// Answer a request initiated by the core.
+    pub fn respond(
+        &self,
+        id: Id,
+        result: Result<serde_json::Value, RpcError>,
+    ) -> Result<(), SupervisorError> {
+        Ok(self.connection.respond(id, result)?)
     }
 
     /// Gracefully stop the core and reap the child process.
     pub fn shutdown(mut self) -> Result<(), SupervisorError> {
-        let _ = self.client.request("body.shutdown", None);
-        self.client.close_writer();
+        let _ = self.connection.request("body.shutdown", None);
+        self.connection.close_writer();
         self.wait_for_exit()?;
         Ok(())
     }
@@ -138,8 +156,8 @@ impl CoreSupervisor {
             .stdout
             .take()
             .ok_or_else(|| std::io::Error::other("core stdout was not piped"))?;
-        let mut client = ProtocolClient::new(BufReader::new(stdout), stdin);
-        let hello = client.request(
+        let connection = ProtocolConnection::new(BufReader::new(stdout), stdin);
+        let hello = connection.request(
             "body.hello",
             Some(json!({
                 "protocol": "alpha-protocol/1",
@@ -149,7 +167,7 @@ impl CoreSupervisor {
         let info = CoreInfo::from_value(hello)?;
         Ok(Self {
             child,
-            client,
+            connection,
             info,
             shutdown_grace,
         })

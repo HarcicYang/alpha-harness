@@ -7,9 +7,11 @@
 pub mod framing;
 pub mod message;
 pub mod router;
+pub mod transport;
 
 pub use framing::{
     DEFAULT_MAX_LINE_BYTES, FramingError, read_message, read_message_with_limit, write_message,
 };
 pub use message::{Id, Message, Notification, Request, Response, ResponsePayload, RpcError, codes};
 pub use router::Router;
+pub use transport::OutboundTransport;
