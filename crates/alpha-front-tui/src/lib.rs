@@ -254,6 +254,27 @@ impl ChatView {
         Ok(())
     }
 
+    fn set_capabilities(
+        &mut self,
+        supervisor: &mut CoreSupervisor,
+        provider_tools: Vec<String>,
+    ) -> Result<(), TuiError> {
+        let Some(session_id) = &self.session_id else {
+            return Err(TuiError::Protocol("no active session".to_owned()));
+        };
+        supervisor
+            .request(
+                "session.set_capabilities",
+                Some(json!({
+                    "sessionId": session_id,
+                    "providerTools": provider_tools,
+                })),
+            )
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.status = Some("provider capabilities updated".to_owned());
+        Ok(())
+    }
+
     fn submit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
         let prompt = self.composer.trim().to_owned();
         if prompt.is_empty() {
@@ -1109,6 +1130,14 @@ fn execute_palette_command(
         }
         "confirm" => app.chat.confirm_steers(supervisor, true)?,
         "discard" => app.chat.confirm_steers(supervisor, false)?,
+        "capabilities" => {
+            let provider_tools = argument
+                .split([',', ' '])
+                .filter(|tool| !tool.is_empty())
+                .map(str::to_owned)
+                .collect();
+            app.chat.set_capabilities(supervisor, provider_tools)?;
+        }
         "new" => {
             app.chat.new_session(supervisor)?;
             app.screen = Screen::Chat;
@@ -1302,6 +1331,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from(":mode MODE       set read, auto, or free"),
         Line::from(":confirm         run pending steers"),
         Line::from(":discard         discard pending steers"),
+        Line::from(":capabilities T  set provider tools, for example web_search"),
         Line::from(":new             create a new session"),
         Line::from(":resume ID       resume a session"),
         Line::from(":sessions        open the session picker"),

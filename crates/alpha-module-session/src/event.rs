@@ -79,6 +79,11 @@ pub enum SessionEvent {
         /// Provider-native tool names.
         provider_tools: Vec<String>,
     },
+    /// Session-level provider-native tool override.
+    CapabilitiesSet {
+        /// Provider-native tool names.
+        provider_tools: Vec<String>,
+    },
     /// Older context was replaced by a model-generated summary.
     ContextCompacted {
         /// Summary that replaces the recorded range.

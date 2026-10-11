@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use alpha_kernel::Ctx;
-use alpha_module_loop::{AgentDriver, LoopError, SteerMessage, SteerQueue};
+use alpha_module_loop::{AgentDriver, LoopError, ProviderToolsOverride, SteerMessage, SteerQueue};
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     TurnEndReason, WorkspaceRef,
@@ -54,6 +54,8 @@ pub struct SessionRuntime {
     pub ctx: Ctx,
     /// Agent driver for one turn.
     pub agent: Arc<dyn AgentDriver>,
+    /// Session-level provider-native tool override.
+    pub provider_tools_override: Arc<ProviderToolsOverride>,
 }
 
 /// Inputs used to build one session runtime.
@@ -192,6 +194,10 @@ enum SessionCommand {
     },
     ConfirmSteers {
         accept: bool,
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
+    },
+    SetCapabilities {
+        provider_tools: Vec<String>,
         reply: oneshot::Sender<Result<(), AgentHostError>>,
     },
 }
@@ -422,6 +428,28 @@ impl AgentHostService {
         actor
             .tx
             .send(SessionCommand::ConfirmSteers { accept, reply })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+        receiver
+            .await
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?
+    }
+
+    /// Override provider-native tools for this session.
+    pub async fn set_capabilities(
+        &self,
+        session_id: SessionId,
+        provider_tools: Vec<String>,
+    ) -> Result<(), AgentHostError> {
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let (reply, receiver) = oneshot::channel();
+        actor
+            .tx
+            .send(SessionCommand::SetCapabilities {
+                provider_tools,
+                reply,
+            })
             .map_err(|_| AgentHostError::ActorStopped(session_id))?;
         receiver
             .await
@@ -794,6 +822,25 @@ async fn actor_loop(
                             &mut active_turn,
                         );
                         let _ = reply.send(Ok(()));
+                    }
+                    SessionCommand::SetCapabilities {
+                        provider_tools,
+                        reply,
+                    } => {
+                        let override_value = (!provider_tools.is_empty()).then_some(provider_tools.clone());
+                        runtime.provider_tools_override.set(override_value);
+                        let result = writer
+                            .as_mut()
+                            .ok_or_else(|| {
+                                AgentHostError::Invalid("session writer is busy".to_owned())
+                            })
+                            .and_then(|writer| {
+                                writer
+                                    .append(SessionEvent::CapabilitiesSet { provider_tools })
+                                    .map(|_| ())
+                                    .map_err(AgentHostError::Session)
+                            });
+                        let _ = reply.send(result);
                     }
                 }
             }

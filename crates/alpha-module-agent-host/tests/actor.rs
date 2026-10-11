@@ -6,7 +6,7 @@ use alpha_module_agent_host::{
     AgentHostError, AgentHostService, CreateSessionRequest, SessionRuntime, SessionRuntimeFactory,
     SessionRuntimeRequest,
 };
-use alpha_module_loop::{AgentDriver, LoopError, TurnOutcome};
+use alpha_module_loop::{AgentDriver, LoopError, ProviderToolsOverride, TurnOutcome};
 use alpha_module_session::{
     SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason,
 };
@@ -59,6 +59,7 @@ impl SessionRuntimeFactory for EchoFactory {
         Ok(SessionRuntime {
             ctx: Ctx::root(),
             agent: Arc::new(EchoDriver),
+            provider_tools_override: Arc::new(ProviderToolsOverride::default()),
         })
     }
 }

@@ -22,7 +22,8 @@ use alpha_module_credential::{CredentialConfig, CredentialModule, CredentialStor
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
 use alpha_module_loop::{
-    AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry, SteerQueue,
+    AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry, ProviderToolsOverride,
+    SteerQueue,
 };
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
@@ -237,6 +238,10 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
         session_ctx
             .provide::<dyn SteerQueue>(request.steer_queue.clone())
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        let provider_tools_override = Arc::new(ProviderToolsOverride::default());
+        session_ctx
+            .provide::<ProviderToolsOverride>(provider_tools_override.clone())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         let approval: Arc<dyn ApprovalChannel> = Arc::new(ProtocolApprovalChannel {
             session_id: request.session_id,
             transport: self.transport.clone(),
@@ -308,6 +313,7 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
         Ok(SessionRuntime {
             ctx: session_ctx,
             agent,
+            provider_tools_override,
         })
     }
 }
@@ -1583,6 +1589,20 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
             }
         }
     });
+    let router = router.method("session.set_capabilities", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SetCapabilitiesParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.set_capabilities(params.session_id, params.provider_tools)
+                    .await
+                    .map_err(agent_host_rpc_error)?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
     router.method("session.resume", {
         let host = host.clone();
         move |params: Value| {
@@ -1715,4 +1735,12 @@ struct SessionIdParams {
 struct SetModeParams {
     session_id: SessionId,
     mode: PermissionMode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetCapabilitiesParams {
+    session_id: SessionId,
+    #[serde(default)]
+    provider_tools: Vec<String>,
 }

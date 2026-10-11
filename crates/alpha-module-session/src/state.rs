@@ -147,6 +147,7 @@ impl SessionState {
             }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::RequestHeader { .. } => {}
+            SessionEvent::CapabilitiesSet { .. } => {}
             SessionEvent::ContextCompacted {
                 summary,
                 from_seq,

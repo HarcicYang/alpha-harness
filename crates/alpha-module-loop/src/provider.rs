@@ -1,7 +1,7 @@
 //! Model provider contract and registry.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use alpha_schema::AssistantContentBlock;
 use futures::StreamExt;
@@ -94,6 +94,32 @@ pub struct CompletionRequest {
     pub messages: Vec<ChatMessage>,
     /// Tools advertised for this request.
     pub tools: Vec<ToolDefinition>,
+    /// Provider-native tools for this request.
+    pub provider_tools: Vec<String>,
+}
+
+/// Session-level provider-native tool override.
+#[derive(Default)]
+pub struct ProviderToolsOverride {
+    provider_tools: Mutex<Option<Vec<String>>>,
+}
+
+impl ProviderToolsOverride {
+    /// Read the current override.
+    pub fn get(&self) -> Option<Vec<String>> {
+        self.provider_tools
+            .lock()
+            .expect("provider tools override lock poisoned")
+            .clone()
+    }
+
+    /// Replace the current override.
+    pub fn set(&self, provider_tools: Option<Vec<String>>) {
+        *self
+            .provider_tools
+            .lock()
+            .expect("provider tools override lock poisoned") = provider_tools;
+    }
 }
 
 /// One completion response.

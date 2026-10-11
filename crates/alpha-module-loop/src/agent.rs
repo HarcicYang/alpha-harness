@@ -166,17 +166,18 @@ impl AgentLoop {
 
         for step in 0..self.max_steps {
             self.inject_steers(writer, &mut messages)?;
-            let capabilities = self.provider.capabilities();
+            let provider_tools = self.provider_tools(ctx);
             writer.append(SessionEvent::RequestHeader {
                 model: self.model.clone(),
                 tools: tools.iter().map(|tool| tool.name.clone()).collect(),
-                provider_tools: capabilities.provider_tools,
+                provider_tools: provider_tools.clone(),
             })?;
             ctx.parallel(AgentStepStarted { step: step + 1 }).await;
             let request = CompletionRequest {
                 model: self.model.clone(),
                 messages: messages.clone(),
                 tools: tools.clone(),
+                provider_tools,
             };
             let response = match self.stream_response(ctx, request).await {
                 Ok(response) => response,
@@ -258,16 +259,17 @@ impl AgentLoop {
         }
 
         // Wrap up without tools so the user still gets a summary.
-        let capabilities = self.provider.capabilities();
+        let provider_tools = self.provider_tools(ctx);
         writer.append(SessionEvent::RequestHeader {
             model: self.model.clone(),
             tools: Vec::new(),
-            provider_tools: capabilities.provider_tools,
+            provider_tools: provider_tools.clone(),
         })?;
         let request = CompletionRequest {
             model: self.model.clone(),
             messages: messages.clone(),
             tools: Vec::new(),
+            provider_tools,
         };
         match self.stream_response(ctx, request).await {
             Ok(response) if !response.text.is_empty() => {
@@ -440,6 +442,12 @@ impl AgentLoop {
                 input_schema: tool.input_schema(),
             })
             .collect()
+    }
+
+    fn provider_tools(&self, ctx: &Ctx) -> Vec<String> {
+        ctx.get::<crate::ProviderToolsOverride>()
+            .and_then(|override_value| override_value.get())
+            .unwrap_or_else(|| self.provider.capabilities().provider_tools)
     }
 
     fn inject_steers(

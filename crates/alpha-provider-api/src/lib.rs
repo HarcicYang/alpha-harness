@@ -358,6 +358,11 @@ impl AdapterProvider {
     }
 
     fn adapter_request(&self, request: CompletionRequest) -> AdapterRequest {
+        let provider_tools = if request.provider_tools.is_empty() {
+            self.provider_tools.clone()
+        } else {
+            request.provider_tools
+        };
         AdapterRequest {
             base_url: self.base_url.clone(),
             api_key: self.api_key.clone(),
@@ -365,7 +370,7 @@ impl AdapterProvider {
             model: request.model,
             messages: request.messages,
             tools: request.tools,
-            provider_tools: self.provider_tools.clone(),
+            provider_tools,
             options: self.options.clone(),
         }
     }

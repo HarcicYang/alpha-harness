@@ -5,7 +5,8 @@ use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{
     AgentLoop, AgentStepStarted, AgentToolFinished, AgentToolStarted, ChatMessage, CompletionChunk,
     CompletionRequest, CompletionResponse, ContextError, ContextPreparer, LoopConfig, LoopModule,
-    ModelProvider, ProviderError, ProviderRegistry, ToolCall, ToolCallDelta, TurnOutcome,
+    ModelProvider, ProviderError, ProviderRegistry, ProviderToolsOverride, ToolCall, ToolCallDelta,
+    TurnOutcome,
 };
 use alpha_module_session::{
     SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
@@ -364,6 +365,7 @@ async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
             model: "echo".to_owned(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
+            provider_tools: Vec::new(),
         })
         .collect::<Vec<_>>()
         .await
@@ -371,6 +373,26 @@ async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
         .map(Result::unwrap)
         .collect();
     assert_eq!(chunks, vec![CompletionChunk::Text("echo: hi".to_owned())]);
+}
+
+#[tokio::test]
+async fn session_provider_tool_override_reaches_the_request() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(EchoProvider::default());
+    let agent = AgentLoop::new(provider.clone(), "echo");
+    let ctx = Ctx::root();
+    let override_value = Arc::new(ProviderToolsOverride::default());
+    override_value.set(Some(vec!["web_search".to_owned()]));
+    ctx.provide::<ProviderToolsOverride>(override_value)
+        .expect("provider tools override");
+    let mut writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    agent
+        .run_turn(&ctx, &mut writer, &state, "hello")
+        .await
+        .expect("turn");
+    let requests = provider.requests.lock().expect("request lock");
+    assert_eq!(requests[0].provider_tools, vec!["web_search".to_owned()]);
 }
 
 #[tokio::test]

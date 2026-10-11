@@ -20,8 +20,8 @@ pub use agent::{
 };
 pub use provider::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
-    ProviderCapabilities, ProviderError, ProviderRegistry, RegistryError, ToolCall, ToolCallDelta,
-    ToolDefinition,
+    ProviderCapabilities, ProviderError, ProviderRegistry, ProviderToolsOverride, RegistryError,
+    ToolCall, ToolCallDelta, ToolDefinition,
 };
 
 /// Configuration for the default loop module.

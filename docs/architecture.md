@@ -508,6 +508,10 @@ Before each model step the loop appends a durable `request_header` event with
 the model, local tool names, and provider-native tool names. The event is the
 capability snapshot for that request.
 
+`session.set_capabilities` can override provider-native tools for one session.
+The override is recorded as a durable `capabilities_set` event and applies to
+subsequent model requests.
+
 Session actors are resident only while active or recently used. Idle actors are
 evicted by `alpha-module-agent-host`; a later `session.resume` rebuilds the
 projection from the durable log and starts a fresh actor.
