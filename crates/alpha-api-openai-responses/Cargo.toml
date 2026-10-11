@@ -26,4 +26,4 @@ api = 1
 kind = "module"
 key = "api.openai-responses"
 requires = ["api.adapter"]
-registry_entries = ["openai-responses"]
+registry_entries = ["api:openai-responses"]

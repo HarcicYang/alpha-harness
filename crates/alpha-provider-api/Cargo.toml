@@ -21,4 +21,7 @@ thiserror.workspace = true
 api = 1
 kind = "module"
 key = "provider.api"
-provides = [{ key = "api.adapter", kind = "registry", scope = "global" }]
+provides = [
+    { key = "api.adapter", kind = "registry", scope = "global" },
+    { key = "provider.kind", kind = "registry", scope = "global" },
+]

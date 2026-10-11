@@ -35,6 +35,11 @@ alpha-provider-api = { path = "crates/alpha-provider-api", version = "0.1.0" }
 alpha-api-openai-chat = { path = "crates/alpha-api-openai-chat", version = "0.1.0" }
 alpha-api-openai-responses = { path = "crates/alpha-api-openai-responses", version = "0.1.0" }
 alpha-api-anthropic-messages = { path = "crates/alpha-api-anthropic-messages", version = "0.1.0" }
+alpha-module-provider-openai-chat-completions = { path = "crates/alpha-module-provider-openai-chat-completions", version = "0.1.0" }
+alpha-module-provider-openai-responses = { path = "crates/alpha-module-provider-openai-responses", version = "0.1.0" }
+alpha-module-provider-anthropic-messages = { path = "crates/alpha-module-provider-anthropic-messages", version = "0.1.0" }
+alpha-module-provider-deepseek = { path = "crates/alpha-module-provider-deepseek", version = "0.1.0" }
+alpha-module-provider-opencode-go = { path = "crates/alpha-module-provider-opencode-go", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 cargo_metadata = "0.18"
 futures = "0.3"

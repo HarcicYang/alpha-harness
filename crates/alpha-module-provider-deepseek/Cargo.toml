@@ -1,0 +1,26 @@
+[package]
+name = "alpha-module-provider-deepseek"
+description = "DeepSeek provider for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "deepseek", "provider", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-kernel.workspace = true
+alpha-module-loop.workspace = true
+alpha-provider-api.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "provider.deepseek"
+provides = [{ key = "provider.kind", kind = "registry", scope = "global" }]
+requires = ["api.adapter"]
+registry_entries = ["provider:deepseek"]

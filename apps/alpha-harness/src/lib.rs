@@ -6,6 +6,9 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use alpha_api_anthropic_messages::AnthropicMessagesApiModule;
+use alpha_api_openai_chat::OpenAiChatApiModule;
+use alpha_api_openai_responses::OpenAiResponsesApiModule;
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
 use alpha_module_credential::{CredentialConfig, CredentialModule};
@@ -18,7 +21,12 @@ use alpha_module_permission::{
 };
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
+use alpha_module_provider_anthropic_messages::AnthropicMessagesProviderModule;
+use alpha_module_provider_deepseek::DeepSeekProviderModule;
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
+use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
+use alpha_module_provider_openai_responses::OpenAiResponsesProviderModule;
+use alpha_module_provider_opencode_go::OpenCodeGoProviderModule;
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     WorkspaceRef,
@@ -27,6 +35,7 @@ use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
     FramingError, Id, Message, Response, Router, RpcError, read_message, write_message,
 };
+use alpha_provider_api::ProviderApiModule;
 use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -260,6 +269,15 @@ fn activate_core_modules(
     approval: Option<Arc<dyn ApprovalChannel>>,
     audit: Arc<CollectingAuditSink>,
 ) -> Result<(), RunError> {
+    ProviderApiModule.activate(ctx, &())?;
+    OpenAiChatApiModule.activate(ctx, &())?;
+    OpenAiResponsesApiModule.activate(ctx, &())?;
+    AnthropicMessagesApiModule.activate(ctx, &())?;
+    OpenAiChatProviderModule.activate(ctx, &())?;
+    OpenAiResponsesProviderModule.activate(ctx, &())?;
+    AnthropicMessagesProviderModule.activate(ctx, &())?;
+    DeepSeekProviderModule.activate(ctx, &())?;
+    OpenCodeGoProviderModule.activate(ctx, &())?;
     CredentialModule.activate(ctx, &CredentialConfig::default())?;
     FsLocalModule.activate(
         ctx,

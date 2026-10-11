@@ -26,4 +26,4 @@ api = 1
 kind = "module"
 key = "api.anthropic-messages"
 requires = ["api.adapter"]
-registry_entries = ["anthropic-messages"]
+registry_entries = ["api:anthropic-messages"]

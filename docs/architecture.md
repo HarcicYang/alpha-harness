@@ -447,6 +447,11 @@ modules declare required and optional adapter keys and select an adapter per
 instance or model. Adapter crates do not depend on provider modules, and
 provider modules do not copy adapter protocol implementations.
 
+The first provider set includes generic OpenAI Chat Completions, OpenAI
+Responses, and Anthropic Messages kinds plus dedicated DeepSeek and OpenCode
+Go kinds. DeepSeek uses the Anthropic Messages adapter so provider-native web
+search can be exposed through the same request path.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,
@@ -484,6 +489,11 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
 | `alpha-api-openai-responses` | OpenAI Responses adapter |
 | `alpha-api-anthropic-messages` | Anthropic Messages adapter |
+| `alpha-module-provider-openai-chat-completions` | generic OpenAI Chat Completions provider |
+| `alpha-module-provider-openai-responses` | generic OpenAI Responses provider |
+| `alpha-module-provider-anthropic-messages` | generic Anthropic Messages provider |
+| `alpha-module-provider-deepseek` | DeepSeek provider |
+| `alpha-module-provider-opencode-go` | OpenCode Go provider |
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |
