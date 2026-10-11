@@ -29,3 +29,40 @@ fn supervisor_reports_startup_attempts() {
     .expect_err("missing core must fail");
     assert!(error.to_string().contains("after 3 attempts"));
 }
+
+#[test]
+fn core_exposes_provider_registry_methods() {
+    let executable = env!("CARGO_BIN_EXE_alpha");
+    let mut supervisor =
+        CoreSupervisor::start_with_executable(executable, SupervisorConfig::default())
+            .expect("start core");
+
+    let kinds = supervisor
+        .request("provider.list_kinds", None)
+        .expect("list provider kinds");
+    let kinds = kinds.as_array().expect("provider kinds");
+    assert_eq!(kinds.len(), 5);
+
+    let instance = serde_json::json!({
+        "id": "test-openai",
+        "kind": "openai-chat-completions",
+        "config_version": 1,
+        "config": { "base_url": "https://api.test/v1" },
+        "auth_ref": "provider/test-openai/api-key"
+    });
+    supervisor
+        .request("provider.create_instance", Some(instance.clone()))
+        .expect("create provider instance");
+    let listed = supervisor
+        .request("provider.list_instances", None)
+        .expect("list provider instances");
+    assert_eq!(listed.as_array().expect("instances").len(), 1);
+
+    supervisor
+        .request(
+            "provider.remove_instance",
+            Some(serde_json::json!({ "id": "test-openai" })),
+        )
+        .expect("remove provider instance");
+    supervisor.shutdown().expect("shutdown core");
+}

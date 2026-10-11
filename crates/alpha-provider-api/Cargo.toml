@@ -24,4 +24,5 @@ key = "provider.api"
 provides = [
     { key = "api.adapter", kind = "registry", scope = "global" },
     { key = "provider.kind", kind = "registry", scope = "global" },
+    { key = "provider.instances", kind = "singleton", scope = "global" },
 ]

@@ -452,6 +452,11 @@ Responses, and Anthropic Messages kinds plus dedicated DeepSeek and OpenCode
 Go kinds. DeepSeek uses the Anthropic Messages adapter so provider-native web
 search can be exposed through the same request path.
 
+The hidden core exposes provider kind discovery, instance CRUD, and instance
+validation through `alpha-protocol`. Runtime instances are held in the global
+provider instance registry; the configuration layer can persist that
+projection to user TOML without changing the protocol surface.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,

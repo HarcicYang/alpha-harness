@@ -11,7 +11,7 @@ use alpha_api_openai_chat::OpenAiChatApiModule;
 use alpha_api_openai_responses::OpenAiResponsesApiModule;
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
-use alpha_module_credential::{CredentialConfig, CredentialModule};
+use alpha_module_credential::{CredentialConfig, CredentialModule, CredentialStore};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
 use alpha_module_loop::{AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
@@ -35,7 +35,10 @@ use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
     FramingError, Id, Message, Response, Router, RpcError, read_message, write_message,
 };
-use alpha_provider_api::ProviderApiModule;
+use alpha_provider_api::{
+    ApiAdapterRegistry, ProviderApiModule, ProviderBuildContext, ProviderInstance,
+    ProviderInstanceRegistry, ProviderKindRegistry,
+};
 use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -133,6 +136,25 @@ pub struct Composition {
     pub agent: Arc<dyn AgentDriver>,
     /// Audit records collected during the run.
     pub audit: Arc<CollectingAuditSink>,
+}
+
+/// Core-side runtime state used by the hidden stdio server.
+pub struct CoreRuntime {
+    /// Root context containing global provider and credential services.
+    pub ctx: Ctx,
+    /// Session storage used by session methods.
+    pub store: SessionStore,
+}
+
+impl CoreRuntime {
+    /// Compose the core services required by frontends.
+    pub fn new(store: SessionStore) -> Result<Self, RunError> {
+        let ctx = Ctx::root();
+        activate_provider_modules(&ctx)?;
+        CredentialModule.activate(&ctx, &CredentialConfig::default())?;
+        HttpLocalModule.activate(&ctx, &HttpConfig {})?;
+        Ok(Self { ctx, store })
+    }
 }
 
 /// Approval channel that prompts on the terminal.
@@ -269,15 +291,7 @@ fn activate_core_modules(
     approval: Option<Arc<dyn ApprovalChannel>>,
     audit: Arc<CollectingAuditSink>,
 ) -> Result<(), RunError> {
-    ProviderApiModule.activate(ctx, &())?;
-    OpenAiChatApiModule.activate(ctx, &())?;
-    OpenAiResponsesApiModule.activate(ctx, &())?;
-    AnthropicMessagesApiModule.activate(ctx, &())?;
-    OpenAiChatProviderModule.activate(ctx, &())?;
-    OpenAiResponsesProviderModule.activate(ctx, &())?;
-    AnthropicMessagesProviderModule.activate(ctx, &())?;
-    DeepSeekProviderModule.activate(ctx, &())?;
-    OpenCodeGoProviderModule.activate(ctx, &())?;
+    activate_provider_modules(ctx)?;
     CredentialModule.activate(ctx, &CredentialConfig::default())?;
     FsLocalModule.activate(
         ctx,
@@ -309,6 +323,19 @@ fn activate_core_modules(
     )?;
     ToolsModule.activate(ctx, &ToolsConfig::default())?;
     CompactionModule.activate(ctx, &CompactionConfig::default())?;
+    Ok(())
+}
+
+fn activate_provider_modules(ctx: &Ctx) -> Result<(), RunError> {
+    ProviderApiModule.activate(ctx, &())?;
+    OpenAiChatApiModule.activate(ctx, &())?;
+    OpenAiResponsesApiModule.activate(ctx, &())?;
+    AnthropicMessagesApiModule.activate(ctx, &())?;
+    OpenAiChatProviderModule.activate(ctx, &())?;
+    OpenAiResponsesProviderModule.activate(ctx, &())?;
+    AnthropicMessagesProviderModule.activate(ctx, &())?;
+    DeepSeekProviderModule.activate(ctx, &())?;
+    OpenCodeGoProviderModule.activate(ctx, &())?;
     Ok(())
 }
 
@@ -483,6 +510,9 @@ fn ensure_system_prompt(
 /// Errors from the stdio server.
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
+    /// Core composition failed.
+    #[error(transparent)]
+    Core(#[from] RunError),
     /// Protocol framing error.
     #[error(transparent)]
     Framing(#[from] FramingError),
@@ -493,11 +523,21 @@ pub enum ServeError {
 
 /// Serve JSON-RPC over stdio using the default session store.
 pub fn serve_stdio(store: SessionStore) -> Result<(), ServeError> {
+    serve_core_stdio(store)
+}
+
+/// Serve the managed core protocol over stdio.
+pub fn serve_core_stdio(store: SessionStore) -> Result<(), ServeError> {
+    let runtime = CoreRuntime::new(store)?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut input = stdin.lock();
     let mut output = stdout.lock();
-    serve_with(&mut input, &mut output, store)
+    serve_router_with(
+        &mut input,
+        &mut output,
+        build_router_with(runtime.store, Some(runtime.ctx)),
+    )
 }
 
 /// Serve JSON-RPC over an arbitrary reader and writer.
@@ -506,11 +546,18 @@ pub fn serve_with<R: BufRead, W: Write>(
     writer: &mut W,
     store: SessionStore,
 ) -> Result<(), ServeError> {
+    serve_router_with(reader, writer, build_router(store))
+}
+
+fn serve_router_with<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    router: Router,
+) -> Result<(), ServeError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(ServeError::Runtime)?;
-    let router = build_router(store);
 
     loop {
         match read_message(reader) {
@@ -533,8 +580,12 @@ pub fn serve_with<R: BufRead, W: Write>(
 }
 
 fn build_router(store: SessionStore) -> Router {
+    build_router_with(store, None)
+}
+
+fn build_router_with(store: SessionStore, ctx: Option<Ctx>) -> Router {
     let store = Arc::new(store);
-    Router::new()
+    let router = Router::new()
         .method("body.hello", |_params: Value| async move {
             Ok::<Value, RpcError>(json!({
                 "protocol": "alpha-protocol/1",
@@ -617,7 +668,158 @@ fn build_router(store: SessionStore) -> Router {
                     }))
                 }
             }
-        })
+        });
+    match ctx {
+        Some(ctx) => add_provider_methods(router, ctx),
+        None => router,
+    }
+}
+
+fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
+    let kind_registry = ctx
+        .require::<ProviderKindRegistry>()
+        .expect("provider kind registry is required by the core");
+    let instance_registry = ctx
+        .require::<ProviderInstanceRegistry>()
+        .expect("provider instance registry is required by the core");
+
+    let router = router.method("provider.list_kinds", {
+        let registry = kind_registry.clone();
+        move |_params: Value| {
+            let registry = registry.clone();
+            async move {
+                serde_json::to_value(registry.descriptors())
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("provider.describe_kind", {
+        let registry = kind_registry.clone();
+        move |params: Value| {
+            let registry = registry.clone();
+            async move {
+                let params: KindParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let kind = registry
+                    .get(&params.kind)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider kind"))?;
+                serde_json::to_value(kind.descriptor())
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("provider.list_instances", {
+        let registry = instance_registry.clone();
+        move |_params: Value| {
+            let registry = registry.clone();
+            async move {
+                serde_json::to_value(registry.list())
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("provider.create_instance", {
+        let kinds = kind_registry.clone();
+        let instances = instance_registry.clone();
+        move |params: Value| {
+            let kinds = kinds.clone();
+            let instances = instances.clone();
+            async move {
+                let instance: ProviderInstance = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                if kinds.get(&instance.kind).is_none() {
+                    return Err(RpcError::invalid_params(format!(
+                        "unknown provider kind `{}`",
+                        instance.kind
+                    )));
+                }
+                instances.upsert(instance.clone());
+                serde_json::to_value(instance)
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("provider.update_instance", {
+        let kinds = kind_registry.clone();
+        let instances = instance_registry.clone();
+        move |params: Value| {
+            let kinds = kinds.clone();
+            let instances = instances.clone();
+            async move {
+                let instance: ProviderInstance = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                if kinds.get(&instance.kind).is_none() {
+                    return Err(RpcError::invalid_params(format!(
+                        "unknown provider kind `{}`",
+                        instance.kind
+                    )));
+                }
+                instances.upsert(instance.clone());
+                serde_json::to_value(instance)
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("provider.remove_instance", {
+        let instances = instance_registry.clone();
+        move |params: Value| {
+            let instances = instances.clone();
+            async move {
+                let params: InstanceIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                Ok(json!({ "removed": instances.remove(&params.id).is_some() }))
+            }
+        }
+    });
+    router.method("provider.test_instance", {
+        let kinds = kind_registry;
+        let instances = instance_registry;
+        let ctx = ctx.clone();
+        move |params: Value| {
+            let kinds = kinds.clone();
+            let instances = instances.clone();
+            let ctx = ctx.clone();
+            async move {
+                let params: InstanceIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let instance = instances
+                    .get(&params.id)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider instance"))?;
+                let kind = kinds
+                    .get(&instance.kind)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider kind"))?;
+                let adapters = ctx
+                    .require::<ApiAdapterRegistry>()
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                let http = ctx
+                    .require::<dyn HttpClient>()
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                let credential = match instance.auth_ref.as_deref() {
+                    Some(auth_ref) => {
+                        let store = ctx
+                            .require::<dyn CredentialStore>()
+                            .map_err(|error| RpcError::internal(error.to_string()))?;
+                        Some(
+                            store
+                                .read(auth_ref)
+                                .map_err(|error| RpcError::internal(error.to_string()))?,
+                        )
+                    }
+                    None => None,
+                };
+                kind.build(
+                    &instance,
+                    &ProviderBuildContext {
+                        adapters,
+                        http,
+                        credential,
+                    },
+                )
+                .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true, "id": instance.id, "kind": instance.kind }))
+            }
+        }
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -632,4 +834,14 @@ struct AttachParams {
 #[serde(rename_all = "camelCase")]
 struct ResumeParams {
     session_id: SessionId,
+}
+
+#[derive(Debug, Deserialize)]
+struct KindParams {
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstanceIdParams {
+    id: String,
 }

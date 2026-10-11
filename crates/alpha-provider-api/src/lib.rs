@@ -180,6 +180,54 @@ pub struct ProviderKindRegistry {
     kinds: RwLock<BTreeMap<String, Arc<dyn ProviderKind>>>,
 }
 
+/// Runtime registry of configured provider instances.
+#[derive(Default)]
+pub struct ProviderInstanceRegistry {
+    instances: RwLock<BTreeMap<String, ProviderInstance>>,
+}
+
+impl ProviderInstanceRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or replace one instance.
+    pub fn upsert(&self, instance: ProviderInstance) {
+        self.instances
+            .write()
+            .expect("provider instance lock poisoned")
+            .insert(instance.id.clone(), instance);
+    }
+
+    /// Remove one instance.
+    pub fn remove(&self, id: &str) -> Option<ProviderInstance> {
+        self.instances
+            .write()
+            .expect("provider instance lock poisoned")
+            .remove(id)
+    }
+
+    /// Look up one instance.
+    pub fn get(&self, id: &str) -> Option<ProviderInstance> {
+        self.instances
+            .read()
+            .expect("provider instance lock poisoned")
+            .get(id)
+            .cloned()
+    }
+
+    /// List all instances sorted by id.
+    pub fn list(&self) -> Vec<ProviderInstance> {
+        self.instances
+            .read()
+            .expect("provider instance lock poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+}
+
 impl ProviderKindRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -485,12 +533,15 @@ impl Module for ProviderApiModule {
     const CAPABILITIES: &'static [CapabilitySpec] = &[
         CapabilitySpec::registry("api.adapter", CapabilityScope::Global),
         CapabilitySpec::registry("provider.kind", CapabilityScope::Global),
+        CapabilitySpec::singleton("provider.instances", CapabilityScope::Global),
     ];
 
     fn activate(&self, ctx: &Ctx, _config: &Self::Config) -> Result<(), ActivateError> {
         ctx.provide::<ApiAdapterRegistry>(Arc::new(ApiAdapterRegistry::new()))
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         ctx.provide::<ProviderKindRegistry>(Arc::new(ProviderKindRegistry::new()))
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        ctx.provide::<ProviderInstanceRegistry>(Arc::new(ProviderInstanceRegistry::new()))
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())
     }
