@@ -352,6 +352,8 @@ live events for read-only observers such as a TUI.
 - Lease tests: second writer rejected, stale lease takeover.
 - Provider cassette replay: HTTP traffic recorded once and replayed
   deterministically.
+- Protocol end to end: a local TCP carrier runs `alpha-protocol` against the
+  managed core while an injected HTTP seam returns a deterministic SSE stream.
 - Negative build tests: missing requirement, duplicate singleton, invalid
   override, and static registry collision each fail `cargo check` with
   actionable diagnostics.
