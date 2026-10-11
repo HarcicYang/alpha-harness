@@ -4,7 +4,7 @@ include!(concat!(env!("OUT_DIR"), "/alpha_modules.rs"));
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -160,14 +160,64 @@ pub struct CoreRuntime {
     pub store: SessionStore,
 }
 
+/// Optional services injected into a core runtime.
+#[derive(Default)]
+pub struct CoreRuntimeOptions {
+    /// Credential store override.
+    pub credential: Option<Arc<dyn CredentialStore>>,
+    /// HTTP client override.
+    pub http: Option<Arc<dyn HttpClient>>,
+    /// Provider configuration path override.
+    pub provider_config_path: Option<PathBuf>,
+}
+
 impl CoreRuntime {
     /// Compose the core services required by frontends.
     pub fn new(store: SessionStore) -> Result<Self, RunError> {
+        Self::new_with_services(store, None, None)
+    }
+
+    /// Compose the core with optional injected credential and HTTP services.
+    pub fn new_with_services(
+        store: SessionStore,
+        credential: Option<Arc<dyn CredentialStore>>,
+        http: Option<Arc<dyn HttpClient>>,
+    ) -> Result<Self, RunError> {
+        Self::new_with_options(
+            store,
+            CoreRuntimeOptions {
+                credential,
+                http,
+                provider_config_path: None,
+            },
+        )
+    }
+
+    /// Compose the core with explicit runtime options.
+    pub fn new_with_options(
+        store: SessionStore,
+        options: CoreRuntimeOptions,
+    ) -> Result<Self, RunError> {
         let ctx = Ctx::root();
         activate_provider_modules(&ctx)?;
-        ProviderConfigModule.activate(&ctx, &ProviderConfigConfig::default())?;
-        CredentialModule.activate(&ctx, &CredentialConfig::default())?;
-        HttpLocalModule.activate(&ctx, &HttpConfig {})?;
+        ProviderConfigModule.activate(
+            &ctx,
+            &ProviderConfigConfig {
+                path: options.provider_config_path,
+            },
+        )?;
+        if let Some(credential) = options.credential {
+            ctx.provide::<dyn CredentialStore>(credential)
+                .map_err(|error| RunError::Service(error.to_string()))?;
+        } else {
+            CredentialModule.activate(&ctx, &CredentialConfig::default())?;
+        }
+        if let Some(http) = options.http {
+            ctx.provide::<dyn HttpClient>(http)
+                .map_err(|error| RunError::Service(error.to_string()))?;
+        } else {
+            HttpLocalModule.activate(&ctx, &HttpConfig {})?;
+        }
         Ok(Self { ctx, store })
     }
 }
@@ -832,7 +882,63 @@ pub fn serve_stdio(store: SessionStore) -> Result<(), ServeError> {
 
 /// Serve the managed core protocol over stdio.
 pub fn serve_core_stdio(store: SessionStore) -> Result<(), ServeError> {
-    let runtime = CoreRuntime::new(store)?;
+    serve_core_stdio_with_services(store, None, None)
+}
+
+/// Serve the managed core over stdio with optional injected services.
+pub fn serve_core_stdio_with_services(
+    store: SessionStore,
+    credential: Option<Arc<dyn CredentialStore>>,
+    http: Option<Arc<dyn HttpClient>>,
+) -> Result<(), ServeError> {
+    serve_core_stdio_with_options(
+        store,
+        CoreRuntimeOptions {
+            credential,
+            http,
+            provider_config_path: None,
+        },
+    )
+}
+
+/// Serve the managed core over stdio with explicit runtime options.
+pub fn serve_core_stdio_with_options(
+    store: SessionStore,
+    options: CoreRuntimeOptions,
+) -> Result<(), ServeError> {
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    serve_protocol_with_options(&mut input, std::io::stdout(), store, options)
+}
+
+/// Serve the managed core protocol over an arbitrary reader and writer.
+pub fn serve_protocol_with_services<R: BufRead, W: Write + Send + 'static>(
+    reader: &mut R,
+    writer: W,
+    store: SessionStore,
+    credential: Option<Arc<dyn CredentialStore>>,
+    http: Option<Arc<dyn HttpClient>>,
+) -> Result<(), ServeError> {
+    serve_protocol_with_options(
+        reader,
+        writer,
+        store,
+        CoreRuntimeOptions {
+            credential,
+            http,
+            provider_config_path: None,
+        },
+    )
+}
+
+/// Serve the managed core protocol with explicit runtime options.
+pub fn serve_protocol_with_options<R: BufRead, W: Write + Send + 'static>(
+    reader: &mut R,
+    writer: W,
+    store: SessionStore,
+    options: CoreRuntimeOptions,
+) -> Result<(), ServeError> {
+    let runtime = CoreRuntime::new_with_options(store, options)?;
     let (transport, outbound) = ServerTransport::channel();
     let outbound_service: Arc<dyn OutboundTransport> = transport.clone();
     runtime
@@ -852,11 +958,10 @@ pub fn serve_core_stdio(store: SessionStore) -> Result<(), ServeError> {
         .ctx
         .provide::<AgentHostService>(agent_host)
         .map_err(|error| ServeError::Core(RunError::Service(error.to_string())))?;
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
+    let shutdown_ctx = runtime.ctx.clone();
     let router =
         build_router_with_transport(runtime.store, Some(runtime.ctx), Some(transport.clone()));
-    serve_router_concurrent(&mut input, std::io::stdout(), router, transport, outbound)
+    serve_router_concurrent(reader, writer, router, transport, outbound, shutdown_ctx)
 }
 
 /// Serve JSON-RPC over an arbitrary reader and writer.
@@ -904,6 +1009,7 @@ fn serve_router_concurrent<R: BufRead, W: Write + Send + 'static>(
     router: Router,
     transport: Arc<ServerTransport>,
     mut outbound: mpsc::UnboundedReceiver<Message>,
+    shutdown_ctx: Ctx,
 ) -> Result<(), ServeError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -955,7 +1061,9 @@ fn serve_router_concurrent<R: BufRead, W: Write + Send + 'static>(
         }
     };
     transport.fail_pending("core connection closed");
+    shutdown_ctx.dispose();
     runtime.shutdown_timeout(Duration::from_secs(1));
+    drop(router);
     drop(transport);
     let writer_result = writer_thread.join();
     match loop_result {
