@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -15,7 +15,7 @@ use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     TurnEndReason, WorkspaceRef,
 };
-use alpha_protocol::OutboundTransport;
+use alpha_protocol::{OutboundTransport, RpcError};
 use alpha_schema::{MessageId, PermissionMode, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -219,6 +219,7 @@ struct SessionActor {
 pub struct AgentHostService {
     store: SessionStore,
     transport: Arc<dyn OutboundTransport>,
+    sink: Arc<SessionEventSink>,
     factory: Arc<dyn SessionRuntimeFactory>,
     actors: Arc<Mutex<HashMap<SessionId, Arc<SessionActor>>>>,
     idle_timeout: Duration,
@@ -233,6 +234,7 @@ impl AgentHostService {
     ) -> Self {
         Self {
             store,
+            sink: Arc::new(SessionEventSink::new(transport.clone())),
             transport,
             factory,
             actors: Arc::new(Mutex::new(HashMap::new())),
@@ -478,15 +480,43 @@ impl AgentHostService {
         if self.actor(session_id).is_none() {
             return Err(AgentHostError::SessionNotFound(session_id));
         }
-        let reader = self.store.open_read(session_id)?;
-        let mut replayed = 0usize;
-        for envelope in reader
-            .events()
-            .iter()
-            .filter(|envelope| envelope.seq.get() > after_seq)
-        {
-            self.notify_durable(session_id, envelope)?;
-            replayed += 1;
+        self.sink.begin_attach(session_id);
+        let replay = (|| -> Result<(u64, usize), AgentHostError> {
+            let reader = self.store.open_read(session_id)?;
+            let mut last_seq = after_seq;
+            let mut replayed = 0usize;
+            for envelope in reader
+                .events()
+                .iter()
+                .filter(|envelope| envelope.seq.get() > after_seq)
+            {
+                self.transport
+                    .notify(
+                        "session.event".to_owned(),
+                        json!({
+                            "sessionId": session_id,
+                            "kind": "durable",
+                            "event": envelope,
+                        }),
+                    )
+                    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+                last_seq = envelope.seq.get();
+                replayed += 1;
+            }
+            Ok((last_seq, replayed))
+        })();
+        let pending = self.sink.finish_attach(session_id);
+        let (last_seq, replayed) = replay?;
+        for params in pending {
+            if params["kind"] == "durable" {
+                let seq = params["event"]["seq"].as_u64().unwrap_or_default();
+                if seq <= last_seq {
+                    continue;
+                }
+            }
+            self.transport
+                .notify("session.event".to_owned(), params)
+                .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         }
         Ok(SessionAttached { replayed })
     }
@@ -541,11 +571,11 @@ impl AgentHostService {
         install_live_observers(
             &runtime.ctx,
             session_id,
-            self.transport.clone(),
+            self.sink.clone(),
             current_turn.clone(),
         )?;
         let writer = Arc::new(writer);
-        install_writer_observer(&writer, session_id, self.transport.clone(), state.clone());
+        install_writer_observer(&writer, session_id, self.sink.clone(), state.clone());
         let (tx, rx) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
         let actor = Arc::new(SessionActor {
@@ -576,29 +606,69 @@ impl AgentHostService {
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         Ok(())
     }
+}
 
-    fn notify_durable(
-        &self,
-        session_id: SessionId,
-        envelope: &alpha_schema::EventEnvelope<SessionEvent>,
-    ) -> Result<(), AgentHostError> {
-        self.transport
-            .notify(
-                "session.event".to_owned(),
-                json!({
-                    "sessionId": session_id,
-                    "kind": "durable",
-                    "event": envelope,
-                }),
-            )
-            .map_err(|error| AgentHostError::Runtime(error.to_string()))
+struct SessionEventSink {
+    transport: Arc<dyn OutboundTransport>,
+    attaching: Mutex<HashSet<SessionId>>,
+    pending: Mutex<HashMap<SessionId, Vec<serde_json::Value>>>,
+}
+
+impl SessionEventSink {
+    fn new(transport: Arc<dyn OutboundTransport>) -> Self {
+        Self {
+            transport,
+            attaching: Mutex::new(HashSet::new()),
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn begin_attach(&self, session_id: SessionId) {
+        self.attaching
+            .lock()
+            .expect("attach lock poisoned")
+            .insert(session_id);
+        self.pending
+            .lock()
+            .expect("attach pending lock poisoned")
+            .insert(session_id, Vec::new());
+    }
+
+    fn finish_attach(&self, session_id: SessionId) -> Vec<serde_json::Value> {
+        self.attaching
+            .lock()
+            .expect("attach lock poisoned")
+            .remove(&session_id);
+        self.pending
+            .lock()
+            .expect("attach pending lock poisoned")
+            .remove(&session_id)
+            .unwrap_or_default()
+    }
+
+    fn publish(&self, session_id: SessionId, params: serde_json::Value) -> Result<(), RpcError> {
+        if self
+            .attaching
+            .lock()
+            .expect("attach lock poisoned")
+            .contains(&session_id)
+        {
+            self.pending
+                .lock()
+                .expect("attach pending lock poisoned")
+                .entry(session_id)
+                .or_default()
+                .push(params);
+            return Ok(());
+        }
+        self.transport.notify("session.event".to_owned(), params)
     }
 }
 
 fn install_writer_observer(
     writer: &SessionWriter,
     session_id: SessionId,
-    transport: Arc<dyn OutboundTransport>,
+    sink: Arc<SessionEventSink>,
     state: Arc<Mutex<SessionState>>,
 ) {
     writer.set_observer(Arc::new(move |envelope| {
@@ -606,8 +676,8 @@ fn install_writer_observer(
             .lock()
             .expect("session state lock poisoned")
             .apply(envelope);
-        let _ = transport.notify(
-            "session.event".to_owned(),
+        let _ = sink.publish(
+            session_id,
             json!({
                 "sessionId": session_id,
                 "kind": "durable",
@@ -650,13 +720,13 @@ fn pending_steers(events: &[alpha_schema::EventEnvelope<SessionEvent>]) -> Vec<S
 fn install_live_observers(
     ctx: &Ctx,
     session_id: SessionId,
-    transport: Arc<dyn OutboundTransport>,
+    sink: Arc<SessionEventSink>,
     current_turn: Arc<Mutex<Option<TurnId>>>,
 ) -> Result<(), AgentHostError> {
-    let text_transport = transport.clone();
+    let text_sink = sink.clone();
     let text_turn = current_turn.clone();
     ctx.on_parallel::<alpha_module_loop::AgentTextDelta, _>(move |event| {
-        let transport = text_transport.clone();
+        let sink = text_sink.clone();
         let turn = text_turn.clone();
         Box::pin(async move {
             let turn_id = turn
@@ -664,8 +734,8 @@ fn install_live_observers(
                 .expect("turn lock poisoned")
                 .map(|id| id.to_string())
                 .unwrap_or_default();
-            let _ = transport.notify(
-                "session.event".to_owned(),
+            let _ = sink.publish(
+                session_id,
                 json!({
                     "sessionId": session_id,
                     "kind": "live",
@@ -678,10 +748,10 @@ fn install_live_observers(
     })
     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
-    let step_transport = transport.clone();
+    let step_sink = sink.clone();
     let step_turn = current_turn.clone();
     ctx.on_parallel::<alpha_module_loop::AgentStepStarted, _>(move |event| {
-        let transport = step_transport.clone();
+        let sink = step_sink.clone();
         let turn = step_turn.clone();
         Box::pin(async move {
             let turn_id = turn
@@ -689,8 +759,8 @@ fn install_live_observers(
                 .expect("turn lock poisoned")
                 .map(|id| id.to_string())
                 .unwrap_or_default();
-            let _ = transport.notify(
-                "session.event".to_owned(),
+            let _ = sink.publish(
+                session_id,
                 json!({
                     "sessionId": session_id,
                     "kind": "live",
@@ -704,10 +774,10 @@ fn install_live_observers(
     })
     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
-    let tool_transport = transport.clone();
+    let tool_sink = sink.clone();
     let tool_turn = current_turn.clone();
     ctx.on_parallel::<alpha_module_loop::AgentToolStarted, _>(move |event| {
-        let transport = tool_transport.clone();
+        let sink = tool_sink.clone();
         let turn = tool_turn.clone();
         Box::pin(async move {
             let turn_id = turn
@@ -715,8 +785,8 @@ fn install_live_observers(
                 .expect("turn lock poisoned")
                 .map(|id| id.to_string())
                 .unwrap_or_default();
-            let _ = transport.notify(
-                "session.event".to_owned(),
+            let _ = sink.publish(
+                session_id,
                 json!({
                     "sessionId": session_id,
                     "kind": "live",
@@ -733,10 +803,10 @@ fn install_live_observers(
     })
     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
-    let finished_transport = transport.clone();
+    let finished_sink = sink.clone();
     let finished_turn = current_turn.clone();
     ctx.on_parallel::<alpha_module_loop::AgentToolFinished, _>(move |event| {
-        let transport = finished_transport.clone();
+        let sink = finished_sink.clone();
         let turn = finished_turn.clone();
         Box::pin(async move {
             let turn_id = turn
@@ -744,8 +814,8 @@ fn install_live_observers(
                 .expect("turn lock poisoned")
                 .map(|id| id.to_string())
                 .unwrap_or_default();
-            let _ = transport.notify(
-                "session.event".to_owned(),
+            let _ = sink.publish(
+                session_id,
                 json!({
                     "sessionId": session_id,
                     "kind": "live",
@@ -1003,4 +1073,65 @@ fn start_turn(
         };
         let _ = completion_tx.send(TurnCompletion { result });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::future::BoxFuture;
+
+    #[derive(Default)]
+    struct RecordingTransport {
+        events: Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl OutboundTransport for RecordingTransport {
+        fn notify(&self, method: String, params: serde_json::Value) -> Result<(), RpcError> {
+            assert_eq!(method, "session.event");
+            self.events
+                .lock()
+                .expect("event lock poisoned")
+                .push(params);
+            Ok(())
+        }
+
+        fn request(
+            &self,
+            _method: String,
+            _params: serde_json::Value,
+        ) -> BoxFuture<'static, Result<serde_json::Value, RpcError>> {
+            Box::pin(async { Ok(serde_json::Value::Null) })
+        }
+    }
+
+    #[test]
+    fn attach_buffers_live_events_until_release() {
+        let transport = Arc::new(RecordingTransport::default());
+        let sink = SessionEventSink::new(transport.clone());
+        let session_id = SessionId::new();
+        sink.begin_attach(session_id);
+        sink.publish(
+            session_id,
+            json!({ "kind": "live", "event": { "type": "one" } }),
+        )
+        .expect("buffer event");
+        assert!(
+            transport
+                .events
+                .lock()
+                .expect("event lock poisoned")
+                .is_empty()
+        );
+        let pending = sink.finish_attach(session_id);
+        assert_eq!(pending.len(), 1);
+        sink.publish(
+            session_id,
+            json!({ "kind": "live", "event": { "type": "two" } }),
+        )
+        .expect("publish event");
+        assert_eq!(
+            transport.events.lock().expect("event lock poisoned").len(),
+            1
+        );
+    }
 }

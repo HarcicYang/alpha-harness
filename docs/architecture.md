@@ -339,8 +339,10 @@ Guarantees:
 
 `alpha run --resume <id>` opens the session idle and shows the last state.
 `--continue` (or new input) claims pending inbox work and resumes unfinished
-tasks. `session.attach { afterSeq }` replays durable events and then streams
-live events for read-only observers such as a TUI.
+tasks. `session.attach { afterSeq }` first joins the event stream, replays
+durable events, then releases any live events buffered during replay before
+continuing with normal delivery. This gives read-only observers such as a TUI
+a gap-free ordered view.
 
 ### D21: Testing
 
