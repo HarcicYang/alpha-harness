@@ -193,13 +193,13 @@ impl AgentLoop {
                             text: String::new(),
                         })?;
                     }
-                    writer.append(SessionEvent::TurnEnded {
-                        reason: TurnEndReason::Failed,
-                    })?;
                     ctx.parallel(AgentError {
                         message: failure.error.to_string(),
                     })
                     .await;
+                    writer.append(SessionEvent::TurnEnded {
+                        reason: TurnEndReason::Failed,
+                    })?;
                     return Err(LoopError::Provider(failure.error));
                 }
             };
@@ -303,23 +303,23 @@ impl AgentLoop {
                         text: String::new(),
                     })?;
                 }
-                writer.append(SessionEvent::TurnEnded {
-                    reason: TurnEndReason::Failed,
-                })?;
                 ctx.parallel(AgentError {
                     message: failure.error.to_string(),
                 })
                 .await;
-                Err(LoopError::Provider(failure.error))
-            }
-            Ok(_) => {
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Failed,
                 })?;
+                Err(LoopError::Provider(failure.error))
+            }
+            Ok(_) => {
                 ctx.parallel(AgentError {
                     message: format!("turn exceeded {} model steps", self.max_steps),
                 })
                 .await;
+                writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Failed,
+                })?;
                 Err(LoopError::StepLimit(self.max_steps))
             }
         }
@@ -511,13 +511,13 @@ impl AgentLoop {
             Ok(response) => (ToolStatus::Completed, response.content),
             Err(ToolError::Failure(message)) => (ToolStatus::Failed, message),
             Err(ToolError::Operational(message)) => {
-                writer.append(SessionEvent::TurnEnded {
-                    reason: TurnEndReason::Failed,
-                })?;
                 ctx.parallel(AgentError {
                     message: message.clone(),
                 })
                 .await;
+                writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Failed,
+                })?;
                 return Err(LoopError::Tool(message));
             }
         };

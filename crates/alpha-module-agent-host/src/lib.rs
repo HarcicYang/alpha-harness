@@ -832,6 +832,25 @@ fn install_live_observers(
         })
     })
     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+    let error_sink = sink;
+    ctx.on_parallel::<alpha_module_loop::AgentError, _>(move |event| {
+        let sink = error_sink.clone();
+        Box::pin(async move {
+            let _ = sink.publish(
+                session_id,
+                json!({
+                    "sessionId": session_id,
+                    "kind": "live",
+                    "event": {
+                        "type": "error",
+                        "message": event.message,
+                    },
+                }),
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
     Ok(())
 }
 

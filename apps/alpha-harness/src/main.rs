@@ -319,6 +319,13 @@ fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
                     .unwrap_or("finished");
                 eprintln!("alpha run: <- {name} {status}");
             }
+            "error" => {
+                let message = event
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("model request failed");
+                eprintln!("alpha run: {message}");
+            }
             _ => {}
         },
         "durable" => {
