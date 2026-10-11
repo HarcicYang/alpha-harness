@@ -37,6 +37,7 @@ alpha-protocol.workspace = true
 alpha-kernel.workspace = true
 alpha-bundle-default.workspace = true
 alpha-front-supervisor.workspace = true
+alpha-front-tui.workspace = true
 clap.workspace = true
 futures.workspace = true
 serde.workspace = true

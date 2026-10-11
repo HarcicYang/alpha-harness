@@ -31,6 +31,7 @@ alpha-module-provider-openai = { path = "crates/alpha-module-provider-openai", v
 alpha-bundle-default = { path = "crates/alpha-bundle-default", version = "0.1.0" }
 alpha-front-client = { path = "crates/alpha-front-client", version = "0.1.0" }
 alpha-front-supervisor = { path = "crates/alpha-front-supervisor", version = "0.1.0" }
+alpha-front-tui = { path = "crates/alpha-front-tui", version = "0.1.0" }
 alpha-provider-api = { path = "crates/alpha-provider-api", version = "0.1.0" }
 alpha-api-openai-chat = { path = "crates/alpha-api-openai-chat", version = "0.1.0" }
 alpha-api-openai-responses = { path = "crates/alpha-api-openai-responses", version = "0.1.0" }
@@ -56,3 +57,5 @@ tokio = { version = "1", default-features = false, features = ["process", "rt", 
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 ureq = "2"
 uuid = { version = "1", features = ["serde", "v7"] }
+ratatui = "0.30.2"
+crossterm = "0.29"

@@ -33,6 +33,15 @@ alpha run --mode free --model deepseek-chat \
 - Assistant output streams to stdout as the model produces it. Step, tool, and
   error progress stays on stderr.
 
+## Terminal interface
+
+```sh
+alpha tui
+```
+
+The TUI starts its own core process, discovers provider kinds and persisted
+provider instances, and currently exposes provider inspection and refresh.
+
 ## Prompting and context
 
 - `AGENTS.md` and `.alpha/AGENTS.md` files are discovered from the workspace

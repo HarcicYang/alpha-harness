@@ -149,6 +149,7 @@ below the workspace may invent its own cwd:
 Headless and SDK first:
 
 - `alpha run`: one-shot and streaming stdout, for scripts and CI.
+- `alpha tui`: full-screen terminal profile backed by a managed core.
 - `alpha __core --stdio`: hidden core process managed by a front.
 - Rust SDK embeds the core crates directly.
 
@@ -419,6 +420,10 @@ restart the core process and restore durable session state only; an
 interrupted turn is never replayed automatically. The hidden core command is
 available for manual debugging but is not a supported user workflow.
 
+The first TUI screen is a provider manager backed by `provider.list_kinds` and
+`provider.list_instances`. It uses a full-screen alternate terminal and starts
+and stops its own core process.
+
 ### D26: Credential storage
 
 Provider secrets are stored only through the credential module. The module
@@ -494,6 +499,7 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-protocol` | JSON-RPC 2.0 and NDJSON framing, request routing |
 | `alpha-front-client` | blocking alpha-protocol client used by fronts |
 | `alpha-front-supervisor` | managed core child process lifecycle |
+| `alpha-front-tui` | full-screen terminal frontend |
 | `alpha-provider-api` | provider descriptors and API adapter contracts |
 | `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
 | `alpha-api-openai-responses` | OpenAI Responses adapter |

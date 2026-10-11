@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use alpha_front_tui::run_tui;
 use alpha_harness::{
     ResumeOptions, RunOptions, TtyApprovalChannel, compose_openai_runtime, list_sessions,
     resume_session_in, run_prompt_in, serve_stdio,
@@ -32,6 +33,8 @@ struct Cli {
 enum Command {
     /// Run one prompt and exit.
     Run(RunArgs),
+    /// Open the full-screen terminal interface.
+    Tui,
     /// List stored sessions.
     Sessions,
     /// Internal core process entry point.
@@ -76,6 +79,13 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args),
+        Command::Tui => match run_tui() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("alpha tui: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Sessions => {
             let store = SessionStore::new(SessionStore::default_root());
             match list_sessions(&store) {

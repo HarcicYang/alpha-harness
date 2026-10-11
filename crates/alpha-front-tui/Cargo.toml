@@ -1,0 +1,17 @@
+[package]
+name = "alpha-front-tui"
+description = "Full-screen terminal frontend for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "tui", "frontend"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-front-supervisor.workspace = true
+alpha-provider-api.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
