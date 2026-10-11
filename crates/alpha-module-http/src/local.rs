@@ -2,10 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 
 use crate::seam::{HttpClient, HttpError, HttpRequest, HttpResponse};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_TIMEOUT: Duration = Duration::from_secs(300);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// HTTP seam backed by the local machine.
 #[derive(Clone, Debug, Default)]
@@ -29,7 +34,11 @@ impl HttpClient for LocalHttpClient {
 }
 
 fn execute(request: HttpRequest) -> Result<HttpResponse, HttpError> {
-    let agent = ureq::AgentBuilder::new().build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .timeout_write(WRITE_TIMEOUT)
+        .build();
     let mut call = agent.request(&request.method, &request.url);
     for (name, value) in &request.headers {
         call = call.set(name, value);
