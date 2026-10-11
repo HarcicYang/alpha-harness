@@ -509,7 +509,8 @@ projection from the durable log and starts a fresh actor.
 
 Steers outside an active turn remain pending until
 `session.confirm_steers` accepts or discards them. Accepted steers start a new
-turn; discarded steers are removed without entering model history.
+turn; discarded steers are removed without entering model history. The pending
+steer queue is bounded and rejects overflow instead of growing without limit.
 
 ## 4. Runtime contract sketch
 

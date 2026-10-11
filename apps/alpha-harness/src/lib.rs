@@ -1521,6 +1521,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                 let params: SteerParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 host.steer(params.session_id, params.text)
+                    .await
                     .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "ok": true }))
             }

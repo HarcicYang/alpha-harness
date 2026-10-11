@@ -1107,6 +1107,13 @@ fn execute_palette_command(
                 selected: 0,
             });
         }
+        "diagnostics" => {
+            let info = supervisor.info();
+            app.chat.status = Some(format!(
+                "core pid={} protocol={} instance={}",
+                info.pid, info.protocol, info.core_instance_id
+            ));
+        }
         "help" => app.help = true,
         "quit" => app.quit = true,
         "" => {}
@@ -1278,6 +1285,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from(":new             create a new session"),
         Line::from(":resume ID       resume a session"),
         Line::from(":sessions        open the session picker"),
+        Line::from(":diagnostics     show core connection details"),
         Line::from(":help            show this help"),
         Line::from(":quit            exit"),
         Line::from(""),

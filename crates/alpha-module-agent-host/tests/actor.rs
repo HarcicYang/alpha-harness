@@ -213,12 +213,14 @@ fn pending_steers_require_confirmation() {
             })
             .expect("create");
         host.steer(created.session_id, "confirmed".to_owned())
+            .await
             .expect("queue steer");
         assert!(matches!(
             host.confirm_steers(created.session_id, false).await,
             Ok(())
         ));
         host.steer(created.session_id, "confirmed".to_owned())
+            .await
             .expect("queue steer");
         host.confirm_steers(created.session_id, true)
             .await

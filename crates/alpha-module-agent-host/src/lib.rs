@@ -137,6 +137,8 @@ struct ActorSteerQueue {
     queue: Mutex<VecDeque<SteerMessage>>,
 }
 
+const MAX_PENDING_STEERS: usize = 16;
+
 impl ActorSteerQueue {
     fn new() -> Self {
         Self {
@@ -144,11 +146,13 @@ impl ActorSteerQueue {
         }
     }
 
-    fn push(&self, message: SteerMessage) {
-        self.queue
-            .lock()
-            .expect("steer queue lock poisoned")
-            .push_back(message);
+    fn push(&self, message: SteerMessage) -> Result<(), AgentHostError> {
+        let mut queue = self.queue.lock().expect("steer queue lock poisoned");
+        if queue.len() >= MAX_PENDING_STEERS {
+            return Err(AgentHostError::Invalid("steer queue is full".to_owned()));
+        }
+        queue.push_back(message);
+        Ok(())
     }
 
     fn clear(&self) {
@@ -180,6 +184,7 @@ enum SessionCommand {
     },
     Steer {
         text: String,
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
     },
     SetMode {
         mode: PermissionMode,
@@ -368,17 +373,21 @@ impl AgentHostService {
     }
 
     /// Queue a steer message for the current or next turn.
-    pub fn steer(&self, session_id: SessionId, text: String) -> Result<(), AgentHostError> {
+    pub async fn steer(&self, session_id: SessionId, text: String) -> Result<(), AgentHostError> {
         if text.trim().is_empty() {
             return Err(AgentHostError::Invalid("steer is empty".to_owned()));
         }
         let actor = self
             .actor(session_id)
             .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let (reply, receiver) = oneshot::channel();
         actor
             .tx
-            .send(SessionCommand::Steer { text })
-            .map_err(|_| AgentHostError::ActorStopped(session_id))
+            .send(SessionCommand::Steer { text, reply })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+        receiver
+            .await
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?
     }
 
     /// Change the effective mode and record it durably.
@@ -585,6 +594,7 @@ fn install_live_observers(
                     "sessionId": session_id,
                     "kind": "live",
                     "turnId": turn_id,
+                    "streamId": format!("{turn_id}:text"),
                     "event": { "type": "text_delta", "text": event.text },
                 }),
             );
@@ -610,6 +620,7 @@ fn install_live_observers(
                     "kind": "live",
                     "turnId": turn_id,
                     "stepId": event.step,
+                    "streamId": format!("{turn_id}:step-{}", event.step),
                     "event": { "type": "step_started", "step": event.step },
                 }),
             );
@@ -634,6 +645,7 @@ fn install_live_observers(
                     "sessionId": session_id,
                     "kind": "live",
                     "turnId": turn_id,
+                    "streamId": format!("{turn_id}:tool"),
                     "event": {
                         "type": "tool_started",
                         "name": event.name,
@@ -662,6 +674,7 @@ fn install_live_observers(
                     "sessionId": session_id,
                     "kind": "live",
                     "turnId": turn_id,
+                    "streamId": format!("{turn_id}:tool"),
                     "event": {
                         "type": "tool_finished",
                         "name": event.name,
@@ -726,9 +739,10 @@ async fn actor_loop(
                         };
                         let _ = reply.send(result);
                     }
-                    SessionCommand::Steer { text } => {
+                    SessionCommand::Steer { text, reply } => {
                         let turn_id = active_turn.unwrap_or_default();
-                        steer_queue.push(SteerMessage { turn_id, text });
+                        let result = steer_queue.push(SteerMessage { turn_id, text });
+                        let _ = reply.send(result);
                     }
                     SessionCommand::SetMode { mode, reply } => {
                         let result = writer
