@@ -239,6 +239,7 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
             .provide::<dyn SteerQueue>(request.steer_queue.clone())
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         let provider_tools_override = Arc::new(ProviderToolsOverride::default());
+        provider_tools_override.set(request.provider_tools_override);
         session_ctx
             .provide::<ProviderToolsOverride>(provider_tools_override.clone())
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
@@ -447,8 +448,7 @@ pub fn compose_openai_runtime(
         &ctx,
         &OpenAiConfig {
             base_url: base_url.to_owned(),
-            api_key_env: "OPENAI_API_KEY".to_owned(),
-            api_key: Some(api_key.to_owned()),
+            api_key: api_key.to_owned(),
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
@@ -475,8 +475,7 @@ pub fn compose_openai_runtime_with_http(
         &ctx,
         &OpenAiConfig {
             base_url: base_url.to_owned(),
-            api_key_env: "OPENAI_API_KEY".to_owned(),
-            api_key: Some(api_key.to_owned()),
+            api_key: api_key.to_owned(),
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;

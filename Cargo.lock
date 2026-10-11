@@ -216,6 +216,7 @@ version = "0.1.0"
 dependencies = [
  "alpha-kernel",
  "alpha-module-loop",
+ "alpha-module-permission",
  "alpha-module-session",
  "alpha-protocol",
  "alpha-schema",

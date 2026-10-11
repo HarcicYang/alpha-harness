@@ -20,7 +20,7 @@ struct EchoDriver;
 impl AgentDriver for EchoDriver {
     fn run_turn<'a>(
         &'a self,
-        _ctx: &'a Ctx,
+        ctx: &'a Ctx,
         writer: &'a SessionWriter,
         _state: &'a SessionState,
         prompt: &'a str,
@@ -32,7 +32,15 @@ impl AgentDriver for EchoDriver {
                 text: prompt.to_owned(),
             })?;
             let id = MessageId::new();
-            let text = format!("echo:{prompt}");
+            let text = match ctx
+                .get::<ProviderToolsOverride>()
+                .and_then(|override_value| override_value.get())
+            {
+                Some(provider_tools) if !provider_tools.is_empty() => {
+                    format!("echo:{prompt}:{}", provider_tools.join(","))
+                }
+                _ => format!("echo:{prompt}"),
+            };
             writer.append(SessionEvent::AssistantMessage {
                 id,
                 blocks: vec![AssistantContentBlock::Text { text: text.clone() }],
@@ -54,12 +62,17 @@ struct EchoFactory;
 impl SessionRuntimeFactory for EchoFactory {
     fn build(
         &self,
-        _request: SessionRuntimeRequest,
+        request: SessionRuntimeRequest,
     ) -> Result<SessionRuntime, alpha_module_agent_host::AgentHostError> {
+        let ctx = Ctx::root();
+        let provider_tools_override = Arc::new(ProviderToolsOverride::default());
+        provider_tools_override.set(request.provider_tools_override);
+        ctx.provide::<ProviderToolsOverride>(provider_tools_override.clone())
+            .expect("provider tools override");
         Ok(SessionRuntime {
-            ctx: Ctx::root(),
+            ctx,
             agent: Arc::new(EchoDriver),
-            provider_tools_override: Arc::new(ProviderToolsOverride::default()),
+            provider_tools_override,
         })
     }
 }
@@ -283,6 +296,10 @@ fn pending_steers_survive_actor_restart() {
             .steer(created.session_id, "pending".to_owned())
             .await
             .expect("queue steer");
+        first
+            .set_capabilities(created.session_id, vec!["web_search".to_owned()])
+            .await
+            .expect("set capabilities");
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(first.session_count(), 0);
         drop(first);
@@ -320,7 +337,7 @@ fn pending_steers_survive_actor_restart() {
             method == "session.event"
                 && params["kind"] == "durable"
                 && params["event"]["payload"]["type"] == "assistant_message"
-                && params["event"]["payload"]["blocks"][0]["text"] == "echo:pending"
+                && params["event"]["payload"]["blocks"][0]["text"] == "echo:pending:web_search"
         }));
     });
 }

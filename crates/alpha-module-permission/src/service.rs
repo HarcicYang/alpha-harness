@@ -14,6 +14,8 @@ use crate::request::{ApprovalDecision, GrantScope, PermissionOutcome, Permission
 pub trait PermissionService: Send + Sync + 'static {
     /// Decide whether a request may proceed.
     fn check(&self, request: PermissionRequest) -> BoxFuture<'_, PermissionOutcome>;
+    /// Change the effective mode for later checks.
+    fn set_mode(&self, mode: PermissionMode);
 }
 
 /// Prompt shown to an approval channel.
@@ -113,7 +115,7 @@ impl AuditSink for CollectingAuditSink {
 
 /// Local permission service implementing the M1 modes.
 pub struct LocalPermissionService {
-    mode: PermissionMode,
+    mode: Mutex<PermissionMode>,
     policy: Policy,
     grants: Mutex<BTreeSet<(String, String)>>,
     channel: Option<Arc<dyn ApprovalChannel>>,
@@ -124,7 +126,7 @@ impl LocalPermissionService {
     /// Create a service for a mode and policy.
     pub fn new(mode: PermissionMode, policy: Policy) -> Self {
         Self {
-            mode,
+            mode: Mutex::new(mode),
             policy,
             grants: Mutex::new(BTreeSet::new()),
             channel: None,
@@ -146,7 +148,7 @@ impl LocalPermissionService {
 
     /// The effective mode.
     pub fn mode(&self) -> PermissionMode {
-        self.mode
+        *self.mode.lock().expect("mode lock poisoned")
     }
 
     /// Current session grants.
@@ -181,7 +183,7 @@ impl LocalPermissionService {
         }
 
         if self.policy.is_protected(request) {
-            return match self.mode {
+            return match self.mode() {
                 PermissionMode::Free => (
                     PermissionOutcome::Allowed {
                         scope: GrantScope::Once,
@@ -204,7 +206,7 @@ impl LocalPermissionService {
                 },
                 DecisionSource::Policy,
             ),
-            None => match self.mode {
+            None => match self.mode() {
                 PermissionMode::Free => (
                     PermissionOutcome::Allowed {
                         scope: GrantScope::Once,
@@ -289,6 +291,10 @@ impl PermissionService for LocalPermissionService {
             }
             outcome
         })
+    }
+
+    fn set_mode(&self, mode: PermissionMode) {
+        *self.mode.lock().expect("mode lock poisoned") = mode;
     }
 }
 

@@ -90,6 +90,8 @@ pub struct SessionState {
     pub compaction: Option<CompactionRecord>,
     /// Effective permission mode.
     pub mode: PermissionMode,
+    /// Session-level provider-native tool override.
+    pub provider_tools_override: Option<Vec<String>>,
     /// Effective workspace binding.
     pub workspace: WorkspaceRef,
     /// Message history.
@@ -109,6 +111,7 @@ impl SessionState {
             system_prompt: None,
             compaction: None,
             mode: header.mode,
+            provider_tools_override: None,
             workspace: header.workspace.clone(),
             messages: Vec::new(),
             turn_open: false,
@@ -148,7 +151,9 @@ impl SessionState {
             }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::RequestHeader { .. } => {}
-            SessionEvent::CapabilitiesSet { .. } => {}
+            SessionEvent::CapabilitiesSet { provider_tools } => {
+                self.provider_tools_override = Some(provider_tools.clone());
+            }
             SessionEvent::ContextCompacted {
                 summary,
                 from_seq,

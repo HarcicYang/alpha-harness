@@ -82,6 +82,25 @@ async fn read_mode_allows_reads_and_denies_mutations() {
 }
 
 #[tokio::test]
+async fn set_mode_changes_later_checks() {
+    let service = LocalPermissionService::new(PermissionMode::Free, Policy::default());
+    assert!(
+        service
+            .check(request("fs.write", "workspace/main.rs"))
+            .await
+            .is_allowed()
+    );
+    service.set_mode(PermissionMode::Read);
+    assert_eq!(service.mode(), PermissionMode::Read);
+    assert!(
+        !service
+            .check(request("fs.write", "workspace/main.rs"))
+            .await
+            .is_allowed()
+    );
+}
+
+#[tokio::test]
 async fn session_grants_skip_later_prompts() {
     let channel = Channel::with_decisions([ApprovalDecision::AllowSession]);
     let service = LocalPermissionService::new(PermissionMode::Auto, Policy::default())

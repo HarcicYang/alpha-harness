@@ -11,6 +11,7 @@ categories = ["development-tools"]
 [dependencies]
 alpha-kernel.workspace = true
 alpha-module-loop.workspace = true
+alpha-module-permission.workspace = true
 alpha-module-session.workspace = true
 alpha-protocol.workspace = true
 alpha-schema.workspace = true

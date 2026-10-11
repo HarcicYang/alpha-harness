@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use alpha_kernel::Ctx;
 use alpha_module_loop::{AgentDriver, LoopError, ProviderToolsOverride, SteerMessage, SteerQueue};
+use alpha_module_permission::PermissionService;
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     TurnEndReason, WorkspaceRef,
@@ -71,6 +72,8 @@ pub struct SessionRuntimeRequest {
     pub provider: String,
     /// Model identifier.
     pub model: String,
+    /// Recovered session capability override.
+    pub provider_tools_override: Option<Vec<String>>,
     /// Queue consumed by the default loop at step boundaries.
     pub steer_queue: Arc<dyn SteerQueue>,
 }
@@ -274,6 +277,7 @@ impl AgentHostService {
             mode: request.mode,
             provider: request.provider,
             model: request.model,
+            provider_tools_override: None,
             steer_queue: steer_queue.clone(),
         })?;
         self.spawn_actor(header, writer, runtime, steer_queue, Vec::new())?;
@@ -323,6 +327,7 @@ impl AgentHostService {
             mode: header.mode,
             provider: header.provider.clone(),
             model: header.model.clone(),
+            provider_tools_override: state.provider_tools_override.clone(),
             steer_queue: steer_queue.clone(),
         })?;
         self.spawn_actor_with_state(
@@ -831,10 +836,16 @@ async fn actor_loop(
                         let _ = reply.send(result);
                     }
                     SessionCommand::SetMode { mode, reply } => {
-                        let result = writer
-                            .append(SessionEvent::ModeChanged { mode })
-                            .map(|_| ())
-                            .map_err(AgentHostError::Session);
+                        let result = match runtime.ctx.require::<dyn PermissionService>() {
+                            Ok(permission) => {
+                                permission.set_mode(mode);
+                                writer
+                                    .append(SessionEvent::ModeChanged { mode })
+                                    .map(|_| ())
+                                    .map_err(AgentHostError::Session)
+                            }
+                            Err(error) => Err(AgentHostError::Runtime(error.to_string())),
+                        };
                         let _ = reply.send(result);
                     }
                     SessionCommand::ConfirmSteers { accept, reply } => {
