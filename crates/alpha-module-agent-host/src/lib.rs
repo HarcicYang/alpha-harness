@@ -1,0 +1,770 @@
+//! Session actors and live event delivery.
+
+#![forbid(unsafe_code)]
+
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use alpha_kernel::Ctx;
+use alpha_module_loop::{AgentDriver, LoopError, SteerMessage, SteerQueue};
+use alpha_module_session::{
+    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
+    TurnEndReason, WorkspaceRef,
+};
+use alpha_protocol::OutboundTransport;
+use alpha_schema::{PermissionMode, SessionId, TurnId};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+/// Stable module key used by the generated composition table.
+pub const __ALPHA_MODULE__: &str = "agent.host";
+
+/// Failure while creating or driving a session actor.
+#[derive(Debug, Error)]
+pub enum AgentHostError {
+    /// Session storage failed.
+    #[error(transparent)]
+    Session(#[from] SessionError),
+    /// The requested session does not exist.
+    #[error("session `{0}` does not exist")]
+    SessionNotFound(SessionId),
+    /// The session already has a running turn.
+    #[error("session `{0}` is busy")]
+    SessionBusy(SessionId),
+    /// The session actor stopped unexpectedly.
+    #[error("session `{0}` actor stopped")]
+    ActorStopped(SessionId),
+    /// Runtime construction failed.
+    #[error("session runtime failed: {0}")]
+    Runtime(String),
+    /// The request was invalid.
+    #[error("invalid session request: {0}")]
+    Invalid(String),
+}
+
+/// One session runtime built by the application composition.
+pub struct SessionRuntime {
+    /// Session-scoped context.
+    pub ctx: Ctx,
+    /// Agent driver for one turn.
+    pub agent: Arc<dyn AgentDriver>,
+}
+
+/// Inputs used to build one session runtime.
+#[derive(Clone)]
+pub struct SessionRuntimeRequest {
+    /// Session identity.
+    pub session_id: SessionId,
+    /// Workspace binding.
+    pub workspace: WorkspaceRef,
+    /// Permission mode.
+    pub mode: PermissionMode,
+    /// Provider instance or provider kind.
+    pub provider: String,
+    /// Model identifier.
+    pub model: String,
+    /// Queue consumed by the default loop at step boundaries.
+    pub steer_queue: Arc<dyn SteerQueue>,
+}
+
+/// Builds session-scoped runtimes from the application composition.
+pub trait SessionRuntimeFactory: Send + Sync + 'static {
+    /// Build one runtime.
+    fn build(&self, request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError>;
+}
+
+/// Request to create one session.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    /// Workspace root.
+    pub workspace: PathBuf,
+    /// Fixed cwd inside the workspace.
+    pub cwd: Option<PathBuf>,
+    /// Permission mode.
+    pub mode: PermissionMode,
+    /// Provider instance or provider kind.
+    pub provider: String,
+    /// Model identifier.
+    pub model: String,
+}
+
+/// Result of creating a session.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCreated {
+    /// Session identity.
+    pub session_id: SessionId,
+    /// Effective permission mode.
+    pub mode: PermissionMode,
+    /// Workspace root.
+    pub workspace: String,
+}
+
+/// Result of attaching to a session.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAttached {
+    /// Number of durable events replayed.
+    pub replayed: usize,
+}
+
+/// Result of resuming a session.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResumed {
+    /// Session identity.
+    pub session_id: SessionId,
+    /// Effective mode.
+    pub mode: PermissionMode,
+    /// Workspace root.
+    pub workspace: String,
+    /// Number of messages in the projection.
+    pub messages: usize,
+    /// Whether a turn was open before repair.
+    pub turn_open: bool,
+    /// Number of repair events appended.
+    pub repairs: usize,
+}
+
+struct ActorSteerQueue {
+    queue: Mutex<VecDeque<SteerMessage>>,
+}
+
+impl ActorSteerQueue {
+    fn new() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn push(&self, message: SteerMessage) {
+        self.queue
+            .lock()
+            .expect("steer queue lock poisoned")
+            .push_back(message);
+    }
+}
+
+impl SteerQueue for ActorSteerQueue {
+    fn drain(&self) -> Vec<SteerMessage> {
+        self.queue
+            .lock()
+            .expect("steer queue lock poisoned")
+            .drain(..)
+            .collect()
+    }
+}
+
+enum SessionCommand {
+    Submit {
+        turn_id: TurnId,
+        prompt: String,
+    },
+    Cancel {
+        turn_id: TurnId,
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
+    },
+    Steer {
+        text: String,
+    },
+    SetMode {
+        mode: PermissionMode,
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
+    },
+}
+
+struct TurnCompletion {
+    writer: SessionWriter,
+    result: Result<(), LoopError>,
+}
+
+struct SessionActor {
+    tx: mpsc::UnboundedSender<SessionCommand>,
+    running: Arc<AtomicBool>,
+    state: Arc<Mutex<SessionState>>,
+}
+
+/// Global session actor registry.
+pub struct AgentHostService {
+    store: SessionStore,
+    transport: Arc<dyn OutboundTransport>,
+    factory: Arc<dyn SessionRuntimeFactory>,
+    actors: Mutex<HashMap<SessionId, Arc<SessionActor>>>,
+}
+
+impl AgentHostService {
+    /// Create a host over one session store and protocol transport.
+    pub fn new(
+        store: SessionStore,
+        transport: Arc<dyn OutboundTransport>,
+        factory: Arc<dyn SessionRuntimeFactory>,
+    ) -> Self {
+        Self {
+            store,
+            transport,
+            factory,
+            actors: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Create a new session and start its actor.
+    pub fn create_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> Result<SessionCreated, AgentHostError> {
+        let workspace = WorkspaceRef {
+            root: request.workspace.display().to_string(),
+            cwd: request
+                .cwd
+                .unwrap_or_else(|| request.workspace.clone())
+                .display()
+                .to_string(),
+        };
+        let mut header = SessionHeader::new(SessionId::new(), request.mode, workspace.clone());
+        header.provider = request.provider.clone();
+        header.model = request.model.clone();
+        let session_id = header.id;
+        let mode = header.mode;
+        let writer = self.store.create(header.clone())?;
+        let steer_queue = Arc::new(ActorSteerQueue::new());
+        let runtime = self.factory.build(SessionRuntimeRequest {
+            session_id: header.id,
+            workspace: workspace.clone(),
+            mode: request.mode,
+            provider: request.provider,
+            model: request.model,
+            steer_queue: steer_queue.clone(),
+        })?;
+        self.spawn_actor(header, writer, runtime, steer_queue)?;
+        Ok(SessionCreated {
+            session_id,
+            mode,
+            workspace: workspace.root,
+        })
+    }
+
+    /// Resume an existing session, repairing interrupted work on write-open.
+    pub fn resume_session(&self, session_id: SessionId) -> Result<SessionResumed, AgentHostError> {
+        if let Some(actor) = self.actor(session_id) {
+            let state = actor.state.lock().expect("session state lock poisoned");
+            return Ok(SessionResumed {
+                session_id,
+                mode: state.mode,
+                workspace: state.workspace.root.clone(),
+                messages: state.messages.len(),
+                turn_open: state.turn_open,
+                repairs: 0,
+            });
+        }
+        let reader = self
+            .store
+            .open_read(session_id)
+            .map_err(|error| match error {
+                SessionError::NotFound(_) => AgentHostError::SessionNotFound(session_id),
+                other => AgentHostError::Session(other),
+            })?;
+        let header = reader.header().clone();
+        let state = reader.state();
+        drop(reader);
+        let writer = self.store.open_write(session_id)?;
+        let repairs = writer.repairs().len();
+        let steer_queue = Arc::new(ActorSteerQueue::new());
+        let runtime = self.factory.build(SessionRuntimeRequest {
+            session_id,
+            workspace: header.workspace.clone(),
+            mode: header.mode,
+            provider: header.provider.clone(),
+            model: header.model.clone(),
+            steer_queue: steer_queue.clone(),
+        })?;
+        self.spawn_actor_with_state(header, writer, runtime, state.clone(), steer_queue)?;
+        Ok(SessionResumed {
+            session_id,
+            mode: state.mode,
+            workspace: state.workspace.root,
+            messages: state.messages.len(),
+            turn_open: state.turn_open,
+            repairs,
+        })
+    }
+
+    /// Submit one prompt and return its turn id immediately.
+    pub fn submit(&self, session_id: SessionId, prompt: String) -> Result<TurnId, AgentHostError> {
+        if prompt.trim().is_empty() {
+            return Err(AgentHostError::Invalid("prompt is empty".to_owned()));
+        }
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        actor
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| AgentHostError::SessionBusy(session_id))?;
+        let turn_id = TurnId::new();
+        actor
+            .tx
+            .send(SessionCommand::Submit { turn_id, prompt })
+            .map_err(|_| {
+                actor.running.store(false, Ordering::SeqCst);
+                AgentHostError::ActorStopped(session_id)
+            })?;
+        Ok(turn_id)
+    }
+
+    /// Cancel one running turn.
+    pub async fn cancel(
+        &self,
+        session_id: SessionId,
+        turn_id: TurnId,
+    ) -> Result<(), AgentHostError> {
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let (reply, receiver) = oneshot::channel();
+        actor
+            .tx
+            .send(SessionCommand::Cancel { turn_id, reply })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+        receiver
+            .await
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?
+    }
+
+    /// Queue a steer message for the current or next turn.
+    pub fn steer(&self, session_id: SessionId, text: String) -> Result<(), AgentHostError> {
+        if text.trim().is_empty() {
+            return Err(AgentHostError::Invalid("steer is empty".to_owned()));
+        }
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        actor
+            .tx
+            .send(SessionCommand::Steer { text })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))
+    }
+
+    /// Change the effective mode and record it durably.
+    pub async fn set_mode(
+        &self,
+        session_id: SessionId,
+        mode: PermissionMode,
+    ) -> Result<(), AgentHostError> {
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let (reply, receiver) = oneshot::channel();
+        actor
+            .tx
+            .send(SessionCommand::SetMode { mode, reply })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+        receiver
+            .await
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?
+    }
+
+    /// Replay durable events after a sequence and rely on the writer observer
+    /// for subsequent live delivery.
+    pub fn attach(
+        &self,
+        session_id: SessionId,
+        after_seq: u64,
+    ) -> Result<SessionAttached, AgentHostError> {
+        if self.actor(session_id).is_none() {
+            return Err(AgentHostError::SessionNotFound(session_id));
+        }
+        let reader = self.store.open_read(session_id)?;
+        let mut replayed = 0usize;
+        for envelope in reader
+            .events()
+            .iter()
+            .filter(|envelope| envelope.seq.get() > after_seq)
+        {
+            self.notify_durable(session_id, envelope)?;
+            replayed += 1;
+        }
+        Ok(SessionAttached { replayed })
+    }
+
+    /// Detach a front. The current protocol has one front per core, so this is
+    /// intentionally a no-op that keeps future events flowing to the transport.
+    pub fn detach(&self, session_id: SessionId) -> Result<(), AgentHostError> {
+        self.actor(session_id)
+            .map(|_| ())
+            .ok_or(AgentHostError::SessionNotFound(session_id))
+    }
+
+    fn actor(&self, session_id: SessionId) -> Option<Arc<SessionActor>> {
+        self.actors
+            .lock()
+            .expect("agent host lock poisoned")
+            .get(&session_id)
+            .cloned()
+    }
+
+    fn spawn_actor(
+        &self,
+        header: SessionHeader,
+        writer: SessionWriter,
+        runtime: SessionRuntime,
+        steer_queue: Arc<ActorSteerQueue>,
+    ) -> Result<(), AgentHostError> {
+        let state = SessionState::new(&header);
+        self.spawn_actor_with_state(header, writer, runtime, state, steer_queue)
+    }
+
+    fn spawn_actor_with_state(
+        &self,
+        header: SessionHeader,
+        mut writer: SessionWriter,
+        runtime: SessionRuntime,
+        state: SessionState,
+        steer_queue: Arc<ActorSteerQueue>,
+    ) -> Result<(), AgentHostError> {
+        let session_id = header.id;
+        let state = Arc::new(Mutex::new(state));
+        let current_turn = Arc::new(Mutex::new(None::<TurnId>));
+        install_live_observers(
+            &runtime.ctx,
+            session_id,
+            self.transport.clone(),
+            current_turn.clone(),
+        )?;
+        install_writer_observer(
+            &mut writer,
+            session_id,
+            self.transport.clone(),
+            state.clone(),
+        );
+        let (tx, rx) = mpsc::unbounded_channel();
+        let running = Arc::new(AtomicBool::new(false));
+        let actor = Arc::new(SessionActor {
+            tx,
+            running: running.clone(),
+            state: state.clone(),
+        });
+        self.actors
+            .lock()
+            .expect("agent host lock poisoned")
+            .insert(session_id, actor);
+        let spawn_ctx = runtime.ctx.clone();
+        spawn_ctx
+            .scope()
+            .spawn(actor_loop(
+                runtime,
+                writer,
+                state,
+                current_turn,
+                steer_queue,
+                running,
+                rx,
+            ))
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        Ok(())
+    }
+
+    fn notify_durable(
+        &self,
+        session_id: SessionId,
+        envelope: &alpha_schema::EventEnvelope<SessionEvent>,
+    ) -> Result<(), AgentHostError> {
+        self.transport
+            .notify(
+                "session.event".to_owned(),
+                json!({
+                    "sessionId": session_id,
+                    "kind": "durable",
+                    "event": envelope,
+                }),
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))
+    }
+}
+
+fn install_writer_observer(
+    writer: &mut SessionWriter,
+    session_id: SessionId,
+    transport: Arc<dyn OutboundTransport>,
+    state: Arc<Mutex<SessionState>>,
+) {
+    writer.set_observer(Arc::new(move |envelope| {
+        state
+            .lock()
+            .expect("session state lock poisoned")
+            .apply(envelope);
+        let _ = transport.notify(
+            "session.event".to_owned(),
+            json!({
+                "sessionId": session_id,
+                "kind": "durable",
+                "event": envelope,
+            }),
+        );
+    }));
+}
+
+fn install_live_observers(
+    ctx: &Ctx,
+    session_id: SessionId,
+    transport: Arc<dyn OutboundTransport>,
+    current_turn: Arc<Mutex<Option<TurnId>>>,
+) -> Result<(), AgentHostError> {
+    let text_transport = transport.clone();
+    let text_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentTextDelta, _>(move |event| {
+        let transport = text_transport.clone();
+        let turn = text_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = transport.notify(
+                "session.event".to_owned(),
+                json!({
+                    "sessionId": session_id,
+                    "kind": "live",
+                    "turnId": turn_id,
+                    "event": { "type": "text_delta", "text": event.text },
+                }),
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+    let step_transport = transport.clone();
+    let step_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentStepStarted, _>(move |event| {
+        let transport = step_transport.clone();
+        let turn = step_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = transport.notify(
+                "session.event".to_owned(),
+                json!({
+                    "sessionId": session_id,
+                    "kind": "live",
+                    "turnId": turn_id,
+                    "stepId": event.step,
+                    "event": { "type": "step_started", "step": event.step },
+                }),
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+    let tool_transport = transport.clone();
+    let tool_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentToolStarted, _>(move |event| {
+        let transport = tool_transport.clone();
+        let turn = tool_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = transport.notify(
+                "session.event".to_owned(),
+                json!({
+                    "sessionId": session_id,
+                    "kind": "live",
+                    "turnId": turn_id,
+                    "event": {
+                        "type": "tool_started",
+                        "name": event.name,
+                        "input": event.input,
+                    },
+                }),
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+    let finished_transport = transport.clone();
+    let finished_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentToolFinished, _>(move |event| {
+        let transport = finished_transport.clone();
+        let turn = finished_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = transport.notify(
+                "session.event".to_owned(),
+                json!({
+                    "sessionId": session_id,
+                    "kind": "live",
+                    "turnId": turn_id,
+                    "event": {
+                        "type": "tool_finished",
+                        "name": event.name,
+                        "status": event.status,
+                        "content": event.content,
+                    },
+                }),
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn actor_loop(
+    runtime: SessionRuntime,
+    writer: SessionWriter,
+    state: Arc<Mutex<SessionState>>,
+    current_turn: Arc<Mutex<Option<TurnId>>>,
+    steer_queue: Arc<ActorSteerQueue>,
+    running: Arc<AtomicBool>,
+    mut commands: mpsc::UnboundedReceiver<SessionCommand>,
+) {
+    let mut writer = Some(writer);
+    let (completion_tx, mut completions) = mpsc::unbounded_channel();
+    let mut cancel: Option<CancellationToken> = None;
+    let mut active_turn: Option<TurnId> = None;
+    loop {
+        tokio::select! {
+            command = commands.recv() => {
+                let Some(command) = command else {
+                    break;
+                };
+                match command {
+                    SessionCommand::Submit { turn_id, prompt } => {
+                        start_turn(
+                            &runtime,
+                            &mut writer,
+                            &state,
+                            &current_turn,
+                            &completion_tx,
+                            turn_id,
+                            prompt,
+                            &mut cancel,
+                            &mut active_turn,
+                        );
+                    }
+                    SessionCommand::Cancel { turn_id, reply } => {
+                        let result = if active_turn == Some(turn_id) {
+                            if let Some(token) = &cancel {
+                                token.cancel();
+                                Ok(())
+                            } else {
+                                Err(AgentHostError::Invalid("turn is not cancellable".to_owned()))
+                            }
+                        } else {
+                            Err(AgentHostError::Invalid("turn is not running".to_owned()))
+                        };
+                        let _ = reply.send(result);
+                    }
+                    SessionCommand::Steer { text } => {
+                        let turn_id = active_turn.unwrap_or_default();
+                        steer_queue.push(SteerMessage { turn_id, text });
+                    }
+                    SessionCommand::SetMode { mode, reply } => {
+                        let result = writer
+                            .as_mut()
+                            .ok_or_else(|| {
+                                AgentHostError::Invalid("session writer is busy".to_owned())
+                            })
+                            .and_then(|writer| {
+                                writer
+                                    .append(SessionEvent::ModeChanged { mode })
+                                    .map(|_| ())
+                                    .map_err(AgentHostError::Session)
+                            });
+                        let _ = reply.send(result);
+                    }
+                }
+            }
+            completion = completions.recv() => {
+                let Some(completion) = completion else {
+                    break;
+                };
+                writer = Some(completion.writer);
+                running.store(false, Ordering::SeqCst);
+                *current_turn.lock().expect("turn lock poisoned") = None;
+                cancel = None;
+                active_turn = None;
+                let _ = completion.result;
+                let queued = steer_queue.drain();
+                if !queued.is_empty() {
+                    let text = queued
+                        .into_iter()
+                        .map(|message| message.text)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let turn_id = TurnId::new();
+                    running.store(true, Ordering::SeqCst);
+                    start_turn(
+                        &runtime,
+                        &mut writer,
+                        &state,
+                        &current_turn,
+                        &completion_tx,
+                        turn_id,
+                        text,
+                        &mut cancel,
+                        &mut active_turn,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_turn(
+    runtime: &SessionRuntime,
+    writer: &mut Option<SessionWriter>,
+    state: &Arc<Mutex<SessionState>>,
+    current_turn: &Arc<Mutex<Option<TurnId>>>,
+    completion_tx: &mpsc::UnboundedSender<TurnCompletion>,
+    turn_id: TurnId,
+    prompt: String,
+    cancel: &mut Option<CancellationToken>,
+    active_turn: &mut Option<TurnId>,
+) {
+    let Some(mut turn_writer) = writer.take() else {
+        return;
+    };
+    let state_snapshot = state.lock().expect("session state lock poisoned").clone();
+    let ctx = runtime.ctx.clone();
+    let agent = runtime.agent.clone();
+    let completion_tx = completion_tx.clone();
+    let token = CancellationToken::new();
+    *cancel = Some(token.clone());
+    *active_turn = Some(turn_id);
+    *current_turn.lock().expect("turn lock poisoned") = Some(turn_id);
+    let session_ctx = ctx.clone();
+    let _ = session_ctx.scope().spawn(async move {
+        let result = tokio::select! {
+            result = agent.run_turn(&ctx, &mut turn_writer, &state_snapshot, &prompt) => {
+                result.map(|_| ())
+            }
+            _ = token.cancelled() => {
+                let _ = turn_writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Interrupted,
+                });
+                Err(LoopError::Tool("turn cancelled".to_owned()))
+            }
+        };
+        let _ = completion_tx.send(TurnCompletion {
+            writer: turn_writer,
+            result,
+        });
+    });
+}

@@ -33,6 +33,12 @@ pub struct SessionHeader {
     pub mode: PermissionMode,
     /// Workspace and cwd binding.
     pub workspace: WorkspaceRef,
+    /// Provider instance or provider kind selected at creation.
+    #[serde(default)]
+    pub provider: String,
+    /// Model selected at creation.
+    #[serde(default)]
+    pub model: String,
 }
 
 impl SessionHeader {
@@ -44,6 +50,8 @@ impl SessionHeader {
             created_at: Timestamp::now(),
             mode,
             workspace,
+            provider: String::new(),
+            model: String::new(),
         }
     }
 }

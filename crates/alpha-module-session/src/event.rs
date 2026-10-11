@@ -1,6 +1,6 @@
 //! Durable session events.
 
-use alpha_schema::{MessageId, PermissionMode, ToolCallId};
+use alpha_schema::{MessageId, PermissionMode, ToolCallId, TurnId};
 use serde::{Deserialize, Serialize};
 
 use crate::header::WorkspaceRef;
@@ -47,6 +47,22 @@ pub enum SessionEvent {
         /// Message identity.
         id: MessageId,
         /// Message text.
+        text: String,
+    },
+    /// A steer message entered the bounded queue.
+    SteerQueued {
+        /// Turn receiving the steer.
+        turn_id: TurnId,
+        /// Steer text.
+        text: String,
+    },
+    /// A queued steer was injected at a safe boundary.
+    SteerInjected {
+        /// Turn receiving the steer.
+        turn_id: TurnId,
+        /// Message identity used in model history.
+        message_id: MessageId,
+        /// Steer text.
         text: String,
     },
     /// The complete system prompt snapshot used by this session.

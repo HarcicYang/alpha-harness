@@ -132,6 +132,7 @@ name = "alpha-front-supervisor"
 version = "0.1.0"
 dependencies = [
  "alpha-front-client",
+ "alpha-protocol",
  "serde_json",
  "thiserror 2.0.21",
 ]
@@ -140,7 +141,9 @@ dependencies = [
 name = "alpha-front-tui"
 version = "0.1.0"
 dependencies = [
+ "alpha-front-client",
  "alpha-front-supervisor",
+ "alpha-protocol",
  "alpha-provider-api",
  "crossterm",
  "ratatui",
@@ -160,6 +163,7 @@ dependencies = [
  "alpha-front-supervisor",
  "alpha-front-tui",
  "alpha-kernel",
+ "alpha-module-agent-host",
  "alpha-module-compaction",
  "alpha-module-credential",
  "alpha-module-fs",
@@ -203,6 +207,24 @@ dependencies = [
 [[package]]
 name = "alpha-macros"
 version = "0.1.0"
+
+[[package]]
+name = "alpha-module-agent-host"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-module-loop",
+ "alpha-module-session",
+ "alpha-protocol",
+ "alpha-schema",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "alpha-module-compaction"

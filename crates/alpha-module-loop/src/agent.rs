@@ -9,7 +9,7 @@ use alpha_module_session::{
     TurnEndReason,
 };
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
-use alpha_schema::{MessageId, ToolCallId};
+use alpha_schema::{MessageId, ToolCallId, TurnId};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -21,6 +21,21 @@ use crate::provider::{
 };
 
 const DEFAULT_MAX_STEPS: usize = 24;
+
+/// One steer message waiting for a safe injection boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteerMessage {
+    /// Turn receiving the steer.
+    pub turn_id: TurnId,
+    /// Steer text.
+    pub text: String,
+}
+
+/// Queue drained by the loop at step boundaries.
+pub trait SteerQueue: Send + Sync + 'static {
+    /// Drain messages waiting for injection.
+    fn drain(&self) -> Vec<SteerMessage>;
+}
 
 /// Loop failure.
 #[derive(Debug, Error)]
@@ -55,6 +70,7 @@ pub struct AgentLoop {
     model: String,
     tools: Option<Arc<ToolRegistry>>,
     context_preparer: Option<Arc<dyn ContextPreparer>>,
+    steer_queue: Option<Arc<dyn SteerQueue>>,
     max_steps: usize,
 }
 
@@ -66,6 +82,7 @@ impl AgentLoop {
             model: model.into(),
             tools: None,
             context_preparer: None,
+            steer_queue: None,
             max_steps: DEFAULT_MAX_STEPS,
         }
     }
@@ -85,6 +102,12 @@ impl AgentLoop {
     /// Attach a context-preparation pipeline.
     pub fn with_context_preparer(mut self, preparer: Arc<dyn ContextPreparer>) -> Self {
         self.context_preparer = Some(preparer);
+        self
+    }
+
+    /// Attach a steer queue checked at model step boundaries.
+    pub fn with_steer_queue(mut self, queue: Arc<dyn SteerQueue>) -> Self {
+        self.steer_queue = Some(queue);
         self
     }
 
@@ -142,6 +165,7 @@ impl AgentLoop {
         let mut last_message_id: Option<MessageId> = None;
 
         for step in 0..self.max_steps {
+            self.inject_steers(writer, &mut messages)?;
             ctx.parallel(AgentStepStarted { step: step + 1 }).await;
             let request = CompletionRequest {
                 model: self.model.clone(),
@@ -348,6 +372,30 @@ impl AgentLoop {
                 input_schema: tool.input_schema(),
             })
             .collect()
+    }
+
+    fn inject_steers(
+        &self,
+        writer: &mut SessionWriter,
+        messages: &mut Vec<ChatMessage>,
+    ) -> Result<(), LoopError> {
+        let Some(queue) = &self.steer_queue else {
+            return Ok(());
+        };
+        for steer in queue.drain() {
+            writer.append(SessionEvent::SteerQueued {
+                turn_id: steer.turn_id,
+                text: steer.text.clone(),
+            })?;
+            let message_id = MessageId::new();
+            writer.append(SessionEvent::SteerInjected {
+                turn_id: steer.turn_id,
+                message_id,
+                text: steer.text.clone(),
+            })?;
+            messages.push(ChatMessage::User(steer.text));
+        }
+        Ok(())
     }
 
     async fn execute_tool(

@@ -9,6 +9,6 @@ pub mod permission;
 pub mod time;
 
 pub use event::EventEnvelope;
-pub use id::{MessageId, SessionId, ToolCallId};
+pub use id::{MessageId, SessionId, ToolCallId, TurnId};
 pub use permission::PermissionMode;
 pub use time::{Seq, Timestamp};

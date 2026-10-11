@@ -21,7 +21,7 @@ pub use header::{HEADER_SCHEMA, SessionHeader, WorkspaceRef};
 pub use reader::{SessionReader, TailDamage};
 pub use state::{CompactionRecord, MessageRecord, SessionState};
 pub use store::{SessionError, SessionStore};
-pub use writer::SessionWriter;
+pub use writer::{SessionEventObserver, SessionWriter};
 
 /// Event payload schema version written by this build.
 pub const CURRENT_EVENT_SCHEMA: u32 = alpha_schema::event::CURRENT_SCHEMA;

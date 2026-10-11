@@ -46,6 +46,8 @@ pub enum GrantScope {
 pub enum ApprovalDecision {
     /// Reject the request.
     Deny,
+    /// The approval window expired.
+    Timeout,
     /// Allow this call only.
     AllowOnce,
     /// Allow for the rest of the session.

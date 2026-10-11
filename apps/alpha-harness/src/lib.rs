@@ -2,19 +2,28 @@
 
 include!(concat!(env!("OUT_DIR"), "/alpha_modules.rs"));
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use alpha_api_anthropic_messages::AnthropicMessagesApiModule;
 use alpha_api_openai_chat::OpenAiChatApiModule;
 use alpha_api_openai_responses::OpenAiResponsesApiModule;
 use alpha_kernel::{ActivateError, Ctx, Module};
+use alpha_module_agent_host::{
+    AgentHostError, AgentHostService, SessionRuntime, SessionRuntimeFactory, SessionRuntimeRequest,
+};
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
 use alpha_module_credential::{CredentialConfig, CredentialModule, CredentialStore};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
-use alpha_module_loop::{AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry};
+use alpha_module_loop::{
+    AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry, SteerQueue,
+};
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
     PermissionConfig, PermissionModule,
@@ -36,7 +45,8 @@ use alpha_module_session::{
 };
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
-    FramingError, Id, Message, Response, Router, RpcError, read_message, write_message,
+    FramingError, Id, Message, Notification, OutboundTransport, Request, Response, ResponsePayload,
+    Router, RpcError, read_message, write_message,
 };
 use alpha_provider_api::{
     ApiAdapterRegistry, ProviderApiModule, ProviderBuildContext, ProviderInstance,
@@ -46,6 +56,7 @@ use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::{mpsc, oneshot};
 
 /// Module keys enabled by the Cargo dependency graph.
 pub fn module_keys() -> &'static [&'static str] {
@@ -159,6 +170,210 @@ impl CoreRuntime {
         HttpLocalModule.activate(&ctx, &HttpConfig {})?;
         Ok(Self { ctx, store })
     }
+}
+
+struct AppSessionRuntimeFactory {
+    root: Ctx,
+    transport: Arc<dyn OutboundTransport>,
+}
+
+impl SessionRuntimeFactory for AppSessionRuntimeFactory {
+    fn build(&self, request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError> {
+        let (provider, model) = build_session_provider(&self.root, &request)?;
+        let session_ctx = self
+            .root
+            .child()
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        session_ctx
+            .provide::<dyn SteerQueue>(request.steer_queue.clone())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        let approval: Arc<dyn ApprovalChannel> = Arc::new(ProtocolApprovalChannel {
+            session_id: request.session_id,
+            transport: self.transport.clone(),
+        });
+        session_ctx
+            .provide::<dyn ApprovalChannel>(approval)
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        let audit: Arc<dyn AuditSink> = Arc::new(CollectingAuditSink::new());
+        session_ctx
+            .provide::<dyn AuditSink>(audit)
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+        FsLocalModule
+            .activate(
+                &session_ctx,
+                &FsConfig {
+                    root: request.workspace.root.clone().into(),
+                },
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        PromptModule
+            .activate(&session_ctx, &PromptConfig::default())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        ProcessLocalModule
+            .activate(
+                &session_ctx,
+                &ProcessConfig {
+                    cwd: request.workspace.cwd.clone().into(),
+                    ..ProcessConfig::default()
+                },
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        PermissionModule
+            .activate(
+                &session_ctx,
+                &PermissionConfig {
+                    mode: request.mode,
+                    ..PermissionConfig::default()
+                },
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        ToolsModule
+            .activate(&session_ctx, &ToolsConfig::default())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        CompactionModule
+            .activate(&session_ctx, &CompactionConfig::default())
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+        let registry = Arc::new(ProviderRegistry::new());
+        registry
+            .register("session", provider)
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        session_ctx
+            .provide::<ProviderRegistry>(registry)
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        LoopModule
+            .activate(
+                &session_ctx,
+                &LoopConfig {
+                    provider: "session".to_owned(),
+                    model,
+                    ..LoopConfig::default()
+                },
+            )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        let agent = session_ctx
+            .require::<dyn AgentDriver>()
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        Ok(SessionRuntime {
+            ctx: session_ctx,
+            agent,
+        })
+    }
+}
+
+struct ProtocolApprovalChannel {
+    session_id: SessionId,
+    transport: Arc<dyn OutboundTransport>,
+}
+
+impl ApprovalChannel for ProtocolApprovalChannel {
+    fn decide(&self, prompt: ApprovalPrompt) -> BoxFuture<'_, ApprovalDecision> {
+        let transport = self.transport.clone();
+        let session_id = self.session_id;
+        Box::pin(async move {
+            let request = transport.request(
+                "interaction.request".to_owned(),
+                json!({
+                    "sessionId": session_id,
+                    "kind": "permission",
+                    "prompt": {
+                        "request": prompt.request,
+                        "reason": prompt.reason,
+                        "protected": prompt.protected,
+                    },
+                }),
+            );
+            match tokio::time::timeout(Duration::from_secs(300), request).await {
+                Ok(Ok(value)) => match value.get("decision").and_then(Value::as_str) {
+                    Some("once") => ApprovalDecision::AllowOnce,
+                    Some("session") => ApprovalDecision::AllowSession,
+                    Some("timeout") => ApprovalDecision::Timeout,
+                    _ => ApprovalDecision::Deny,
+                },
+                Ok(Err(_)) => ApprovalDecision::Deny,
+                Err(_) => ApprovalDecision::Timeout,
+            }
+        })
+    }
+}
+
+fn build_session_provider(
+    root: &Ctx,
+    request: &SessionRuntimeRequest,
+) -> Result<(Arc<dyn ModelProvider>, String), AgentHostError> {
+    let instances = root
+        .require::<ProviderInstanceRegistry>()
+        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    let requested = request.provider.trim();
+    let instance = if requested.is_empty() {
+        let default = root
+            .get::<dyn ProviderConfigStore>()
+            .and_then(|store| store.default_instance());
+        default
+            .and_then(|id| instances.get(&id))
+            .or_else(|| instances.list().into_iter().next())
+    } else {
+        instances.get(requested).or_else(|| {
+            instances
+                .list()
+                .into_iter()
+                .find(|instance| instance.kind == requested)
+        })
+    }
+    .ok_or_else(|| {
+        AgentHostError::Runtime(format!(
+            "provider instance `{}` is not configured",
+            request.provider
+        ))
+    })?;
+    let kinds = root
+        .require::<ProviderKindRegistry>()
+        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    let kind = kinds.get(&instance.kind).ok_or_else(|| {
+        AgentHostError::Runtime(format!("provider kind `{}` is missing", instance.kind))
+    })?;
+    let model = if request.model.trim().is_empty() {
+        kind.descriptor()
+            .models
+            .first()
+            .map(|model| model.id.clone())
+            .ok_or_else(|| {
+                AgentHostError::Runtime(format!("provider kind `{}` has no models", instance.kind))
+            })?
+    } else {
+        request.model.clone()
+    };
+    let adapters = root
+        .require::<ApiAdapterRegistry>()
+        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    let http = root
+        .require::<dyn HttpClient>()
+        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    let credential = match instance.auth_ref.as_deref() {
+        Some(auth_ref) => {
+            let store = root
+                .require::<dyn CredentialStore>()
+                .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+            Some(
+                store
+                    .read(auth_ref)
+                    .map_err(|error| AgentHostError::Runtime(error.to_string()))?,
+            )
+        }
+        None => None,
+    };
+    let provider = kind
+        .build(
+            &instance,
+            &ProviderBuildContext {
+                adapters,
+                http,
+                credential,
+            },
+        )
+        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+    Ok((provider, model))
 }
 
 /// Approval channel that prompts on the terminal.
@@ -525,6 +740,91 @@ pub enum ServeError {
     Runtime(std::io::Error),
 }
 
+type PendingInteractions = Arc<Mutex<HashMap<Id, oneshot::Sender<Result<Value, RpcError>>>>>;
+
+struct ServerTransport {
+    outbound: mpsc::UnboundedSender<Message>,
+    pending: PendingInteractions,
+    next_id: AtomicI64,
+}
+
+impl ServerTransport {
+    fn channel() -> (Arc<Self>, mpsc::UnboundedReceiver<Message>) {
+        let (outbound, receiver) = mpsc::unbounded_channel();
+        (
+            Arc::new(Self {
+                outbound,
+                pending: Arc::new(Mutex::new(HashMap::new())),
+                next_id: AtomicI64::new(1),
+            }),
+            receiver,
+        )
+    }
+
+    fn resolve(&self, id: Id, result: Result<Value, RpcError>) -> Result<(), RpcError> {
+        let sender = self
+            .pending
+            .lock()
+            .expect("protocol pending lock poisoned")
+            .remove(&id)
+            .ok_or_else(|| RpcError::invalid_params("unknown interaction request"))?;
+        sender
+            .send(result)
+            .map_err(|_| RpcError::internal("interaction waiter was dropped"))
+    }
+
+    fn fail_pending(&self, reason: &str) {
+        let mut pending = self.pending.lock().expect("protocol pending lock poisoned");
+        for (_, sender) in pending.drain() {
+            let _ = sender.send(Err(RpcError::internal(reason)));
+        }
+    }
+}
+
+impl OutboundTransport for ServerTransport {
+    fn notify(&self, method: String, params: Value) -> Result<(), RpcError> {
+        self.outbound
+            .send(Message::Notification(Notification::new(
+                method,
+                Some(params),
+            )))
+            .map_err(|_| RpcError::internal("core connection is closed"))
+    }
+
+    fn request(
+        &self,
+        method: String,
+        params: Value,
+    ) -> BoxFuture<'static, Result<Value, RpcError>> {
+        let id = Id::Number(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("protocol pending lock poisoned")
+            .insert(id.clone(), sender);
+        if self
+            .outbound
+            .send(Message::Request(Request::new(
+                id.clone(),
+                method,
+                Some(params),
+            )))
+            .is_err()
+        {
+            self.pending
+                .lock()
+                .expect("protocol pending lock poisoned")
+                .remove(&id);
+            return Box::pin(async { Err(RpcError::internal("core connection is closed")) });
+        }
+        Box::pin(async move {
+            receiver
+                .await
+                .map_err(|_| RpcError::internal("interaction response channel closed"))?
+        })
+    }
+}
+
 /// Serve JSON-RPC over stdio using the default session store.
 pub fn serve_stdio(store: SessionStore) -> Result<(), ServeError> {
     serve_core_stdio(store)
@@ -533,15 +833,30 @@ pub fn serve_stdio(store: SessionStore) -> Result<(), ServeError> {
 /// Serve the managed core protocol over stdio.
 pub fn serve_core_stdio(store: SessionStore) -> Result<(), ServeError> {
     let runtime = CoreRuntime::new(store)?;
+    let (transport, outbound) = ServerTransport::channel();
+    let outbound_service: Arc<dyn OutboundTransport> = transport.clone();
+    runtime
+        .ctx
+        .provide::<dyn OutboundTransport>(outbound_service)
+        .map_err(|error| ServeError::Core(RunError::Service(error.to_string())))?;
+    let factory = Arc::new(AppSessionRuntimeFactory {
+        root: runtime.ctx.clone(),
+        transport: transport.clone(),
+    });
+    let agent_host = Arc::new(AgentHostService::new(
+        runtime.store.clone(),
+        transport.clone(),
+        factory,
+    ));
+    runtime
+        .ctx
+        .provide::<AgentHostService>(agent_host)
+        .map_err(|error| ServeError::Core(RunError::Service(error.to_string())))?;
     let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
     let mut input = stdin.lock();
-    let mut output = stdout.lock();
-    serve_router_with(
-        &mut input,
-        &mut output,
-        build_router_with(runtime.store, Some(runtime.ctx)),
-    )
+    let router =
+        build_router_with_transport(runtime.store, Some(runtime.ctx), Some(transport.clone()));
+    serve_router_concurrent(&mut input, std::io::stdout(), router, transport, outbound)
 }
 
 /// Serve JSON-RPC over an arbitrary reader and writer.
@@ -583,11 +898,89 @@ fn serve_router_with<R: BufRead, W: Write>(
     }
 }
 
+fn serve_router_concurrent<R: BufRead, W: Write + Send + 'static>(
+    reader: &mut R,
+    writer: W,
+    router: Router,
+    transport: Arc<ServerTransport>,
+    mut outbound: mpsc::UnboundedReceiver<Message>,
+) -> Result<(), ServeError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(ServeError::Runtime)?;
+    let writer_thread = thread::spawn(move || {
+        let mut writer = writer;
+        while let Some(message) = outbound.blocking_recv() {
+            write_message(&mut writer, &message)?;
+        }
+        Ok::<(), FramingError>(())
+    });
+    let router = Arc::new(router);
+    let loop_result = loop {
+        match read_message(reader) {
+            Ok(Some(Message::Request(request))) if request.method == "body.shutdown" => {
+                let _ = transport.outbound.send(Message::Response(Response::success(
+                    request.id,
+                    json!({ "ok": true }),
+                )));
+                break Ok(());
+            }
+            Ok(Some(Message::Response(response))) => {
+                let result = match response.payload {
+                    ResponsePayload::Success { result } => Ok(result),
+                    ResponsePayload::Failure { error } => Err(error),
+                };
+                let _ = transport.resolve(response.id, result);
+            }
+            Ok(Some(message)) => {
+                let router = router.clone();
+                let outbound = transport.outbound.clone();
+                runtime.spawn(async move {
+                    if let Some(response) = router.handle(message).await {
+                        let _ = outbound.send(response);
+                    }
+                });
+            }
+            Ok(None) => break Ok(()),
+            Err(error @ (FramingError::Parse(_) | FramingError::TooLarge { .. })) => {
+                let response = Message::Response(Response::failure(
+                    Id::Null,
+                    RpcError::parse_error(error.to_string()),
+                ));
+                let _ = transport.outbound.send(response);
+            }
+            Err(error) => break Err(ServeError::Framing(error)),
+        }
+    };
+    transport.fail_pending("core connection closed");
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    drop(transport);
+    let writer_result = writer_thread.join();
+    match loop_result {
+        Ok(()) => match writer_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(ServeError::Framing(error)),
+            Err(_) => Ok(()),
+        },
+        Err(error) => Err(error),
+    }
+}
+
 fn build_router(store: SessionStore) -> Router {
     build_router_with(store, None)
 }
 
 fn build_router_with(store: SessionStore, ctx: Option<Ctx>) -> Router {
+    build_router_with_transport(store, ctx, None)
+}
+
+fn build_router_with_transport(
+    store: SessionStore,
+    ctx: Option<Ctx>,
+    transport: Option<Arc<ServerTransport>>,
+) -> Router {
     let store = Arc::new(store);
     let router = Router::new()
         .method("body.hello", |_params: Value| async move {
@@ -673,8 +1066,27 @@ fn build_router_with(store: SessionStore, ctx: Option<Ctx>) -> Router {
                 }
             }
         });
-    match ctx {
-        Some(ctx) => add_provider_methods(router, ctx),
+    let router = match ctx {
+        Some(ctx) => {
+            let agent_host = ctx.get::<AgentHostService>();
+            let router = add_provider_methods(router, ctx);
+            match agent_host {
+                Some(agent_host) => add_agent_host_methods(router, agent_host),
+                None => router,
+            }
+        }
+        None => router,
+    };
+    match transport {
+        Some(transport) => router.method("interaction.response", move |params: Value| {
+            let transport = transport.clone();
+            async move {
+                let params: InteractionResponseParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                transport.resolve(params.interaction_id, Ok(params.result))?;
+                Ok(json!({ "ok": true }))
+            }
+        }),
         None => router,
     }
 }
@@ -980,6 +1392,129 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     })
 }
 
+fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router {
+    let router = router.method("session.create", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let request: alpha_module_agent_host::CreateSessionRequest =
+                    serde_json::from_value(params)
+                        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let created = host
+                    .create_session(request)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                serde_json::to_value(created).map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("session.submit", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SubmitParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let turn_id = host
+                    .submit(params.session_id, params.prompt)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "turnId": turn_id }))
+            }
+        }
+    });
+    let router = router.method("session.cancel", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: CancelParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.cancel(params.session_id, params.turn_id)
+                    .await
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let router = router.method("session.steer", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SteerParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.steer(params.session_id, params.text)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let router = router.method("session.confirm_steers", {
+        move |params: Value| async move {
+            let _params: ConfirmSteersParams = serde_json::from_value(params)
+                .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+            let _ = (_params.session_id, _params.accept);
+            Ok(json!({ "ok": true }))
+        }
+    });
+    let router = router.method("session.attach", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: AttachHostParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let attached = host
+                    .attach(params.session_id, params.after_seq.unwrap_or(0))
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                serde_json::to_value(attached)
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
+    let router = router.method("session.detach", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SessionIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.detach(params.session_id)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let router = router.method("session.set_mode", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SetModeParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.set_mode(params.session_id, params.mode)
+                    .await
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    router.method("session.resume", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SessionIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let resumed = host
+                    .resume_session(params.session_id)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                serde_json::to_value(resumed).map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    })
+}
+
 fn default_auth_ref(instance_id: &str) -> String {
     format!("provider/{instance_id}/api-key")
 }
@@ -1032,4 +1567,60 @@ struct DefaultInstanceParams {
 struct AuthInstanceParams {
     id: String,
     secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InteractionResponseParams {
+    interaction_id: Id,
+    result: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitParams {
+    session_id: SessionId,
+    prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelParams {
+    session_id: SessionId,
+    turn_id: alpha_schema::TurnId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SteerParams {
+    session_id: SessionId,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfirmSteersParams {
+    session_id: SessionId,
+    accept: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachHostParams {
+    session_id: SessionId,
+    #[serde(default)]
+    after_seq: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionIdParams {
+    session_id: SessionId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetModeParams {
+    session_id: SessionId,
+    mode: PermissionMode,
 }

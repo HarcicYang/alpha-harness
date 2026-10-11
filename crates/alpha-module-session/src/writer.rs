@@ -3,6 +3,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use alpha_schema::{EventEnvelope, Seq};
 use fs2::FileExt;
@@ -11,6 +12,9 @@ use crate::event::{SessionEvent, ToolStatus, TurnEndReason};
 use crate::header::SessionHeader;
 use crate::state::SessionState;
 use crate::store::SessionError;
+
+/// Receives durable events after they are appended.
+pub type SessionEventObserver = Arc<dyn Fn(&EventEnvelope<SessionEvent>) + Send + Sync>;
 
 /// Exclusive writer lease backed by an OS file lock.
 pub(crate) struct Lease {
@@ -49,6 +53,7 @@ pub struct SessionWriter {
     _lease: Lease,
     last_seq: Seq,
     repairs: Vec<EventEnvelope<SessionEvent>>,
+    observer: Option<SessionEventObserver>,
 }
 
 impl SessionWriter {
@@ -67,6 +72,7 @@ impl SessionWriter {
             _lease: lease,
             last_seq,
             repairs,
+            observer: None,
         }
     }
 
@@ -90,6 +96,11 @@ impl SessionWriter {
         &self.repairs
     }
 
+    /// Install an observer for durable events appended by this writer.
+    pub fn set_observer(&mut self, observer: SessionEventObserver) {
+        self.observer = Some(observer);
+    }
+
     /// Append one durable event and return its envelope.
     pub fn append(
         &mut self,
@@ -97,6 +108,9 @@ impl SessionWriter {
     ) -> Result<EventEnvelope<SessionEvent>, SessionError> {
         let envelope = append_event(&mut self.file, self.last_seq.next(), event)?;
         self.last_seq = envelope.seq;
+        if let Some(observer) = &self.observer {
+            observer(&envelope);
+        }
         Ok(envelope)
     }
 }

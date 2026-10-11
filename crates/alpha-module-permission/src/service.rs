@@ -48,6 +48,8 @@ pub enum DecisionSource {
     Approval,
     /// The request needed approval but no channel existed.
     NoChannel,
+    /// The approval window expired.
+    Timeout,
 }
 
 impl DecisionSource {
@@ -60,6 +62,7 @@ impl DecisionSource {
             Self::Protected => "protected",
             Self::Approval => "approval",
             Self::NoChannel => "no_channel",
+            Self::Timeout => "timeout",
         }
     }
 }
@@ -249,6 +252,7 @@ impl LocalPermissionService {
         };
         match channel.decide(prompt).await {
             ApprovalDecision::Deny => (denied("denied by user"), DecisionSource::Approval),
+            ApprovalDecision::Timeout => (denied("approval timed out"), DecisionSource::Timeout),
             ApprovalDecision::AllowOnce => (
                 PermissionOutcome::Allowed {
                     scope: GrantScope::Once,

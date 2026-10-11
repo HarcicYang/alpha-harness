@@ -133,6 +133,14 @@ impl SessionState {
                 id: *id,
                 text: text.clone(),
             }),
+            SessionEvent::SteerQueued { .. } => {}
+            SessionEvent::SteerInjected {
+                message_id, text, ..
+            } => self.messages.push(MessageRecord::User {
+                seq: envelope.seq,
+                id: *message_id,
+                text: text.clone(),
+            }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::ContextCompacted {
                 summary,

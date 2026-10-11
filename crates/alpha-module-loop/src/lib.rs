@@ -15,7 +15,8 @@ use serde::Deserialize;
 
 pub use agent::{
     AgentDriver, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentToolFinished,
-    AgentToolStarted, AgentTurnFinished, ContextError, ContextPreparer, LoopError, TurnOutcome,
+    AgentToolStarted, AgentTurnFinished, ContextError, ContextPreparer, LoopError, SteerMessage,
+    SteerQueue, TurnOutcome,
 };
 pub use provider::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
@@ -84,6 +85,9 @@ impl Module for LoopModule {
         }
         if let Some(preparer) = ctx.get::<dyn ContextPreparer>() {
             agent = agent.with_context_preparer(preparer);
+        }
+        if let Some(queue) = ctx.get::<dyn SteerQueue>() {
+            agent = agent.with_steer_queue(queue);
         }
         let agent = Arc::new(agent);
         ctx.provide::<dyn AgentDriver>(agent.clone())

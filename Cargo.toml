@@ -20,6 +20,7 @@ alpha-module-config = { path = "crates/alpha-module-config", version = "0.1.0" }
 alpha-module-credential = { path = "crates/alpha-module-credential", version = "0.1.0" }
 alpha-module-compaction = { path = "crates/alpha-module-compaction", version = "0.1.0" }
 alpha-module-session = { path = "crates/alpha-module-session", version = "0.1.0" }
+alpha-module-agent-host = { path = "crates/alpha-module-agent-host", version = "0.1.0" }
 alpha-module-loop = { path = "crates/alpha-module-loop", version = "0.1.0" }
 alpha-module-fs = { path = "crates/alpha-module-fs", version = "0.1.0" }
 alpha-module-process = { path = "crates/alpha-module-process", version = "0.1.0" }
@@ -53,7 +54,7 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 toml = "0.8"
-tokio = { version = "1", default-features = false, features = ["process", "rt", "sync", "time"] }
+tokio = { version = "1", default-features = false, features = ["process", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 ureq = "2"
 uuid = { version = "1", features = ["serde", "v7"] }

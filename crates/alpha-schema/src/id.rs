@@ -60,5 +60,6 @@ macro_rules! id_type {
 }
 
 id_type!(SessionId, "Unique session identifier (UUIDv7).");
+id_type!(TurnId, "Unique turn identifier (UUIDv7).");
 id_type!(MessageId, "Unique message identifier (UUIDv7).");
 id_type!(ToolCallId, "Unique tool call identifier (UUIDv7).");
