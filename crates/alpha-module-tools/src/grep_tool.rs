@@ -128,7 +128,7 @@ impl Tool for GrepTool {
                                     .file_name()
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_default();
-                                if !name.contains(include.as_str()) {
+                                if !include_matches(include, &name) {
                                     continue;
                                 }
                             }
@@ -176,6 +176,26 @@ fn is_ignored(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| IGNORED_DIRS.contains(&name))
+}
+
+/// Matches an include filter: glob patterns when `*`/`?` are present,
+/// substring matching otherwise.
+fn include_matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return name.contains(pattern);
+    }
+    let mut expression = String::from("^");
+    for character in pattern.chars() {
+        match character {
+            '*' => expression.push_str(".*"),
+            '?' => expression.push('.'),
+            other => expression.push_str(&regex::escape(&other.to_string())),
+        }
+    }
+    expression.push('$');
+    regex::Regex::new(&expression)
+        .map(|regex| regex.is_match(name))
+        .unwrap_or(false)
 }
 
 async fn assert_permission(

@@ -213,6 +213,16 @@ async fn grep_finds_matches_with_filters() {
     assert!(filtered.content.contains("src/lib.rs"));
     assert!(!filtered.content.contains("README"));
 
+    let glob = run(
+        &registry,
+        "grep",
+        json!({ "pattern": "TODO", "include": "*.rs" }),
+    )
+    .await
+    .expect("grep glob");
+    assert!(glob.content.contains("src/lib.rs"));
+    assert!(!glob.content.contains("README"));
+
     let none = run(&registry, "grep", json!({ "pattern": "NOPE" }))
         .await
         .expect("grep none");
