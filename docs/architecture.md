@@ -507,6 +507,10 @@ Session actors are resident only while active or recently used. Idle actors are
 evicted by `alpha-module-agent-host`; a later `session.resume` rebuilds the
 projection from the durable log and starts a fresh actor.
 
+Steers outside an active turn remain pending until
+`session.confirm_steers` accepts or discards them. Accepted steers start a new
+turn; discarded steers are removed without entering model history.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,

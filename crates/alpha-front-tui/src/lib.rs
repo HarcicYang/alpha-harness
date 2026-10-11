@@ -230,6 +230,28 @@ impl ChatView {
         Ok(())
     }
 
+    fn confirm_steers(
+        &mut self,
+        supervisor: &mut CoreSupervisor,
+        accept: bool,
+    ) -> Result<(), TuiError> {
+        let Some(session_id) = &self.session_id else {
+            return Err(TuiError::Protocol("no active session".to_owned()));
+        };
+        supervisor
+            .request(
+                "session.confirm_steers",
+                Some(json!({ "sessionId": session_id, "accept": accept })),
+            )
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.status = Some(if accept {
+            "pending steers confirmed".to_owned()
+        } else {
+            "pending steers discarded".to_owned()
+        });
+        Ok(())
+    }
+
     fn submit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
         let prompt = self.composer.trim().to_owned();
         if prompt.is_empty() {
@@ -1065,6 +1087,8 @@ fn execute_palette_command(
                 .map_err(|error| TuiError::Protocol(error.to_string()))?;
             app.chat.set_mode(supervisor, mode)?;
         }
+        "confirm" => app.chat.confirm_steers(supervisor, true)?,
+        "discard" => app.chat.confirm_steers(supervisor, false)?,
         "new" => {
             app.chat.new_session(supervisor)?;
             app.screen = Screen::Chat;
@@ -1249,6 +1273,8 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from(":provider [ID]   open provider manager or select provider"),
         Line::from(":model MODEL     select model for new sessions"),
         Line::from(":mode MODE       set read, auto, or free"),
+        Line::from(":confirm         run pending steers"),
+        Line::from(":discard         discard pending steers"),
         Line::from(":new             create a new session"),
         Line::from(":resume ID       resume a session"),
         Line::from(":sessions        open the session picker"),

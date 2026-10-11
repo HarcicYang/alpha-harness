@@ -1527,11 +1527,17 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
         }
     });
     let router = router.method("session.confirm_steers", {
-        move |params: Value| async move {
-            let _params: ConfirmSteersParams = serde_json::from_value(params)
-                .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-            let _ = (_params.session_id, _params.accept);
-            Ok(json!({ "ok": true }))
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: ConfirmSteersParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.confirm_steers(params.session_id, params.accept)
+                    .await
+                    .map_err(agent_host_rpc_error)?;
+                Ok(json!({ "ok": true }))
+            }
         }
     });
     let router = router.method("session.attach", {

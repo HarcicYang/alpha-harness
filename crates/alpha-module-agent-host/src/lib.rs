@@ -150,6 +150,13 @@ impl ActorSteerQueue {
             .expect("steer queue lock poisoned")
             .push_back(message);
     }
+
+    fn clear(&self) {
+        self.queue
+            .lock()
+            .expect("steer queue lock poisoned")
+            .clear();
+    }
 }
 
 impl SteerQueue for ActorSteerQueue {
@@ -176,6 +183,10 @@ enum SessionCommand {
     },
     SetMode {
         mode: PermissionMode,
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
+    },
+    ConfirmSteers {
+        accept: bool,
         reply: oneshot::Sender<Result<(), AgentHostError>>,
     },
 }
@@ -383,6 +394,25 @@ impl AgentHostService {
         actor
             .tx
             .send(SessionCommand::SetMode { mode, reply })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+        receiver
+            .await
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?
+    }
+
+    /// Confirm or discard steers waiting outside an active turn.
+    pub async fn confirm_steers(
+        &self,
+        session_id: SessionId,
+        accept: bool,
+    ) -> Result<(), AgentHostError> {
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let (reply, receiver) = oneshot::channel();
+        actor
+            .tx
+            .send(SessionCommand::ConfirmSteers { accept, reply })
             .map_err(|_| AgentHostError::ActorStopped(session_id))?;
         receiver
             .await
@@ -713,6 +743,43 @@ async fn actor_loop(
                                     .map_err(AgentHostError::Session)
                             });
                         let _ = reply.send(result);
+                    }
+                    SessionCommand::ConfirmSteers { accept, reply } => {
+                        if active_turn.is_some() {
+                            let _ = reply.send(Err(AgentHostError::Invalid(
+                                "cannot confirm steers during an active turn".to_owned(),
+                            )));
+                            continue;
+                        }
+                        if !accept {
+                            steer_queue.clear();
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+                        let queued = steer_queue.drain();
+                        if queued.is_empty() {
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+                        let text = queued
+                            .into_iter()
+                            .map(|message| message.text)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let turn_id = TurnId::new();
+                        running.store(true, Ordering::SeqCst);
+                        start_turn(
+                            &runtime,
+                            &mut writer,
+                            &state,
+                            &current_turn,
+                            &completion_tx,
+                            turn_id,
+                            text,
+                            &mut cancel,
+                            &mut active_turn,
+                        );
+                        let _ = reply.send(Ok(()));
                     }
                 }
             }
