@@ -2,14 +2,17 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
-use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse};
+use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 use alpha_module_loop::{
-    ChatMessage, CompletionRequest, ModelProvider, ProviderRegistry, ToolCall, ToolDefinition,
+    ChatMessage, CompletionChunk, CompletionRequest, ModelProvider, ProviderRegistry, ToolCall,
+    ToolCallDelta, ToolDefinition,
 };
 use alpha_module_provider_openai::{
     OpenAiConfig, OpenAiProvider, OpenAiProviderModule, PROVIDER_NAME,
 };
+use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use serde_json::{Value, json};
 
 struct FakeHttp {
@@ -35,6 +38,46 @@ impl HttpClient for FakeHttp {
         self.requests.lock().expect("request lock").push(request);
         let response = self.response.clone();
         Box::pin(async move { Ok(response) })
+    }
+}
+
+struct ChunkedHttp {
+    request: Mutex<Option<HttpRequest>>,
+    chunks: Vec<Vec<u8>>,
+}
+
+impl HttpClient for ChunkedHttp {
+    fn request(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, HttpError>> {
+        *self.request.lock().expect("request lock") = Some(request);
+        let body = self.chunks.concat();
+        Box::pin(async move {
+            Ok(HttpResponse {
+                status: 200,
+                headers: BTreeMap::new(),
+                body,
+            })
+        })
+    }
+
+    fn request_stream(
+        &self,
+        request: HttpRequest,
+    ) -> BoxFuture<'_, Result<HttpResponseStream, HttpError>> {
+        *self.request.lock().expect("request lock") = Some(request);
+        let chunks = self.chunks.clone();
+        Box::pin(async move {
+            let body = futures::stream::iter(
+                chunks
+                    .into_iter()
+                    .map(Ok)
+                    .collect::<Vec<Result<Vec<u8>, HttpError>>>(),
+            );
+            Ok(HttpResponseStream {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: Box::pin(body) as BoxStream<'static, Result<Vec<u8>, HttpError>>,
+            })
+        })
     }
 }
 
@@ -192,6 +235,109 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
     );
     assert_eq!(body["messages"][2]["role"], json!("tool"));
     assert_eq!(body["messages"][2]["tool_call_id"], json!("call_0"));
+}
+
+#[tokio::test]
+async fn streams_text_deltas_and_requests_streaming_mode() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (fake, http) = client_raw(HttpResponse {
+        status: 200,
+        headers: BTreeMap::new(),
+        body: body.as_bytes().to_vec(),
+    });
+    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let chunks: Vec<Result<CompletionChunk, _>> = provider
+        .stream(CompletionRequest {
+            model: "stream-model".to_owned(),
+            messages: vec![ChatMessage::User("hi".to_owned())],
+            tools: Vec::new(),
+        })
+        .collect()
+        .await;
+    let chunks: Vec<CompletionChunk> = chunks.into_iter().map(Result::unwrap).collect();
+
+    assert_eq!(
+        chunks,
+        vec![
+            CompletionChunk::Text("hel".to_owned()),
+            CompletionChunk::Text("lo".to_owned()),
+        ]
+    );
+    let requests = fake.requests.lock().expect("request lock");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("body json");
+    assert_eq!(body["stream"], json!(true));
+}
+
+#[tokio::test]
+async fn accumulates_tool_call_deltas_split_across_network_chunks() {
+    let chunks = vec![
+        b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",".to_vec(),
+        b"\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"pa\"}}]}}]}\n\n".to_vec(),
+        b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,".to_vec(),
+        b"\"function\":{\"arguments\":\"th\\\":\\\"a.txt\\\"}\"}}]}}]}\n\n".to_vec(),
+        b"data: [DONE]\n\n".to_vec(),
+    ];
+    let raw = Arc::new(ChunkedHttp {
+        request: Mutex::new(None),
+        chunks,
+    });
+    let http: Arc<dyn HttpClient> = raw.clone();
+    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let chunks: Vec<CompletionChunk> = provider
+        .stream(CompletionRequest {
+            model: "stream-model".to_owned(),
+            messages: vec![ChatMessage::User("read".to_owned())],
+            tools: Vec::new(),
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(
+        chunks,
+        vec![
+            CompletionChunk::ToolCall(ToolCallDelta {
+                index: 0,
+                id: Some("call_1".to_owned()),
+                name: Some("read".to_owned()),
+                arguments: "{\"pa".to_owned(),
+            }),
+            CompletionChunk::ToolCall(ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: "th\":\"a.txt\"}".to_owned(),
+            }),
+        ]
+    );
+    assert!(raw.request.lock().expect("request lock").is_some());
+}
+
+#[tokio::test]
+async fn rejects_malformed_stream_events() {
+    let (_fake, http) = client_raw(HttpResponse {
+        status: 200,
+        headers: BTreeMap::new(),
+        body: b"data: {not-json}\n\n".to_vec(),
+    });
+    let provider = OpenAiProvider::new(http, "https://api.test/v1", "key");
+    let error = provider
+        .stream(CompletionRequest {
+            model: "stream-model".to_owned(),
+            messages: vec![ChatMessage::User("hi".to_owned())],
+            tools: Vec::new(),
+        })
+        .next()
+        .await
+        .expect("chunk")
+        .expect_err("invalid stream event");
+    assert!(error.to_string().contains("invalid stream event"));
 }
 
 #[test]

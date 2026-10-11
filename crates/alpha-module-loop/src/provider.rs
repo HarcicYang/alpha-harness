@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -95,6 +97,28 @@ pub struct CompletionResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// One incremental completion chunk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompletionChunk {
+    /// Assistant text delta.
+    Text(String),
+    /// Incremental tool-call data.
+    ToolCall(ToolCallDelta),
+}
+
+/// One tool-call delta.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCallDelta {
+    /// Stable index within the streamed response.
+    pub index: usize,
+    /// Provider call identity when supplied.
+    pub id: Option<String>,
+    /// Tool name when supplied.
+    pub name: Option<String>,
+    /// JSON argument fragment.
+    pub arguments: String,
+}
+
 /// Provider failure.
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -110,6 +134,38 @@ pub trait ModelProvider: Send + Sync + 'static {
         &self,
         request: CompletionRequest,
     ) -> BoxFuture<'_, Result<CompletionResponse, ProviderError>>;
+
+    /// Stream a completion.
+    ///
+    /// The default implementation calls [`ModelProvider::complete`] and emits
+    /// the complete response as one or more chunks.
+    fn stream(
+        &self,
+        request: CompletionRequest,
+    ) -> BoxStream<'_, Result<CompletionChunk, ProviderError>> {
+        let completion = self.complete(request);
+        Box::pin(
+            futures::stream::once(completion).flat_map(|result| match result {
+                Ok(response) => {
+                    let mut chunks = Vec::new();
+                    if !response.text.is_empty() {
+                        chunks.push(Ok(CompletionChunk::Text(response.text)));
+                    }
+                    for (index, call) in response.tool_calls.into_iter().enumerate() {
+                        chunks.push(Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                            index,
+                            id: Some(call.id),
+                            name: Some(call.name),
+                            arguments: serde_json::to_string(&call.arguments)
+                                .unwrap_or_else(|_| "null".to_owned()),
+                        })));
+                    }
+                    futures::stream::iter(chunks)
+                }
+                Err(error) => futures::stream::iter(vec![Err(error)]),
+            }),
+        )
+    }
 }
 
 /// Registry of named model providers.
