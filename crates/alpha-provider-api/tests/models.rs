@@ -74,6 +74,7 @@ fn user_overrides_change_catalog_metadata_and_default() {
                 "provider_tools": ["web_search"]
             }
         }),
+        disabled: false,
     };
     let kind = TestKind;
     assert_eq!(default_model_id(&instance, &kind).as_deref(), Some("large"));

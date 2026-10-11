@@ -255,6 +255,8 @@ struct ProviderInstanceToml {
     auth_ref: Option<String>,
     #[serde(default = "default_toml_table")]
     model_overrides: toml::Value,
+    #[serde(default)]
+    disabled: bool,
 }
 
 fn default_toml_table() -> toml::Value {
@@ -271,6 +273,7 @@ impl ProviderInstanceToml {
             auth_ref: instance.auth_ref,
             model_overrides: toml::Value::try_from(instance.model_overrides)
                 .map_err(|error| ProviderConfigError::Instance(error.to_string()))?,
+            disabled: instance.disabled,
         })
     }
 
@@ -284,6 +287,7 @@ impl ProviderInstanceToml {
             auth_ref: self.auth_ref,
             model_overrides: serde_json::to_value(self.model_overrides)
                 .map_err(|error| ProviderConfigError::Instance(error.to_string()))?,
+            disabled: self.disabled,
         })
     }
 }

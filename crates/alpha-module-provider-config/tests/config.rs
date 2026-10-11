@@ -16,6 +16,7 @@ fn instance(id: &str) -> ProviderInstance {
         config: json!({ "base_url": "https://api.test/v1" }),
         auth_ref: Some(format!("provider/{id}/api-key")),
         model_overrides: json!({}),
+        disabled: false,
     }
 }
 

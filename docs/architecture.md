@@ -473,6 +473,10 @@ TOML may change a model name, adapter, context window, output limit, reasoning
 flag, or provider tools, and may select a default model. No remote model-list
 refresh is performed.
 
+Provider config migration failures keep the previous config, mark the instance
+disabled, and reject it during provider construction until the user repairs or
+replaces the configuration.
+
 The hidden core exposes provider kind discovery, instance CRUD, and instance
 validation and credential operations through `alpha-protocol`. Runtime
 instances are held in the global provider instance registry; the configuration

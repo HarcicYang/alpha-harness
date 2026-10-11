@@ -96,6 +96,9 @@ pub struct ProviderInstance {
     /// Per-model metadata overrides.
     #[serde(default = "default_json_object")]
     pub model_overrides: Value,
+    /// Whether the instance is disabled after a failed migration or validation.
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 fn default_json_object() -> Value {
@@ -426,6 +429,11 @@ pub fn build_provider_instance(
     instance_id: &str,
 ) -> Result<Arc<dyn ModelProvider>, ProviderError> {
     let instance = resolve_provider_instance(root, instance_id)?;
+    if instance.disabled {
+        return Err(ProviderError::Request(format!(
+            "provider instance `{instance_id}` is disabled"
+        )));
+    }
     let kinds = root
         .require::<ProviderKindRegistry>()
         .map_err(|error| ProviderError::Request(error.to_string()))?;

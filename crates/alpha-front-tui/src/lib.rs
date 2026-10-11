@@ -612,6 +612,7 @@ impl ProviderView {
             config: kind.default_config.clone(),
             auth_ref: None,
             model_overrides: json!({}),
+            disabled: false,
         };
         supervisor
             .request("provider.create_instance", Some(json!(instance)))
@@ -1455,7 +1456,11 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
                 } else {
                     " "
                 };
-                ListItem::new(format!("{marker} {}  ({})", instance.id, instance.kind))
+                let disabled = if instance.disabled { " [disabled]" } else { "" };
+                ListItem::new(format!(
+                    "{marker} {}  ({}){disabled}",
+                    instance.id, instance.kind
+                ))
             })
             .collect()
     };
@@ -1756,6 +1761,7 @@ mod tests {
                 config: serde_json::json!({ "base_url": "https://example.test" }),
                 auth_ref: None,
                 model_overrides: serde_json::json!({}),
+                disabled: false,
             }],
             ..ProviderView::default()
         };

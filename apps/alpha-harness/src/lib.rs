@@ -1250,7 +1250,12 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                 let kind = kinds.get(&instance.kind).ok_or_else(|| {
                     RpcError::invalid_params(format!("unknown provider kind `{}`", instance.kind))
                 })?;
-                migrate_instance_config(&mut instance, kind.as_ref())?;
+                if let Err(error) = migrate_instance_config(&mut instance, kind.as_ref()) {
+                    instance.disabled = true;
+                    persist_provider_instance(&instances, &config_store, instance)?;
+                    return Err(RpcError::invalid_params(error.to_string()));
+                }
+                instance.disabled = false;
                 if instance.auth_ref.is_none() {
                     instance.auth_ref = Some(default_auth_ref(&instance.id));
                 }
@@ -1283,7 +1288,15 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                 let kind = kinds.get(&instance.kind).ok_or_else(|| {
                     RpcError::invalid_params(format!("unknown provider kind `{}`", instance.kind))
                 })?;
-                migrate_instance_config(&mut instance, kind.as_ref())?;
+                if let Err(error) = migrate_instance_config(&mut instance, kind.as_ref()) {
+                    let mut disabled = instances
+                        .get(&instance.id)
+                        .unwrap_or_else(|| instance.clone());
+                    disabled.disabled = true;
+                    persist_provider_instance(&instances, &config_store, disabled)?;
+                    return Err(RpcError::invalid_params(error.to_string()));
+                }
+                instance.disabled = false;
                 if let Some(store) = config_store {
                     store
                         .upsert(instance.clone())
@@ -1644,6 +1657,21 @@ fn migrate_instance_config(
         .map_err(|error| RpcError::invalid_params(error.to_string()))?;
     instance.config_version = current;
     Ok(())
+}
+
+fn persist_provider_instance(
+    instances: &ProviderInstanceRegistry,
+    store: &Option<Arc<dyn ProviderConfigStore>>,
+    instance: ProviderInstance,
+) -> Result<(), RpcError> {
+    if let Some(store) = store {
+        store
+            .upsert(instance)
+            .map_err(|error| RpcError::internal(error.to_string()))
+    } else {
+        instances.upsert(instance);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]

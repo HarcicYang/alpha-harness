@@ -53,6 +53,7 @@ fn registers_and_builds_a_provider_instance() {
         config: json!({ "base_url": "https://api.test/v1" }),
         auth_ref: Some("provider/test/api-key".to_owned()),
         model_overrides: json!({}),
+        disabled: false,
     };
     let _provider = kind
         .build(
