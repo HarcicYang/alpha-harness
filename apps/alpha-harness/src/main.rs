@@ -315,10 +315,10 @@ fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
             let payload = event.get("payload").unwrap_or(&Value::Null);
             match payload.get("type").and_then(Value::as_str).unwrap_or("") {
                 "assistant_message" => {
-                    return payload
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
+                    let text = assistant_payload_text(payload);
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
                 }
                 "tool_call" => {
                     let name = payload
@@ -340,6 +340,28 @@ fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
         _ => {}
     }
     None
+}
+
+fn assistant_payload_text(payload: &Value) -> String {
+    if let Some(text) = payload.get("text").and_then(Value::as_str) {
+        if !text.is_empty() {
+            return text.to_owned();
+        }
+    }
+    payload
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    (block.get("type").and_then(Value::as_str) == Some("text"))
+                        .then(|| block.get("text").and_then(Value::as_str))
+                        .flatten()
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default()
 }
 
 fn turn_finished(params: &Value) -> bool {

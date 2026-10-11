@@ -304,11 +304,7 @@ impl ChatView {
                 }
             }
             "assistant_message" => {
-                let text = payload
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
+                let text = assistant_payload_text(payload);
                 if let Some(index) = self.streaming_assistant.take() {
                     if let Some(entry) = self.transcript.get_mut(index) {
                         *entry = TranscriptEntry::Assistant(text);
@@ -428,6 +424,28 @@ impl ChatView {
             let _ = self.respond_interaction(supervisor, "timeout");
         }
     }
+}
+
+fn assistant_payload_text(payload: &Value) -> String {
+    if let Some(text) = payload.get("text").and_then(Value::as_str) {
+        if !text.is_empty() {
+            return text.to_owned();
+        }
+    }
+    payload
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    (block.get("type").and_then(Value::as_str) == Some("text"))
+                        .then(|| block.get("text").and_then(Value::as_str))
+                        .flatten()
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
