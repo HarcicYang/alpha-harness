@@ -451,6 +451,68 @@ pub fn build_provider_instance(
     .map_err(|error| ProviderError::Request(error.to_string()))
 }
 
+/// Apply user metadata overrides to a provider kind model catalog.
+pub fn effective_model_catalog(
+    instance: &ProviderInstance,
+    kind: &dyn ProviderKind,
+) -> Vec<ModelDescriptor> {
+    let overrides = instance.model_overrides.as_object();
+    kind.descriptor()
+        .models
+        .into_iter()
+        .map(|mut model| {
+            let Some(override_value) = overrides
+                .and_then(|overrides| overrides.get(&model.id))
+                .and_then(Value::as_object)
+            else {
+                return model;
+            };
+            if let Some(name) = override_value.get("name").and_then(Value::as_str) {
+                model.name = name.to_owned();
+            }
+            if let Some(adapter) = override_value.get("adapter").and_then(Value::as_str) {
+                model.adapter = adapter.to_owned();
+            }
+            if let Some(context_window) =
+                override_value.get("context_window").and_then(Value::as_u64)
+            {
+                model.context_window = context_window;
+            }
+            if let Some(max_tokens) = override_value.get("max_tokens").and_then(Value::as_u64) {
+                model.max_tokens = max_tokens;
+            }
+            if let Some(reasoning) = override_value.get("reasoning").and_then(Value::as_bool) {
+                model.reasoning = reasoning;
+            }
+            if let Some(tools) = override_value
+                .get("provider_tools")
+                .and_then(Value::as_array)
+            {
+                model.provider_tools = tools
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+            }
+            model
+        })
+        .collect()
+}
+
+/// Select the default model after applying user overrides.
+pub fn default_model_id(instance: &ProviderInstance, kind: &dyn ProviderKind) -> Option<String> {
+    instance
+        .model_overrides
+        .get("default")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            effective_model_catalog(instance, kind)
+                .first()
+                .map(|model| model.id.clone())
+        })
+}
+
 /// Provider wrapper that rebuilds from the current registry on each request.
 pub struct DynamicProvider {
     root: Ctx,

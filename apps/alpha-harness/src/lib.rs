@@ -50,7 +50,7 @@ use alpha_protocol::{
 };
 use alpha_provider_api::{
     ApiAdapterRegistry, DynamicProvider, ProviderApiModule, ProviderBuildContext, ProviderInstance,
-    ProviderInstanceRegistry, ProviderKindRegistry, build_provider_instance,
+    ProviderInstanceRegistry, ProviderKindRegistry, build_provider_instance, default_model_id,
 };
 use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
@@ -384,13 +384,9 @@ fn build_session_provider(
         AgentHostError::Runtime(format!("provider kind `{}` is missing", instance.kind))
     })?;
     let model = if request.model.trim().is_empty() {
-        kind.descriptor()
-            .models
-            .first()
-            .map(|model| model.id.clone())
-            .ok_or_else(|| {
-                AgentHostError::Runtime(format!("provider kind `{}` has no models", instance.kind))
-            })?
+        default_model_id(&instance, kind.as_ref()).ok_or_else(|| {
+            AgentHostError::Runtime(format!("provider kind `{}` has no models", instance.kind))
+        })?
     } else {
         request.model.clone()
     };

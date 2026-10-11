@@ -467,6 +467,11 @@ Responses, and Anthropic Messages kinds plus dedicated DeepSeek and OpenCode
 Go kinds. DeepSeek uses the Anthropic Messages adapter so provider-native web
 search can be exposed through the same request path.
 
+Model catalogs are static provider metadata. `model_overrides` in the user
+TOML may change a model name, adapter, context window, output limit, reasoning
+flag, or provider tools, and may select a default model. No remote model-list
+refresh is performed.
+
 The hidden core exposes provider kind discovery, instance CRUD, and instance
 validation and credential operations through `alpha-protocol`. Runtime
 instances are held in the global provider instance registry; the configuration
