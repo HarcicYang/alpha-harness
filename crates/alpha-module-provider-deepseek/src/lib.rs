@@ -14,7 +14,7 @@ use alpha_provider_api::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// Stable module key.
 pub const __ALPHA_MODULE__: &str = "provider.deepseek";
@@ -22,6 +22,8 @@ pub const __ALPHA_MODULE__: &str = "provider.deepseek";
 pub const PROVIDER_KIND: &str = "deepseek";
 /// Adapter key.
 pub const ADAPTER_KEY: &str = "anthropic-messages";
+/// Anthropic-compatible API base URL.
+pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 
 /// DeepSeek provider config.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -43,7 +45,7 @@ pub struct DeepSeekConfig {
 impl Default for DeepSeekConfig {
     fn default() -> Self {
         Self {
-            base_url: "https://api.deepseek.com".to_owned(),
+            base_url: DEFAULT_BASE_URL.to_owned(),
             headers: BTreeMap::new(),
             options: BTreeMap::new(),
             enable_web_search: true,
@@ -84,7 +86,22 @@ impl ProviderKind for DeepSeekProviderKind {
     }
 
     fn config_version(&self) -> u32 {
-        1
+        2
+    }
+
+    fn migrate_config(&self, from: u32, config: Value) -> Result<Value, ProviderKindError> {
+        if from != 1 {
+            return Err(ProviderKindError::Migration(format!(
+                "no migration from version {from} to 2"
+            )));
+        }
+        let mut config: DeepSeekConfig = serde_json::from_value(config)
+            .map_err(|error| ProviderKindError::InvalidConfig(error.to_string()))?;
+        let base = config.base_url.trim_end_matches('/');
+        if base == "https://api.deepseek.com" || base == "https://api.deepseek.com/v1" {
+            config.base_url = DEFAULT_BASE_URL.to_owned();
+        }
+        serde_json::to_value(config).map_err(|error| ProviderKindError::Build(error.to_string()))
     }
 
     fn build(

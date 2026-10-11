@@ -207,6 +207,7 @@ impl CoreRuntime {
                 path: options.provider_config_path,
             },
         )?;
+        migrate_loaded_provider_instances(&ctx)?;
         if let Some(credential) = options.credential {
             ctx.provide::<dyn CredentialStore>(credential)
                 .map_err(|error| RunError::Service(error.to_string()))?;
@@ -221,6 +222,42 @@ impl CoreRuntime {
         }
         Ok(Self { ctx, store })
     }
+}
+
+fn migrate_loaded_provider_instances(ctx: &Ctx) -> Result<(), RunError> {
+    let Some(store) = ctx.get::<dyn ProviderConfigStore>() else {
+        return Ok(());
+    };
+    let kinds = ctx
+        .require::<ProviderKindRegistry>()
+        .map_err(|error| RunError::Service(error.to_string()))?;
+    for mut instance in store.list() {
+        let Some(kind) = kinds.get(&instance.kind) else {
+            instance.disabled = true;
+            store
+                .upsert(instance)
+                .map_err(|error| RunError::Service(error.to_string()))?;
+            continue;
+        };
+        let current = kind.config_version();
+        if instance.config_version == current {
+            continue;
+        }
+        match kind.migrate_config(instance.config_version, instance.config.clone()) {
+            Ok(config) => {
+                instance.config = config;
+                instance.config_version = current;
+                instance.disabled = false;
+            }
+            Err(_) => {
+                instance.disabled = true;
+            }
+        }
+        store
+            .upsert(instance)
+            .map_err(|error| RunError::Service(error.to_string()))?;
+    }
+    Ok(())
 }
 
 struct AppSessionRuntimeFactory {
