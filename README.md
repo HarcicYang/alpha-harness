@@ -43,13 +43,15 @@ alpha run --resume <SESSION_ID> "continue"
 echo '{"jsonrpc":"2.0","id":1,"method":"alpha.ping"}' | alpha serve
 ```
 
-Methods: `alpha.ping`, `session.list`, `session.attach { sessionId, afterSeq }`.
+Methods: `alpha.ping`, `session.list`, `session.resume { sessionId }`,
+`session.attach { sessionId, afterSeq }`.
 
 ## Common commands
 
 ```sh
 cargo build       # Build
-cargo run         # Run
+cargo run -- --help                                  # CLI help
+cargo run -- run --mode free "add a README section"  # One prompt (needs OPENAI_API_KEY)
 cargo test        # Test
 cargo fmt         # Format
 cargo clippy      # Lint
