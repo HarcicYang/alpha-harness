@@ -10,6 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-kernel.workspace = true
+alpha-module-fs.workspace = true
 alpha-module-session.workspace = true
 serde.workspace = true
 thiserror.workspace = true

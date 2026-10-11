@@ -163,11 +163,51 @@ pub enum PromptError {
     /// Kernel registration failed.
     #[error("prompt registration failed: {0}")]
     Kernel(String),
+    /// The session cwd is outside its workspace root.
+    #[error("cwd `{cwd}` is outside workspace root `{root}`")]
+    InvalidWorkspace {
+        /// Workspace root.
+        root: String,
+        /// Session cwd.
+        cwd: String,
+    },
+    /// Reading a project instruction file failed.
+    #[error("failed to read project instructions `{path}`: {message}")]
+    ProjectInstruction {
+        /// Workspace-relative path.
+        path: String,
+        /// Underlying error.
+        message: String,
+    },
 }
 
 /// Configuration for prompt assembly.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct PromptConfig {}
+#[derive(Clone, Debug, Deserialize)]
+pub struct PromptConfig {
+    /// Whether `AGENTS.md` files are discovered and included.
+    #[serde(default = "default_include_project_instructions")]
+    pub include_project_instructions: bool,
+    /// Maximum total bytes included from project instruction files.
+    #[serde(default = "default_max_project_instruction_bytes")]
+    pub max_project_instruction_bytes: usize,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            include_project_instructions: default_include_project_instructions(),
+            max_project_instruction_bytes: default_max_project_instruction_bytes(),
+        }
+    }
+}
+
+fn default_include_project_instructions() -> bool {
+    true
+}
+
+fn default_max_project_instruction_bytes() -> usize {
+    64 * 1024
+}
 
 /// Registers the prompt assembler and its built-in sections.
 pub struct PromptModule;
@@ -182,9 +222,9 @@ impl Module for PromptModule {
         CapabilitySpec::registry("prompt.section", CapabilityScope::Location),
     ];
 
-    fn activate(&self, ctx: &Ctx, _config: &Self::Config) -> Result<(), ActivateError> {
+    fn activate(&self, ctx: &Ctx, config: &Self::Config) -> Result<(), ActivateError> {
         let registry = Arc::new(PromptRegistry::new());
-        for section in builtin::sections() {
+        for section in builtin::sections(config) {
             registry
                 .register(ctx, section)
                 .map_err(|error| ActivateError::new(Self::KEY, error))?;
