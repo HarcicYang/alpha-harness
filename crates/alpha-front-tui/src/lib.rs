@@ -3,9 +3,12 @@
 #![forbid(unsafe_code)]
 
 use std::io::{self, stdout};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use alpha_front_client::ConnectionEvent;
 use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
+use alpha_protocol::{Id, Request};
 use alpha_provider_api::{ProviderDescriptor, ProviderInstance};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
@@ -18,7 +21,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// TUI runtime failure.
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +74,309 @@ pub struct CredentialStatusView {
     pub available: bool,
     /// Optional diagnostic detail.
     pub detail: Option<String>,
+}
+
+/// One visible line in the chat transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TranscriptEntry {
+    /// User message.
+    User(String),
+    /// Assistant message.
+    Assistant(String),
+    /// Tool or system progress.
+    Progress(String),
+    /// Error or warning.
+    Error(String),
+}
+
+/// One pending interaction rendered by the modal host.
+#[derive(Clone, Debug)]
+pub struct InteractionPrompt {
+    /// Protocol request identity used for the response.
+    pub id: Id,
+    /// Interaction kind.
+    pub kind: String,
+    /// Short title.
+    pub title: String,
+    /// Body text.
+    pub body: String,
+    /// Deadline for the modal.
+    pub deadline: Instant,
+}
+
+/// Chat state for the primary TUI screen.
+#[derive(Clone, Debug, Default)]
+pub struct ChatView {
+    /// Active session identity.
+    pub session_id: Option<String>,
+    /// Visible transcript.
+    pub transcript: Vec<TranscriptEntry>,
+    /// Index of the in-progress assistant line.
+    pub streaming_assistant: Option<usize>,
+    /// Composer input.
+    pub composer: String,
+    /// Status or error line.
+    pub status: Option<String>,
+    /// Current running turn id.
+    pub running_turn: Option<String>,
+    /// Pending approval or other interaction.
+    pub interaction: Option<InteractionPrompt>,
+}
+
+impl ChatView {
+    fn ensure_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+        if self.session_id.is_some() {
+            return Ok(());
+        }
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let created = supervisor
+            .request(
+                "session.create",
+                Some(json!({
+                    "workspace": workspace,
+                    "cwd": workspace,
+                    "mode": "auto",
+                    "provider": "",
+                    "model": "",
+                })),
+            )
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.session_id = created
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if self.session_id.is_none() {
+            return Err(TuiError::Protocol(
+                "session.create returned no session id".to_owned(),
+            ));
+        }
+        self.status = Some("session ready".to_owned());
+        Ok(())
+    }
+
+    fn submit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+        let prompt = self.composer.trim().to_owned();
+        if prompt.is_empty() {
+            return Ok(());
+        }
+        self.ensure_session(supervisor)?;
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| TuiError::Protocol("no active session".to_owned()))?;
+        if self.running_turn.is_some() {
+            supervisor
+                .request(
+                    "session.steer",
+                    Some(json!({ "sessionId": session_id, "text": prompt })),
+                )
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+            self.status = Some("steer queued".to_owned());
+        } else {
+            let response = supervisor
+                .request(
+                    "session.submit",
+                    Some(json!({ "sessionId": session_id, "prompt": prompt })),
+                )
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+            self.running_turn = response
+                .get("turnId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            self.status = Some("turn started".to_owned());
+        }
+        self.composer.clear();
+        Ok(())
+    }
+
+    fn cancel(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+        let (Some(session_id), Some(turn_id)) = (&self.session_id, &self.running_turn) else {
+            return Ok(());
+        };
+        supervisor
+            .request(
+                "session.cancel",
+                Some(json!({ "sessionId": session_id, "turnId": turn_id })),
+            )
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.status = Some("cancel requested".to_owned());
+        Ok(())
+    }
+
+    fn handle_connection_event(&mut self, event: ConnectionEvent) {
+        match event {
+            ConnectionEvent::Notification(notification)
+                if notification.method == "session.event" =>
+            {
+                if let Some(params) = notification.params {
+                    self.handle_session_event(&params);
+                }
+            }
+            ConnectionEvent::Request(request) if request.method == "interaction.request" => {
+                self.handle_interaction_request(&request);
+            }
+            ConnectionEvent::Closed(error) => {
+                self.status = Some(format!("core disconnected: {error}"));
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_session_event(&mut self, params: &Value) {
+        let kind = params.get("kind").and_then(Value::as_str).unwrap_or("");
+        let event = params.get("event").unwrap_or(&Value::Null);
+        match kind {
+            "durable" => self.handle_durable_event(event.get("payload").unwrap_or(&Value::Null)),
+            "live" => self.handle_live_event(event),
+            _ => {}
+        }
+    }
+
+    fn handle_durable_event(&mut self, payload: &Value) {
+        match payload.get("type").and_then(Value::as_str).unwrap_or("") {
+            "user_message" => {
+                if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                    self.transcript.push(TranscriptEntry::User(text.to_owned()));
+                    self.streaming_assistant = None;
+                }
+            }
+            "assistant_message" => {
+                let text = payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if let Some(index) = self.streaming_assistant.take() {
+                    if let Some(entry) = self.transcript.get_mut(index) {
+                        *entry = TranscriptEntry::Assistant(text);
+                        return;
+                    }
+                }
+                self.transcript.push(TranscriptEntry::Assistant(text));
+            }
+            "tool_call" => {
+                let name = payload
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                self.transcript
+                    .push(TranscriptEntry::Progress(format!("running {name}")));
+            }
+            "tool_result" => {
+                let status = payload
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("finished");
+                self.transcript
+                    .push(TranscriptEntry::Progress(format!("tool {status}")));
+            }
+            "turn_ended" => {
+                self.running_turn = None;
+                self.status = Some("turn finished".to_owned());
+            }
+            "mode_changed" => {
+                if let Some(mode) = payload.get("mode").and_then(Value::as_str) {
+                    self.status = Some(format!("mode: {mode}"));
+                }
+            }
+            "steer_queued" => self.status = Some("steer queued".to_owned()),
+            "steer_injected" => self.status = Some("steer injected".to_owned()),
+            _ => {}
+        }
+    }
+
+    fn handle_live_event(&mut self, event: &Value) {
+        match event.get("type").and_then(Value::as_str).unwrap_or("") {
+            "text_delta" => {
+                let delta = event
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Some(index) = self.streaming_assistant {
+                    if let Some(TranscriptEntry::Assistant(text)) = self.transcript.get_mut(index) {
+                        text.push_str(delta);
+                    }
+                } else {
+                    self.transcript
+                        .push(TranscriptEntry::Assistant(delta.to_owned()));
+                    self.streaming_assistant = Some(self.transcript.len() - 1);
+                }
+            }
+            "step_started" => {
+                if let Some(step) = event.get("step").and_then(Value::as_u64) {
+                    self.status = Some(format!("model step {step}"));
+                }
+            }
+            "tool_started" => {
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+                self.status = Some(format!("running {name}"));
+            }
+            "tool_finished" => {
+                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+                self.status = Some(format!("finished {name}"));
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_interaction_request(&mut self, request: &Request) {
+        let params = request.params.clone().unwrap_or(Value::Null);
+        let kind = params
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("interaction")
+            .to_owned();
+        let title = if kind == "permission" {
+            "Permission requested".to_owned()
+        } else {
+            kind.clone()
+        };
+        let body = serde_json::to_string_pretty(&params).unwrap_or_else(|_| params.to_string());
+        self.interaction = Some(InteractionPrompt {
+            id: request.id.clone(),
+            kind,
+            title,
+            body,
+            deadline: Instant::now() + Duration::from_secs(300),
+        });
+    }
+
+    fn respond_interaction(
+        &mut self,
+        supervisor: &CoreSupervisor,
+        decision: &str,
+    ) -> Result<(), TuiError> {
+        let Some(prompt) = self.interaction.take() else {
+            return Ok(());
+        };
+        supervisor
+            .respond(prompt.id, Ok(json!({ "decision": decision })))
+            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.status = Some(format!("interaction: {decision}"));
+        Ok(())
+    }
+
+    fn expire_interaction(&mut self, supervisor: &CoreSupervisor) {
+        let expired = self
+            .interaction
+            .as_ref()
+            .is_some_and(|prompt| Instant::now() >= prompt.deadline);
+        if expired {
+            let _ = self.respond_interaction(supervisor, "timeout");
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Screen {
+    Chat,
+    Providers,
+}
+
+struct App {
+    chat: ChatView,
+    providers: ProviderView,
+    screen: Screen,
 }
 
 impl ProviderView {
@@ -301,91 +607,49 @@ fn parse_credential_status(value: &serde_json::Value) -> CredentialStatusView {
 /// Run the interactive TUI.
 pub fn run_tui() -> Result<(), TuiError> {
     let mut supervisor = CoreSupervisor::start(SupervisorConfig::default())?;
-    let mut view = ProviderView::default();
-    view.refresh(&mut supervisor)?;
+    let mut app = App {
+        chat: ChatView::default(),
+        providers: ProviderView::default(),
+        screen: Screen::Providers,
+    };
+    app.providers.refresh(&mut supervisor)?;
+    if !app.providers.instances.is_empty() {
+        app.screen = Screen::Chat;
+        if let Err(error) = app.chat.ensure_session(&mut supervisor) {
+            app.chat.status = Some(error.to_string());
+            app.screen = Screen::Providers;
+        }
+    }
 
     let mut guard = TerminalGuard::enter()?;
-    let result = run_loop(&mut guard.terminal, &mut view, &mut supervisor);
+    let result = run_loop(&mut guard.terminal, &mut app, &mut supervisor);
     drop(guard);
     result
 }
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    view: &mut ProviderView,
+    app: &mut App,
     supervisor: &mut CoreSupervisor,
 ) -> Result<(), TuiError> {
     loop {
-        terminal.draw(|frame| draw_provider_screen(frame, view))?;
-        if event::poll(Duration::from_millis(100))? {
+        terminal.draw(|frame| draw_app(frame, app))?;
+        app.chat.expire_interaction(supervisor);
+        if let Some(connection_event) = supervisor.recv_event_timeout(Duration::from_millis(10))? {
+            app.chat.handle_connection_event(connection_event);
+        }
+        if event::poll(Duration::from_millis(0))? {
             match event::read()? {
                 Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
-                    if view.auth_prompt.is_some() {
-                        match key.code {
-                            KeyCode::Enter => {
-                                if let Err(error) = view.submit_auth(supervisor) {
-                                    view.status = Some(error.to_string());
-                                }
-                            }
-                            KeyCode::Esc => view.auth_prompt = None,
-                            KeyCode::Backspace => {
-                                if let Some(prompt) = &mut view.auth_prompt {
-                                    prompt.input.pop();
-                                }
-                            }
-                            KeyCode::Char(character)
-                                if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
-                                if let Some(prompt) = &mut view.auth_prompt {
-                                    prompt.input.push(character);
-                                }
-                            }
-                            _ => {}
-                        }
-                        continue;
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c'))
+                    {
+                        return Ok(());
                     }
-
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        KeyCode::Char('r') => {
-                            view.status = None;
-                            if let Err(error) = view.refresh(supervisor) {
-                                view.status = Some(error.to_string());
-                            }
-                        }
-                        KeyCode::Up => view.move_kind_selection(-1),
-                        KeyCode::Down => view.move_kind_selection(1),
-                        KeyCode::Left => view.move_instance_selection(-1),
-                        KeyCode::Right => view.move_instance_selection(1),
-                        KeyCode::Char('n') => {
-                            if let Err(error) = view.create_instance(supervisor) {
-                                view.status = Some(error.to_string());
-                            }
-                        }
-                        KeyCode::Char('x') => {
-                            if let Err(error) = view.remove_instance(supervisor) {
-                                view.status = Some(error.to_string());
-                            }
-                        }
-                        KeyCode::Char('s') => {
-                            if let Err(error) = view.set_default_instance(supervisor) {
-                                view.status = Some(error.to_string());
-                            }
-                        }
-                        KeyCode::Char('t') => {
-                            if let Err(error) = view.test_instance(supervisor) {
-                                view.status = Some(error.to_string());
-                            }
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            return Ok(());
-                        }
-                        KeyCode::Char('c') => {
-                            if let Err(error) = view.begin_auth() {
-                                view.status = Some(error.to_string());
-                            }
-                        }
-                        _ => {}
+                    if app.screen == Screen::Providers {
+                        handle_provider_key(app, supervisor, key.code, key.modifiers)?;
+                    } else {
+                        handle_chat_key(app, supervisor, key.code, key.modifiers)?;
                     }
                 }
                 Event::Resize(_, _) => {}
@@ -393,6 +657,236 @@ fn run_loop(
             }
         }
     }
+}
+
+fn handle_provider_key(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<(), TuiError> {
+    if app.providers.auth_prompt.is_some() {
+        match code {
+            KeyCode::Enter => {
+                if let Err(error) = app.providers.submit_auth(supervisor) {
+                    app.providers.status = Some(error.to_string());
+                }
+            }
+            KeyCode::Esc => app.providers.auth_prompt = None,
+            KeyCode::Backspace => {
+                if let Some(prompt) = &mut app.providers.auth_prompt {
+                    prompt.input.pop();
+                }
+            }
+            KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(prompt) = &mut app.providers.auth_prompt {
+                    prompt.input.push(character);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = Screen::Chat;
+            if let Err(error) = app.chat.ensure_session(supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('r') => {
+            app.providers.status = None;
+            if let Err(error) = app.providers.refresh(supervisor) {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Up => app.providers.move_kind_selection(-1),
+        KeyCode::Down => app.providers.move_kind_selection(1),
+        KeyCode::Left => app.providers.move_instance_selection(-1),
+        KeyCode::Right => app.providers.move_instance_selection(1),
+        KeyCode::Char('n') => {
+            if let Err(error) = app.providers.create_instance(supervisor) {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('x') => {
+            if let Err(error) = app.providers.remove_instance(supervisor) {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('s') => {
+            if let Err(error) = app.providers.set_default_instance(supervisor) {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('t') => {
+            if let Err(error) = app.providers.test_instance(supervisor) {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Err(error) = app.providers.begin_auth() {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_chat_key(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<(), TuiError> {
+    if app.chat.interaction.is_some() {
+        match code {
+            KeyCode::Char('y') => app
+                .chat
+                .respond_interaction(supervisor, "once")
+                .map(|_| ())?,
+            KeyCode::Char('s') => app
+                .chat
+                .respond_interaction(supervisor, "session")
+                .map(|_| ())?,
+            KeyCode::Char('n') | KeyCode::Esc => app
+                .chat
+                .respond_interaction(supervisor, "deny")
+                .map(|_| ())?,
+            _ => {}
+        }
+        return Ok(());
+    }
+    match code {
+        KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.screen = Screen::Providers;
+            app.providers.status = None;
+            if let Err(error) = app.providers.refresh(supervisor) {
+                app.providers.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Enter => {
+            if let Err(error) = app.chat.submit(supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Esc => {
+            if let Err(error) = app.chat.cancel(supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Backspace => {
+            app.chat.composer.pop();
+        }
+        KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.push(character);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn draw_app(frame: &mut ratatui::Frame<'_>, app: &App) {
+    match app.screen {
+        Screen::Chat => draw_chat_screen(frame, &app.chat),
+        Screen::Providers => draw_provider_screen(frame, &app.providers),
+    }
+    if let Some(prompt) = &app.chat.interaction {
+        draw_interaction_prompt(frame, prompt);
+    }
+}
+
+fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
+    let area = frame.area();
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    let session = view.session_id.as_deref().unwrap_or("new session");
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "alpha",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("  {session}")),
+        ])),
+        layout[0],
+    );
+
+    let transcript = if view.transcript.is_empty() {
+        Text::from("No messages yet")
+    } else {
+        Text::from(
+            view.transcript
+                .iter()
+                .flat_map(|entry| match entry {
+                    TranscriptEntry::User(text) => {
+                        vec![Line::from(format!("you: {text}"))]
+                    }
+                    TranscriptEntry::Assistant(text) => {
+                        vec![Line::from(format!("alpha: {text}"))]
+                    }
+                    TranscriptEntry::Progress(text) => {
+                        vec![Line::from(format!("... {text}"))]
+                    }
+                    TranscriptEntry::Error(text) => {
+                        vec![Line::from(format!("error: {text}"))]
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(transcript)
+            .block(Block::default().borders(Borders::ALL).title("Transcript"))
+            .wrap(Wrap { trim: false }),
+        layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("> {}", view.composer))
+            .block(Block::default().borders(Borders::ALL).title("Composer"))
+            .wrap(Wrap { trim: false }),
+        layout[2],
+    );
+    let status = view
+        .status
+        .as_deref()
+        .unwrap_or("Enter submit  Esc cancel  Ctrl-P providers  Ctrl-C quit");
+    frame.render_widget(
+        Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
+        layout[3],
+    );
+}
+
+fn draw_interaction_prompt(frame: &mut ratatui::Frame<'_>, prompt: &InteractionPrompt) {
+    let area = centered_rect(70, 12, frame.area());
+    frame.render_widget(Clear, area);
+    let text = Text::from(vec![
+        Line::from(prompt.title.clone()),
+        Line::from(""),
+        Line::from(prompt.body.clone()),
+        Line::from(""),
+        Line::from("y allow once   s allow session   n deny"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(prompt.kind.clone()),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
@@ -666,5 +1160,35 @@ mod tests {
         assert_eq!(status.backend, "secret-service");
         assert!(!status.available);
         assert_eq!(status.detail.as_deref(), Some("dbus unavailable"));
+    }
+
+    #[test]
+    fn chat_streams_and_replaces_assistant_text() {
+        let mut view = ChatView::default();
+        view.handle_session_event(&serde_json::json!({
+            "kind": "live",
+            "event": { "type": "text_delta", "text": "hel" }
+        }));
+        view.handle_session_event(&serde_json::json!({
+            "kind": "live",
+            "event": { "type": "text_delta", "text": "lo" }
+        }));
+        assert_eq!(
+            view.transcript,
+            vec![TranscriptEntry::Assistant("hello".to_owned())]
+        );
+        view.handle_session_event(&serde_json::json!({
+            "kind": "durable",
+            "event": {
+                "payload": {
+                    "type": "assistant_message",
+                    "text": "hello"
+                }
+            }
+        }));
+        assert_eq!(
+            view.transcript,
+            vec![TranscriptEntry::Assistant("hello".to_owned())]
+        );
     }
 }

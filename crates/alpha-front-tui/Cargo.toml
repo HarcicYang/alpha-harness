@@ -9,7 +9,9 @@ keywords = ["alpha-harness", "tui", "frontend"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-front-client.workspace = true
 alpha-front-supervisor.workspace = true
+alpha-protocol.workspace = true
 alpha-provider-api.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
