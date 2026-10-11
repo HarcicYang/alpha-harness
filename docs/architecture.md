@@ -40,7 +40,9 @@ lifecycle, and scope-bound task spawning. Its only IO is terminal and stdio.
 The default ReAct loop is the first shipped module, not kernel code. Consumers
 depend on the `AgentDriver` trait, and the default `AgentLoop` implementation
 registers itself under the same service key, so a composition can mount a
-different driver in its place.
+different driver in its place. Each turn receives its agent-scoped `Ctx` so
+progress is emitted as typed live events rather than through a loop-specific
+observer callback.
 
 ### D3: Compile-time composition
 
@@ -352,6 +354,53 @@ live events for read-only observers such as a TUI.
   actionable diagnostics.
 - Build read-only snapshot test: a build changes only `target/`.
 
+### D22: Prompt assembly
+
+The prompt module assembles one deterministic system prompt from ordered
+sections. Framework, policy, output, tool, project, capability, and persona
+sections have stable keys and priorities, with persona rendered last. Tool
+schemas remain the canonical tool descriptions and are not duplicated into the
+prompt.
+
+Project instructions are discovered from `AGENTS.md` and
+`.alpha/AGENTS.md` between the workspace root and fixed cwd through the
+filesystem seam. They are size-limited and labeled with their source path.
+
+The complete prompt is recorded as a durable `system_prompt_set` event before
+the first turn that uses it. Resume and replay use the snapshot from the log
+instead of silently re-rendering a different prompt. Prompt changes therefore
+remain explicit session facts.
+
+### D23: Context compaction
+
+The compaction module runs as an optional pre-turn context transformation. It
+uses a replaceable token estimator and conservative defaults because exact
+provider usage is not part of the event contract. Above the configured
+threshold it summarizes an older, complete turn prefix while retaining recent
+raw history.
+
+The summary is generated without tools and committed only after it succeeds.
+`context_compacted` records the summary and the durable sequence range it
+replaces. History rebuilding injects that summary before records after the
+range. A failed summarization call appends nothing and leaves the full history
+intact.
+
+### D24: Streaming
+
+`ModelProvider::stream` is the default turn path. Providers without a native
+streaming implementation fall back to `complete`, so the provider contract
+remains incremental without forcing every adapter to implement SSE.
+
+The HTTP seam exposes response bodies as byte streams. The OpenAI-compatible
+adapter parses SSE text and tool-call fragments. The loop emits
+`agent/*` live events for steps, text deltas, tool lifecycle, completion, and
+errors, then commits one canonical assistant message and complete tool calls to
+the durable log. Partial assistant text received before a failed stream is
+preserved as an interrupted prefix.
+
+The CLI subscribes to live events: stdout receives assistant deltas and stderr
+receives progress. Protocol stdio mode keeps stdout protocol-only.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,
@@ -386,6 +435,8 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |
+| `alpha-module-prompt` | deterministic system-prompt assembly and project instructions |
+| `alpha-module-compaction` | budget estimation and durable context compaction |
 | `alpha-module-session` | append-only session log, projections, migrations |
 | `alpha-module-loop` | default agent driver (replaceable) |
 | `alpha-module-fs` | filesystem seam and local driver |
@@ -427,15 +478,14 @@ Acceptance criteria:
 ## 7. Milestones
 
 - **M1**: everything in section 6.
+- **Post-M1 A/B**: prompt snapshots, project instructions, context compaction,
+  provider streaming, agent live events, and streamed CLI output.
 - **M1.5**: `reviewed` mode (classifier plus auto review), macOS Seatbelt and
   Windows MXC sandbox drivers, reviewer policy files.
-- **M2**: TUI profile, MCP client module, subagents, context compaction module,
-  multi-Location daemon.
+- **M2**: TUI profile, MCP client module, subagents, multi-Location daemon.
 
 ## 8. Open items
 
-- Context assembly, compaction, and summarization design (session and loop
-  modules).
 - Reviewer model selection and cost policy.
 - Project trust UX for project-level policy files.
 - Managed policy layer.

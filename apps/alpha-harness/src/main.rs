@@ -2,10 +2,15 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use alpha_harness::{
     ResumeOptions, RunOptions, TtyApprovalChannel, compose_openai_runtime, list_sessions,
-    resume_session, run_prompt, serve_stdio,
+    resume_session_in, run_prompt_in, serve_stdio,
+};
+use alpha_kernel::Ctx;
+use alpha_module_loop::{
+    AgentError, AgentStepStarted, AgentTextDelta, AgentToolFinished, AgentToolStarted,
 };
 use alpha_module_permission::ApprovalChannel;
 use alpha_module_session::SessionStore;
@@ -156,12 +161,26 @@ fn run_command(args: RunArgs) -> ExitCode {
                 &api_key,
                 approval,
             )?;
-            resume_session(ResumeOptions { session_id, prompt }, &composition, &store).await
+            let ctx = composition
+                .ctx
+                .child()
+                .map_err(|error| alpha_harness::RunError::Service(error.to_string()))?;
+            let streamed = install_cli_listeners(&ctx);
+            let result = resume_session_in(
+                &ctx,
+                ResumeOptions { session_id, prompt },
+                &composition,
+                &store,
+            )
+            .await;
+            ctx.dispose();
+            Ok::<_, alpha_harness::RunError>((result, streamed))
         });
         return match result {
-            Ok(report) => {
+            Ok((Ok(report), streamed)) => {
                 match &report.assistant_text {
-                    Some(text) => println!("{text}"),
+                    Some(text) if !streamed.load(Ordering::Relaxed) => println!("{text}"),
+                    Some(_) => println!(),
                     None => eprintln!(
                         "session {} resumed: {} messages, turn_open={}, repairs={}",
                         report.session_id, report.messages, report.turn_open, report.repairs
@@ -170,7 +189,7 @@ fn run_command(args: RunArgs) -> ExitCode {
                 eprintln!("session: {}", report.session_id);
                 ExitCode::SUCCESS
             }
-            Err(error) => {
+            Ok((Err(error), _)) | Err(error) => {
                 eprintln!("alpha run: {error}");
                 ExitCode::FAILURE
             }
@@ -219,7 +238,13 @@ fn run_command(args: RunArgs) -> ExitCode {
             approval,
         )?;
         let store = SessionStore::new(SessionStore::default_root());
-        run_prompt(
+        let ctx = composition
+            .ctx
+            .child()
+            .map_err(|error| alpha_harness::RunError::Service(error.to_string()))?;
+        let streamed = install_cli_listeners(&ctx);
+        let result = run_prompt_in(
+            &ctx,
             RunOptions {
                 workspace,
                 mode: args.mode,
@@ -229,18 +254,85 @@ fn run_command(args: RunArgs) -> ExitCode {
             &composition,
             &store,
         )
-        .await
+        .await;
+        ctx.dispose();
+        Ok::<_, alpha_harness::RunError>((result, streamed))
     });
 
     match result {
-        Ok(report) => {
-            println!("{}", report.assistant_text);
+        Ok((Ok(report), streamed)) => {
+            if streamed.load(Ordering::Relaxed) {
+                println!();
+            } else {
+                println!("{}", report.assistant_text);
+            }
             eprintln!("session: {}", report.session_id);
             ExitCode::SUCCESS
         }
-        Err(error) => {
+        Ok((Err(error), _)) | Err(error) => {
             eprintln!("alpha run: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn install_cli_listeners(ctx: &Ctx) -> Arc<AtomicBool> {
+    let streamed = Arc::new(AtomicBool::new(false));
+    let saw_text = streamed.clone();
+    ctx.on_parallel::<AgentTextDelta, _>(move |event| {
+        saw_text.store(true, Ordering::Relaxed);
+        let text = event.text.clone();
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut stdout = tokio::io::stdout();
+            let _ = stdout.write_all(text.as_bytes()).await;
+            let _ = stdout.flush().await;
+        })
+    })
+    .expect("text listener");
+
+    ctx.on_parallel::<AgentStepStarted, _>(move |event| {
+        eprintln!("alpha run: step {}: calling model...", event.step);
+        Box::pin(async {})
+    })
+    .expect("step listener");
+
+    ctx.on_parallel::<AgentToolStarted, _>(move |event| {
+        let preview = serde_json::to_string(&event.input).unwrap_or_default();
+        eprintln!("alpha run: -> {} {}", event.name, snippet(&preview, 160));
+        Box::pin(async {})
+    })
+    .expect("tool start listener");
+
+    ctx.on_parallel::<AgentToolFinished, _>(move |event| {
+        let label = match event.status {
+            alpha_module_session::ToolStatus::Completed => "ok",
+            alpha_module_session::ToolStatus::Failed => "failed",
+            alpha_module_session::ToolStatus::Interrupted => "interrupted",
+        };
+        let first_line = event.content.lines().next().unwrap_or_default();
+        eprintln!(
+            "alpha run: <- {} {}: {}",
+            event.name,
+            label,
+            snippet(first_line, 120)
+        );
+        Box::pin(async {})
+    })
+    .expect("tool finish listener");
+
+    ctx.on_parallel::<AgentError, _>(move |event| {
+        eprintln!("alpha run: {}", event.message);
+        Box::pin(async {})
+    })
+    .expect("error listener");
+    streamed
+}
+
+fn snippet(text: &str, max_chars: usize) -> String {
+    let mut output: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
 }

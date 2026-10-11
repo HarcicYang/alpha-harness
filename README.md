@@ -28,6 +28,17 @@ alpha run --mode free --model deepseek-chat \
 - Interactive terminals get approval prompts in `auto` mode. Non-interactive
   runs fail closed and need `--mode free` or explicit policy rules.
 - Shell commands run inside a bubblewrap sandbox when it is available.
+- Assistant output streams to stdout as the model produces it. Step, tool, and
+  error progress stays on stderr.
+
+## Prompting and context
+
+- `AGENTS.md` and `.alpha/AGENTS.md` files are discovered from the workspace
+  root through the fixed cwd and added to the system prompt.
+- The complete prompt is recorded in the session log and replayed on resume.
+- Long histories are compacted into a durable summary before the configured
+  context budget is exhausted. Compaction failures leave the original history
+  untouched.
 
 ## Sessions
 
