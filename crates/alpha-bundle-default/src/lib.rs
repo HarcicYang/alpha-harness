@@ -18,6 +18,7 @@ pub use alpha_module_permission;
 pub use alpha_module_process;
 pub use alpha_module_prompt;
 pub use alpha_module_provider_anthropic_messages;
+pub use alpha_module_provider_config;
 pub use alpha_module_provider_deepseek;
 pub use alpha_module_provider_openai;
 pub use alpha_module_provider_openai_chat_completions;

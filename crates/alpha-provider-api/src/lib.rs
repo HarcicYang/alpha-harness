@@ -91,8 +91,12 @@ pub struct ProviderInstance {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_ref: Option<String>,
     /// Per-model metadata overrides.
-    #[serde(default)]
+    #[serde(default = "default_json_object")]
     pub model_overrides: Value,
+}
+
+fn default_json_object() -> Value {
+    Value::Object(Default::default())
 }
 
 /// Runtime services available while constructing a provider instance.

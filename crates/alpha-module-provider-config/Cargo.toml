@@ -1,0 +1,27 @@
+[package]
+name = "alpha-module-provider-config"
+description = "User TOML persistence for alpha provider instances."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "provider", "config", "alpha-module"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-kernel.workspace = true
+alpha-provider-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "module"
+key = "provider.config"
+provides = [{ key = "provider.config_store", kind = "singleton", scope = "global" }]
+requires = ["provider.instances"]

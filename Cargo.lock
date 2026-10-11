@@ -101,6 +101,7 @@ dependencies = [
  "alpha-module-process",
  "alpha-module-prompt",
  "alpha-module-provider-anthropic-messages",
+ "alpha-module-provider-config",
  "alpha-module-provider-deepseek",
  "alpha-module-provider-openai",
  "alpha-module-provider-openai-chat-completions",
@@ -149,6 +150,7 @@ dependencies = [
  "alpha-module-process",
  "alpha-module-prompt",
  "alpha-module-provider-anthropic-messages",
+ "alpha-module-provider-config",
  "alpha-module-provider-deepseek",
  "alpha-module-provider-openai",
  "alpha-module-provider-openai-chat-completions",
@@ -306,6 +308,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "alpha-module-provider-config"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-provider-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

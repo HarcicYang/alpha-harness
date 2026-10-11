@@ -457,6 +457,10 @@ validation through `alpha-protocol`. Runtime instances are held in the global
 provider instance registry; the configuration layer can persist that
 projection to user TOML without changing the protocol surface.
 
+Provider instances are persisted under `[providers.instances.<id>]` in the
+user configuration file. Writes use last-write-wins with atomic rename; the
+in-memory registry is updated after a successful write.
+
 ## 4. Runtime contract sketch
 
 A module implements a `Module` contract: declared requirements and provisions,
@@ -499,6 +503,7 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-module-provider-anthropic-messages` | generic Anthropic Messages provider |
 | `alpha-module-provider-deepseek` | DeepSeek provider |
 | `alpha-module-provider-opencode-go` | OpenCode Go provider |
+| `alpha-module-provider-config` | user TOML persistence for provider instances |
 | `alpha-macros` | `#[alpha::module]` and composition-related macros |
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |

@@ -22,6 +22,9 @@ use alpha_module_permission::{
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
 use alpha_module_provider_anthropic_messages::AnthropicMessagesProviderModule;
+use alpha_module_provider_config::{
+    ProviderConfigConfig, ProviderConfigModule, ProviderConfigStore,
+};
 use alpha_module_provider_deepseek::DeepSeekProviderModule;
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
 use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
@@ -151,6 +154,7 @@ impl CoreRuntime {
     pub fn new(store: SessionStore) -> Result<Self, RunError> {
         let ctx = Ctx::root();
         activate_provider_modules(&ctx)?;
+        ProviderConfigModule.activate(&ctx, &ProviderConfigConfig::default())?;
         CredentialModule.activate(&ctx, &CredentialConfig::default())?;
         HttpLocalModule.activate(&ctx, &HttpConfig {})?;
         Ok(Self { ctx, store })
@@ -682,6 +686,7 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     let instance_registry = ctx
         .require::<ProviderInstanceRegistry>()
         .expect("provider instance registry is required by the core");
+    let config_store = ctx.get::<dyn ProviderConfigStore>();
 
     let router = router.method("provider.list_kinds", {
         let registry = kind_registry.clone();
@@ -721,9 +726,11 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     let router = router.method("provider.create_instance", {
         let kinds = kind_registry.clone();
         let instances = instance_registry.clone();
+        let config_store = config_store.clone();
         move |params: Value| {
             let kinds = kinds.clone();
             let instances = instances.clone();
+            let config_store = config_store.clone();
             async move {
                 let instance: ProviderInstance = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
@@ -733,7 +740,13 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                         instance.kind
                     )));
                 }
-                instances.upsert(instance.clone());
+                if let Some(store) = config_store {
+                    store
+                        .upsert(instance.clone())
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                } else {
+                    instances.upsert(instance.clone());
+                }
                 serde_json::to_value(instance)
                     .map_err(|error| RpcError::internal(error.to_string()))
             }
@@ -742,9 +755,11 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     let router = router.method("provider.update_instance", {
         let kinds = kind_registry.clone();
         let instances = instance_registry.clone();
+        let config_store = config_store.clone();
         move |params: Value| {
             let kinds = kinds.clone();
             let instances = instances.clone();
+            let config_store = config_store.clone();
             async move {
                 let instance: ProviderInstance = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
@@ -754,7 +769,13 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                         instance.kind
                     )));
                 }
-                instances.upsert(instance.clone());
+                if let Some(store) = config_store {
+                    store
+                        .upsert(instance.clone())
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                } else {
+                    instances.upsert(instance.clone());
+                }
                 serde_json::to_value(instance)
                     .map_err(|error| RpcError::internal(error.to_string()))
             }
@@ -762,12 +783,37 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     });
     let router = router.method("provider.remove_instance", {
         let instances = instance_registry.clone();
+        let config_store = config_store.clone();
         move |params: Value| {
             let instances = instances.clone();
+            let config_store = config_store.clone();
             async move {
                 let params: InstanceIdParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-                Ok(json!({ "removed": instances.remove(&params.id).is_some() }))
+                let removed = if let Some(store) = config_store {
+                    store
+                        .remove(&params.id)
+                        .map_err(|error| RpcError::internal(error.to_string()))?
+                } else {
+                    instances.remove(&params.id).is_some()
+                };
+                Ok(json!({ "removed": removed }))
+            }
+        }
+    });
+    let router = router.method("provider.set_default_instance", {
+        let config_store = config_store.clone();
+        move |params: Value| {
+            let config_store = config_store.clone();
+            async move {
+                let params: DefaultInstanceParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let store = config_store
+                    .ok_or_else(|| RpcError::internal("provider config store is unavailable"))?;
+                store
+                    .set_default_instance(params.id)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true }))
             }
         }
     });
@@ -844,4 +890,9 @@ struct KindParams {
 #[derive(Debug, Deserialize)]
 struct InstanceIdParams {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DefaultInstanceParams {
+    id: Option<String>,
 }
