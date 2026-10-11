@@ -96,7 +96,8 @@ fn actor_streams_durable_events_and_completes_a_turn() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SessionStore::new(dir.path());
         let transport = Arc::new(RecordingTransport::default());
-        let host = AgentHostService::new(store.clone(), transport.clone(), Arc::new(EchoFactory));
+        let host = AgentHostService::new(store.clone(), transport.clone(), Arc::new(EchoFactory))
+            .with_idle_timeout(Duration::from_millis(20));
         let created = host
             .create_session(CreateSessionRequest {
                 workspace: dir.path().to_path_buf(),
@@ -126,17 +127,18 @@ fn actor_streams_durable_events_and_completes_a_turn() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        let notifications = transport
-            .notifications
-            .lock()
-            .expect("notification lock poisoned");
-        assert!(notifications.iter().any(|(method, params)| {
-            method == "session.event"
-                && params["kind"] == "durable"
-                && params["event"]["payload"]["type"] == "assistant_message"
-                && params["event"]["payload"]["blocks"][0]["text"] == "echo:hello"
-        }));
-        drop(notifications);
+        {
+            let notifications = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned");
+            assert!(notifications.iter().any(|(method, params)| {
+                method == "session.event"
+                    && params["kind"] == "durable"
+                    && params["event"]["payload"]["type"] == "assistant_message"
+                    && params["event"]["payload"]["blocks"][0]["text"] == "echo:hello"
+            }));
+        }
 
         let reader = store.open_read(created.session_id).expect("read");
         assert!(
@@ -145,5 +147,8 @@ fn actor_streams_durable_events_and_completes_a_turn() {
                 .iter()
                 .any(|envelope| envelope.payload.assistant_text().as_deref() == Some("echo:hello"))
         );
+        drop(reader);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(host.session_count(), 0);
     });
 }

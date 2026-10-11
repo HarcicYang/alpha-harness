@@ -57,7 +57,8 @@ pub struct CoreSupervisor {
     child: Child,
     connection: ProtocolConnection,
     info: CoreInfo,
-    shutdown_grace: Duration,
+    config: SupervisorConfig,
+    executable: PathBuf,
 }
 
 impl fmt::Debug for CoreSupervisor {
@@ -85,7 +86,7 @@ impl CoreSupervisor {
         let attempts = config.retries.saturating_add(1);
         let mut last_error = String::new();
         for _ in 0..attempts {
-            match Self::start_once(executable.as_ref(), config.shutdown_grace) {
+            match Self::start_once(executable.as_ref(), config) {
                 Ok(supervisor) => return Ok(supervisor),
                 Err(error) => last_error = error.to_string(),
             }
@@ -140,7 +141,33 @@ impl CoreSupervisor {
         Ok(())
     }
 
-    fn start_once(executable: &Path, shutdown_grace: Duration) -> Result<Self, SupervisorError> {
+    /// Restart the core process after a crash.
+    ///
+    /// The caller owns session recovery. This method only replaces the process
+    /// and connection; it never replays a prompt or turn.
+    pub fn restart(&mut self) -> Result<(), SupervisorError> {
+        self.connection.close_writer();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let attempts = self.config.retries.saturating_add(1);
+        let mut last_error = String::new();
+        for _ in 0..attempts {
+            match Self::start_once(&self.executable, self.config) {
+                Ok(replacement) => {
+                    let previous = std::mem::replace(self, replacement);
+                    drop(previous);
+                    return Ok(());
+                }
+                Err(error) => last_error = error.to_string(),
+            }
+        }
+        Err(SupervisorError::Startup {
+            attempts,
+            last_error,
+        })
+    }
+
+    fn start_once(executable: &Path, config: SupervisorConfig) -> Result<Self, SupervisorError> {
         let mut child = Command::new(executable)
             .arg("__core")
             .arg("--stdio")
@@ -169,12 +196,13 @@ impl CoreSupervisor {
             child,
             connection,
             info,
-            shutdown_grace,
+            config,
+            executable: executable.to_path_buf(),
         })
     }
 
     fn wait_for_exit(&mut self) -> Result<(), SupervisorError> {
-        let deadline = Instant::now() + self.shutdown_grace;
+        let deadline = Instant::now() + self.config.shutdown_grace;
         loop {
             if self.child.try_wait()?.is_some() {
                 return Ok(());

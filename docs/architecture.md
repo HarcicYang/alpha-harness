@@ -418,10 +418,11 @@ pair is an independent instance. A front never attaches
 to another instance's core, and a second writer for the same session fails
 with `session_busy`.
 
-Core startup defaults to three retries after the initial attempt. Retries
-restart the core process and restore durable session state only; an
-interrupted turn is never replayed automatically. The hidden core command is
-available for manual debugging but is not a supported user workflow.
+Core startup defaults to three retries after the initial attempt. A runtime
+crash uses the same retry policy. Retries restart the core process and restore
+durable session state only; an interrupted turn is never replayed
+automatically. The hidden core command is available for manual debugging but
+is not a supported user workflow.
 
 The first TUI screen is a provider manager backed by `provider.list_kinds`,
 `provider.list_instances`, and `provider.credential_status`. It can create and
@@ -489,6 +490,10 @@ time into a single text block. The current durable schema is version 2.
 Provider-native tools, including Anthropic `web_search`, are represented as
 provider tool blocks so the transcript and replay path do not need
 provider-specific event types.
+
+Session actors are resident only while active or recently used. Idle actors are
+evicted by `alpha-module-agent-host`; a later `session.resume` rebuilds the
+projection from the durable log and starts a fresh actor.
 
 ## 4. Runtime contract sketch
 

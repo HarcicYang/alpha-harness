@@ -5,7 +5,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use alpha_kernel::Ctx;
 use alpha_module_loop::{AgentDriver, LoopError, SteerMessage, SteerQueue};
@@ -195,7 +196,8 @@ pub struct AgentHostService {
     store: SessionStore,
     transport: Arc<dyn OutboundTransport>,
     factory: Arc<dyn SessionRuntimeFactory>,
-    actors: Mutex<HashMap<SessionId, Arc<SessionActor>>>,
+    actors: Arc<Mutex<HashMap<SessionId, Arc<SessionActor>>>>,
+    idle_timeout: Duration,
 }
 
 impl AgentHostService {
@@ -209,8 +211,20 @@ impl AgentHostService {
             store,
             transport,
             factory,
-            actors: Mutex::new(HashMap::new()),
+            actors: Arc::new(Mutex::new(HashMap::new())),
+            idle_timeout: Duration::from_secs(30 * 60),
         }
+    }
+
+    /// Override the idle actor eviction timeout.
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
+    }
+
+    /// Number of currently resident session actors.
+    pub fn session_count(&self) -> usize {
+        self.actors.lock().expect("agent host lock poisoned").len()
     }
 
     /// Create a new session and start its actor.
@@ -272,7 +286,13 @@ impl AgentHostService {
         let header = reader.header().clone();
         let state = reader.state();
         drop(reader);
-        let writer = self.store.open_write(session_id)?;
+        let writer = match self.store.open_write(session_id) {
+            Ok(writer) => writer,
+            Err(SessionError::WriterBusy { .. }) => {
+                return Err(AgentHostError::SessionBusy(session_id));
+            }
+            Err(error) => return Err(error.into()),
+        };
         let repairs = writer.repairs().len();
         let steer_queue = Arc::new(ActorSteerQueue::new());
         let runtime = self.factory.build(SessionRuntimeRequest {
@@ -457,6 +477,7 @@ impl AgentHostService {
         spawn_ctx
             .scope()
             .spawn(actor_loop(
+                session_id,
                 runtime,
                 writer,
                 state,
@@ -464,6 +485,8 @@ impl AgentHostService {
                 steer_queue,
                 running,
                 rx,
+                Arc::downgrade(&self.actors),
+                self.idle_timeout,
             ))
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         Ok(())
@@ -625,6 +648,7 @@ fn install_live_observers(
 
 #[allow(clippy::too_many_arguments)]
 async fn actor_loop(
+    session_id: SessionId,
     runtime: SessionRuntime,
     writer: SessionWriter,
     state: Arc<Mutex<SessionState>>,
@@ -632,6 +656,8 @@ async fn actor_loop(
     steer_queue: Arc<ActorSteerQueue>,
     running: Arc<AtomicBool>,
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
+    actors: Weak<Mutex<HashMap<SessionId, Arc<SessionActor>>>>,
+    idle_timeout: Duration,
 ) {
     let mut writer = Some(writer);
     let (completion_tx, mut completions) = mpsc::unbounded_channel();
@@ -722,7 +748,16 @@ async fn actor_loop(
                     );
                 }
             }
+            _ = tokio::time::sleep(idle_timeout), if active_turn.is_none() => {
+                break;
+            }
         }
+    }
+    if let Some(actors) = actors.upgrade() {
+        actors
+            .lock()
+            .expect("agent host lock poisoned")
+            .remove(&session_id);
     }
 }
 

@@ -730,7 +730,18 @@ fn run_loop(
         terminal.draw(|frame| draw_app(frame, app))?;
         app.chat.expire_interaction(supervisor);
         if let Some(connection_event) = supervisor.recv_event_timeout(Duration::from_millis(10))? {
-            app.chat.handle_connection_event(connection_event);
+            match connection_event {
+                ConnectionEvent::Closed(error) => {
+                    app.chat.status = Some(format!("core disconnected: {error}"));
+                    if supervisor.restart().is_ok() {
+                        let session_id = app.chat.session_id.clone();
+                        if let Some(session_id) = session_id {
+                            let _ = app.chat.resume_session(supervisor, &session_id);
+                        }
+                    }
+                }
+                event => app.chat.handle_connection_event(event),
+            }
         }
         if event::poll(Duration::from_millis(0))? {
             match event::read()? {
@@ -1274,7 +1285,11 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
     let status = view
         .status
         .as_deref()
-        .unwrap_or("n new  x remove  c credential  t test  s default  r refresh  q quit");
+        .unwrap_or(if view.instances.is_empty() {
+            "No providers configured. Press n to create one, or q to return."
+        } else {
+            "n new  x remove  c credential  t test  s default  r refresh  q back"
+        });
     let status_style = if view.status.is_some() || view.credential_hint().is_some() {
         Style::default().fg(Color::Red)
     } else {

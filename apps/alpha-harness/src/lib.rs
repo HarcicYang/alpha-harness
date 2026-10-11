@@ -1401,9 +1401,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                 let request: alpha_module_agent_host::CreateSessionRequest =
                     serde_json::from_value(params)
                         .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-                let created = host
-                    .create_session(request)
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                let created = host.create_session(request).map_err(agent_host_rpc_error)?;
                 serde_json::to_value(created).map_err(|error| RpcError::internal(error.to_string()))
             }
         }
@@ -1417,7 +1415,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 let turn_id = host
                     .submit(params.session_id, params.prompt)
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "turnId": turn_id }))
             }
         }
@@ -1431,7 +1429,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 host.cancel(params.session_id, params.turn_id)
                     .await
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "ok": true }))
             }
         }
@@ -1444,7 +1442,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                 let params: SteerParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 host.steer(params.session_id, params.text)
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "ok": true }))
             }
         }
@@ -1466,7 +1464,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 let attached = host
                     .attach(params.session_id, params.after_seq.unwrap_or(0))
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 serde_json::to_value(attached)
                     .map_err(|error| RpcError::internal(error.to_string()))
             }
@@ -1480,7 +1478,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                 let params: SessionIdParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 host.detach(params.session_id)
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "ok": true }))
             }
         }
@@ -1494,7 +1492,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 host.set_mode(params.session_id, params.mode)
                     .await
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "ok": true }))
             }
         }
@@ -1508,7 +1506,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 let resumed = host
                     .resume_session(params.session_id)
-                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                    .map_err(agent_host_rpc_error)?;
                 serde_json::to_value(resumed).map_err(|error| RpcError::internal(error.to_string()))
             }
         }
@@ -1517,6 +1515,14 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
 
 fn default_auth_ref(instance_id: &str) -> String {
     format!("provider/{instance_id}/api-key")
+}
+
+fn agent_host_rpc_error(error: AgentHostError) -> RpcError {
+    match error {
+        AgentHostError::SessionBusy(_) => RpcError::new(-32010, "session_busy"),
+        AgentHostError::SessionNotFound(_) => RpcError::new(-32011, "session_not_found"),
+        other => RpcError::internal(other.to_string()),
+    }
 }
 
 fn migrate_instance_config(

@@ -260,6 +260,16 @@ fn run_command(args: RunArgs) -> ExitCode {
             }
             Some(ConnectionEvent::Closed(error)) => {
                 eprintln!("alpha run: core disconnected: {error}");
+                match supervisor.restart() {
+                    Ok(()) => {
+                        let _ = supervisor
+                            .request("session.resume", Some(json!({ "sessionId": session_id })));
+                        eprintln!(
+                            "alpha run: core restarted; the interrupted turn was not replayed"
+                        );
+                    }
+                    Err(restart) => eprintln!("alpha run: core restart failed: {restart}"),
+                }
                 return ExitCode::FAILURE;
             }
             _ => {}

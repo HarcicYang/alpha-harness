@@ -72,3 +72,17 @@ fn core_exposes_provider_registry_methods() {
         .expect("remove provider instance");
     supervisor.shutdown().expect("shutdown core");
 }
+
+#[test]
+fn supervisor_restarts_a_crashed_core_without_replaying_turns() {
+    let executable = env!("CARGO_BIN_EXE_alpha");
+    let mut supervisor =
+        CoreSupervisor::start_with_executable(executable, SupervisorConfig::default())
+            .expect("start core");
+    let old_pid = supervisor.pid();
+    supervisor.restart().expect("restart core");
+    assert_ne!(supervisor.pid(), old_pid);
+    let pong = supervisor.request("alpha.ping", None).expect("ping");
+    assert_eq!(pong["pong"], serde_json::json!(true));
+    supervisor.shutdown().expect("shutdown core");
+}
