@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 /// One HTTP request.
@@ -72,6 +73,16 @@ impl HttpResponse {
     }
 }
 
+/// One streaming HTTP response.
+pub struct HttpResponseStream {
+    /// HTTP status code.
+    pub status: u16,
+    /// Response headers.
+    pub headers: BTreeMap<String, String>,
+    /// Response body chunks.
+    pub body: BoxStream<'static, Result<Vec<u8>, HttpError>>,
+}
+
 /// HTTP seam errors.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
@@ -84,4 +95,23 @@ pub enum HttpError {
 pub trait HttpClient: Send + Sync + 'static {
     /// Perform one request.
     fn request(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, HttpError>>;
+
+    /// Perform one request and expose the response body as chunks.
+    ///
+    /// The default implementation buffers the complete response and yields it
+    /// as one chunk.
+    fn request_stream(
+        &self,
+        request: HttpRequest,
+    ) -> BoxFuture<'_, Result<HttpResponseStream, HttpError>> {
+        Box::pin(async move {
+            let response = self.request(request).await?;
+            let body = futures::stream::once(async move { Ok(response.body) });
+            Ok(HttpResponseStream {
+                status: response.status,
+                headers: response.headers,
+                body: Box::pin(body),
+            })
+        })
+    }
 }

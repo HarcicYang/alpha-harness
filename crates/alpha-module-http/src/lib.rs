@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 pub use cassette::{Cassette, CassetteEntry, RecordingHttpClient, ReplayHttpClient};
 pub use local::LocalHttpClient;
-pub use seam::{HttpClient, HttpError, HttpRequest, HttpResponse};
+pub use seam::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "http.local";

@@ -8,6 +8,8 @@ use alpha_module_http::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::time::{Duration, sleep};
 
 async fn one_shot_server() -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -53,6 +55,28 @@ async fn one_shot_server() -> (String, tokio::task::JoinHandle<()>) {
     (format!("http://{address}"), handle)
 }
 
+async fn streaming_server() -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let (release_tx, release_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut buffer = [0u8; 2048];
+        let _ = socket.read(&mut buffer).await.expect("read");
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nfirst",
+            )
+            .await
+            .expect("write head");
+        socket.flush().await.expect("flush head");
+        let _ = release_rx.await;
+        sleep(Duration::from_millis(10)).await;
+        socket.write_all(b"second").await.expect("write tail");
+    });
+    (format!("http://{address}"), release_tx, handle)
+}
+
 #[tokio::test]
 async fn local_driver_sends_requests_and_reads_responses() {
     let (base, server) = one_shot_server().await;
@@ -68,6 +92,32 @@ async fn local_driver_sends_requests_and_reads_responses() {
     assert_eq!(response.status, 200);
     assert_eq!(response.body, b"ok");
     assert_eq!(response.header("content-type"), Some("text/plain"));
+    server.await.expect("server");
+}
+
+#[tokio::test]
+async fn local_driver_exposes_the_response_body_as_a_stream() {
+    let (base, release, server) = streaming_server().await;
+    let client = LocalHttpClient::new();
+    let response = client
+        .request_stream(HttpRequest::get(format!("{base}/stream")))
+        .await
+        .expect("request stream");
+    assert_eq!(response.status, 200);
+
+    let mut body = response.body;
+    let first = futures::StreamExt::next(&mut body)
+        .await
+        .expect("first chunk")
+        .expect("first chunk body");
+    assert_eq!(first, b"first");
+    release.send(()).expect("release");
+    let second = futures::StreamExt::next(&mut body)
+        .await
+        .expect("second chunk")
+        .expect("second chunk body");
+    assert_eq!(second, b"second");
+    assert!(futures::StreamExt::next(&mut body).await.is_none());
     server.await.expect("server");
 }
 
