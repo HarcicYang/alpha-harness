@@ -298,6 +298,7 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
         let approval: Arc<dyn ApprovalChannel> = Arc::new(ProtocolApprovalChannel {
             session_id: request.session_id,
             transport: self.transport.clone(),
+            timeout: Duration::from_secs(300),
         });
         session_ctx
             .provide::<dyn ApprovalChannel>(approval)
@@ -350,12 +351,14 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
 struct ProtocolApprovalChannel {
     session_id: SessionId,
     transport: Arc<dyn OutboundTransport>,
+    timeout: Duration,
 }
 
 impl ApprovalChannel for ProtocolApprovalChannel {
     fn decide(&self, prompt: ApprovalPrompt) -> BoxFuture<'_, ApprovalDecision> {
         let transport = self.transport.clone();
         let session_id = self.session_id;
+        let timeout = self.timeout;
         Box::pin(async move {
             let request = transport.request(
                 "interaction.request".to_owned(),
@@ -369,7 +372,7 @@ impl ApprovalChannel for ProtocolApprovalChannel {
                     },
                 }),
             );
-            match tokio::time::timeout(Duration::from_secs(300), request).await {
+            match tokio::time::timeout(timeout, request).await {
                 Ok(Ok(value)) => match value.get("decision").and_then(Value::as_str) {
                     Some("once") => ApprovalDecision::AllowOnce,
                     Some("session") => ApprovalDecision::AllowSession,
@@ -1821,6 +1824,22 @@ mod tests {
         }
     }
 
+    struct PendingTransport;
+
+    impl OutboundTransport for PendingTransport {
+        fn notify(&self, _method: String, _params: Value) -> Result<(), RpcError> {
+            Ok(())
+        }
+
+        fn request(
+            &self,
+            _method: String,
+            _params: Value,
+        ) -> BoxFuture<'static, Result<Value, RpcError>> {
+            Box::pin(futures::future::pending())
+        }
+    }
+
     #[test]
     fn locations_are_shared_by_root_and_cwd() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1853,5 +1872,25 @@ mod tests {
             .require::<dyn alpha_module_fs::FileSystem>()
             .expect("third filesystem");
         assert!(!Arc::ptr_eq(&first_fs, &third_fs));
+    }
+
+    #[tokio::test]
+    async fn protocol_approval_times_out_to_deny() {
+        let channel = ProtocolApprovalChannel {
+            session_id: SessionId::new(),
+            transport: Arc::new(PendingTransport),
+            timeout: Duration::from_millis(1),
+        };
+        let decision = channel
+            .decide(ApprovalPrompt {
+                request: alpha_module_permission::PermissionRequest::new(
+                    "fs.write",
+                    ["workspace/main.rs".to_owned()],
+                ),
+                reason: "test".to_owned(),
+                protected: false,
+            })
+            .await;
+        assert_eq!(decision, ApprovalDecision::Timeout);
     }
 }

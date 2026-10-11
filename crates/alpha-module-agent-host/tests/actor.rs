@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use alpha_protocol::{OutboundTransport, RpcError};
 use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 struct EchoDriver;
 
@@ -73,6 +75,67 @@ impl SessionRuntimeFactory for EchoFactory {
             ctx,
             agent: Arc::new(EchoDriver),
             provider_tools_override,
+        })
+    }
+}
+
+struct BlockingDriver {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    runs: AtomicUsize,
+}
+
+impl AgentDriver for BlockingDriver {
+    fn run_turn<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        _state: &'a SessionState,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        Box::pin(async move {
+            if self.runs.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            writer.append(SessionEvent::TurnStarted)?;
+            writer.append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: prompt.to_owned(),
+            })?;
+            let id = MessageId::new();
+            let text = format!("echo:{prompt}");
+            writer.append(SessionEvent::AssistantMessage {
+                id,
+                blocks: vec![AssistantContentBlock::Text { text: text.clone() }],
+                text: String::new(),
+            })?;
+            writer.append(SessionEvent::TurnEnded {
+                reason: TurnEndReason::Completed,
+            })?;
+            Ok(TurnOutcome {
+                assistant_message: id,
+                assistant_text: text,
+            })
+        })
+    }
+}
+
+struct BlockingFactory {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl SessionRuntimeFactory for BlockingFactory {
+    fn build(&self, _request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError> {
+        Ok(SessionRuntime {
+            ctx: Ctx::root(),
+            agent: Arc::new(BlockingDriver {
+                started: self.started.clone(),
+                release: self.release.clone(),
+                runs: AtomicUsize::new(0),
+            }),
+            provider_tools_override: Arc::new(ProviderToolsOverride::default()),
         })
     }
 }
@@ -339,5 +402,141 @@ fn pending_steers_survive_actor_restart() {
                 && params["event"]["payload"]["type"] == "assistant_message"
                 && params["event"]["payload"]["blocks"][0]["text"] == "echo:pending:web_search"
         }));
+    });
+}
+
+#[test]
+fn running_steer_starts_the_next_turn_after_completion() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let transport = Arc::new(RecordingTransport::default());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let host = AgentHostService::new(
+            store,
+            transport.clone(),
+            Arc::new(BlockingFactory {
+                started: started.clone(),
+                release: release.clone(),
+            }),
+        );
+        let created = host
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+            })
+            .expect("create");
+        host.submit(created.session_id, "first".to_owned())
+            .expect("submit");
+        started.notified().await;
+        host.steer(created.session_id, "steer".to_owned())
+            .await
+            .expect("steer");
+        release.notify_one();
+        for _ in 0..50 {
+            let turns = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned")
+                .iter()
+                .filter(|(method, params)| {
+                    method == "session.event"
+                        && params["kind"] == "durable"
+                        && params["event"]["payload"]["type"] == "turn_ended"
+                })
+                .count();
+            if turns >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let notifications = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned");
+        assert!(notifications.iter().any(|(method, params)| {
+            method == "session.event"
+                && params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "assistant_message"
+                && params["event"]["payload"]["blocks"][0]["text"] == "echo:steer"
+        }));
+    });
+}
+
+#[test]
+fn cancel_stops_the_turn_without_replaying_it() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let transport = Arc::new(RecordingTransport::default());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let host = AgentHostService::new(
+            store,
+            transport.clone(),
+            Arc::new(BlockingFactory {
+                started: started.clone(),
+                release: release.clone(),
+            }),
+        );
+        let created = host
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+            })
+            .expect("create");
+        let turn_id = host
+            .submit(created.session_id, "cancel me".to_owned())
+            .expect("submit");
+        started.notified().await;
+        host.cancel(created.session_id, turn_id)
+            .await
+            .expect("cancel");
+        for _ in 0..50 {
+            let interrupted = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned")
+                .iter()
+                .any(|(method, params)| {
+                    method == "session.event"
+                        && params["kind"] == "durable"
+                        && params["event"]["payload"]["type"] == "turn_ended"
+                        && params["event"]["payload"]["reason"] == "interrupted"
+                });
+            if interrupted {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let notifications = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned");
+        assert!(notifications.iter().any(|(method, params)| {
+            method == "session.event"
+                && params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended"
+                && params["event"]["payload"]["reason"] == "interrupted"
+        }));
+        assert!(!notifications.iter().any(|(_, params)| {
+            params["kind"] == "durable" && params["event"]["payload"]["type"] == "assistant_message"
+        }));
+        drop(release);
     });
 }
