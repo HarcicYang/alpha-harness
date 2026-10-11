@@ -163,6 +163,78 @@ async fn streams_provider_native_web_search_blocks() {
     ));
 }
 
+#[tokio::test]
+async fn groups_consecutive_tool_results_into_one_user_message() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![b"data: {\"type\":\"message_stop\"}\n\n".to_vec()],
+    });
+    let adapter = alpha_api_anthropic_messages::AnthropicMessagesAdapter;
+    adapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.anthropic.test".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "claude-test".to_owned(),
+                messages: vec![
+                    ChatMessage::User("inspect the workspace".to_owned()),
+                    ChatMessage::AssistantToolCalls {
+                        text: String::new(),
+                        calls: vec![
+                            alpha_module_loop::ToolCall {
+                                id: "call-1".to_owned(),
+                                name: "shell".to_owned(),
+                                arguments: json!({ "command": "pwd" }),
+                            },
+                            alpha_module_loop::ToolCall {
+                                id: "call-2".to_owned(),
+                                name: "shell".to_owned(),
+                                arguments: json!({ "command": "ls" }),
+                            },
+                        ],
+                    },
+                    ChatMessage::ToolResult {
+                        call_id: "call-1".to_owned(),
+                        content: "workspace".to_owned(),
+                    },
+                    ChatMessage::ToolResult {
+                        call_id: "call-2".to_owned(),
+                        content: "Cargo.toml".to_owned(),
+                    },
+                ],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    let messages = payload["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["role"], json!("assistant"));
+    assert_eq!(
+        messages[1]["content"].as_array().expect("tool calls").len(),
+        2
+    );
+    assert_eq!(messages[2]["role"], json!("user"));
+    let results = messages[2]["content"].as_array().expect("tool results");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["type"], json!("tool_result"));
+    assert_eq!(results[0]["tool_use_id"], json!("call-1"));
+    assert_eq!(results[1]["type"], json!("tool_result"));
+    assert_eq!(results[1]["tool_use_id"], json!("call-2"));
+}
+
 #[test]
 fn module_registers_the_adapter() {
     let ctx = Ctx::root();

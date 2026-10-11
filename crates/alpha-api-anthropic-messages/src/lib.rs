@@ -177,18 +177,26 @@ fn messages_endpoint(base_url: &str) -> String {
 fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     let mut system = Vec::new();
     let mut messages = Vec::new();
+    let mut tool_results = Vec::new();
     for message in &request.messages {
         match message {
             ChatMessage::System(text) => system.push(text.clone()),
-            ChatMessage::User(text) => messages.push(json!({
-                "role": "user",
-                "content": [{ "type": "text", "text": text }],
-            })),
-            ChatMessage::Assistant(text) => messages.push(json!({
-                "role": "assistant",
-                "content": [{ "type": "text", "text": text }],
-            })),
+            ChatMessage::User(text) => {
+                flush_tool_results(&mut messages, &mut tool_results);
+                messages.push(json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": text }],
+                }));
+            }
+            ChatMessage::Assistant(text) => {
+                flush_tool_results(&mut messages, &mut tool_results);
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": text }],
+                }));
+            }
             ChatMessage::AssistantToolCalls { text, calls } => {
+                flush_tool_results(&mut messages, &mut tool_results);
                 let mut content = Vec::new();
                 if !text.is_empty() {
                     content.push(json!({ "type": "text", "text": text }));
@@ -203,16 +211,16 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
                 }
                 messages.push(json!({ "role": "assistant", "content": content }));
             }
-            ChatMessage::ToolResult { call_id, content } => messages.push(json!({
-                "role": "user",
-                "content": [{
+            ChatMessage::ToolResult { call_id, content } => {
+                tool_results.push(json!({
                     "type": "tool_result",
                     "tool_use_id": call_id,
                     "content": content,
-                }],
-            })),
+                }));
+            }
         }
     }
+    flush_tool_results(&mut messages, &mut tool_results);
     let tools = request
         .tools
         .iter()
@@ -248,6 +256,15 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     }
     serde_json::to_vec(&Value::Object(payload))
         .map_err(|error| ProviderError::Request(error.to_string()))
+}
+
+fn flush_tool_results(messages: &mut Vec<Value>, tool_results: &mut Vec<Value>) {
+    if !tool_results.is_empty() {
+        messages.push(json!({
+            "role": "user",
+            "content": std::mem::take(tool_results),
+        }));
+    }
 }
 
 fn wire_tool(tool: &ToolDefinition) -> Value {
