@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::io::{self, stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -11,7 +12,9 @@ use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
 use alpha_protocol::{Id, Request};
 use alpha_provider_api::{ProviderDescriptor, ProviderInstance};
 use alpha_schema::PermissionMode;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -145,6 +148,10 @@ pub struct ChatView {
     pub provider: String,
     /// Model used for new sessions.
     pub model: String,
+    /// Tool names keyed by durable call identity.
+    tool_names: BTreeMap<String, String>,
+    /// Distance from the transcript bottom after manual scrolling.
+    transcript_scroll_back: u16,
     /// When the current status line was first observed.
     status_changed_at: Option<Instant>,
     /// Last status text observed by the UI loop.
@@ -188,6 +195,8 @@ impl ChatView {
         self.streaming_assistant = None;
         self.running_turn = None;
         self.interaction = None;
+        self.tool_names.clear();
+        self.transcript_scroll_back = 0;
         self.ensure_session(supervisor)
     }
 
@@ -206,6 +215,8 @@ impl ChatView {
         self.transcript.clear();
         self.streaming_assistant = None;
         self.running_turn = None;
+        self.tool_names.clear();
+        self.transcript_scroll_back = 0;
         supervisor
             .request(
                 "session.attach",
@@ -315,7 +326,16 @@ impl ChatView {
             self.status = Some("turn started".to_owned());
         }
         self.composer.clear();
+        self.transcript_scroll_back = 0;
         Ok(())
+    }
+
+    fn scroll_transcript_up(&mut self, lines: u16) {
+        self.transcript_scroll_back = self.transcript_scroll_back.saturating_add(lines);
+    }
+
+    fn scroll_transcript_down(&mut self, lines: u16) {
+        self.transcript_scroll_back = self.transcript_scroll_back.saturating_sub(lines);
     }
 
     fn cancel(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
@@ -385,20 +405,43 @@ impl ChatView {
                 self.transcript.push(TranscriptEntry::Assistant(text));
             }
             "tool_call" => {
+                let id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 let name = payload
                     .get("name")
                     .and_then(Value::as_str)
                     .unwrap_or("tool");
+                let input = payload.get("input").unwrap_or(&Value::Null);
+                if !id.is_empty() {
+                    self.tool_names.insert(id, name.to_owned());
+                }
                 self.transcript
-                    .push(TranscriptEntry::Progress(format!("running {name}")));
+                    .push(TranscriptEntry::Progress(tool_call_summary(name, input)));
             }
             "tool_result" => {
+                let id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let status = payload
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("finished");
+                let name = self
+                    .tool_names
+                    .remove(id)
+                    .unwrap_or_else(|| "tool".to_owned());
+                let content = payload
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 self.transcript
-                    .push(TranscriptEntry::Progress(format!("tool {status}")));
+                    .push(TranscriptEntry::Progress(tool_result_summary(
+                        &name, status, content,
+                    )));
             }
             "turn_ended" => {
                 self.running_turn = None;
@@ -439,11 +482,20 @@ impl ChatView {
             }
             "tool_started" => {
                 let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                self.status = Some(format!("running {name}"));
+                let input = event.get("input").unwrap_or(&Value::Null);
+                self.status = Some(format!("running {}", tool_call_summary(name, input)));
             }
             "tool_finished" => {
                 let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                self.status = Some(format!("finished {name}"));
+                let status = event
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("finished");
+                let content = event
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.status = Some(tool_result_summary(name, status, content));
             }
             "error" => {
                 let message = event
@@ -454,6 +506,7 @@ impl ChatView {
                     .push(TranscriptEntry::Error(message.to_owned()));
                 self.status = Some(message.to_owned());
                 self.running_turn = None;
+                self.transcript_scroll_back = 0;
             }
             _ => {}
         }
@@ -542,6 +595,59 @@ fn assistant_payload_text(payload: &Value) -> String {
                 .collect::<String>()
         })
         .unwrap_or_default()
+}
+
+fn tool_call_summary(name: &str, input: &Value) -> String {
+    let detail = match name {
+        "shell" => input.get("command").and_then(Value::as_str),
+        "read" | "write" | "edit" => input.get("path").and_then(Value::as_str),
+        "grep" => input.get("pattern").and_then(Value::as_str),
+        _ => None,
+    }
+    .map(str::to_owned)
+    .or_else(|| {
+        (!input.is_null())
+            .then(|| serde_json::to_string(input).unwrap_or_default())
+            .filter(|value| !value.is_empty())
+    })
+    .unwrap_or_default();
+    let detail = detail.replace(['\n', '\r'], " ");
+    if detail.trim().is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}: {}", truncate_summary(detail.trim(), 120))
+    }
+}
+
+fn tool_result_summary(name: &str, status: &str, content: &str) -> String {
+    let line_count = content.lines().count();
+    let first = content
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| truncate_summary(line, 120))
+        .unwrap_or_else(|| "(no output)".to_owned());
+    if line_count > 1 {
+        format!("{name}: {status} - {first} ({line_count} lines)")
+    } else {
+        format!("{name}: {status} - {first}")
+    }
+}
+
+fn truncate_summary(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let mut output = String::new();
+    for _ in 0..max_chars {
+        let Some(character) = chars.next() else {
+            return output;
+        };
+        output.push(character);
+    }
+    if chars.next().is_some() {
+        output.push_str("...");
+    }
+    output
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -941,6 +1047,7 @@ fn run_loop(
                     }
                 }
                 Event::Resize(_, _) => {}
+                Event::Mouse(mouse) => handle_mouse_event(app, mouse.kind),
                 _ => {}
             }
         }
@@ -1115,6 +1222,10 @@ fn handle_chat_key(
                 app.chat.status = Some(error.to_string());
             }
         }
+        KeyCode::PageUp => app.chat.scroll_transcript_up(10),
+        KeyCode::PageDown => app.chat.scroll_transcript_down(10),
+        KeyCode::Home => app.chat.scroll_transcript_up(u16::MAX),
+        KeyCode::End => app.chat.scroll_transcript_down(u16::MAX),
         KeyCode::Backspace => {
             app.chat.composer.pop();
         }
@@ -1127,6 +1238,22 @@ fn handle_chat_key(
         _ => {}
     }
     Ok(())
+}
+
+fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
+    if app.screen != Screen::Chat
+        || app.help
+        || app.session_picker.is_some()
+        || app.palette.is_some()
+        || app.chat.interaction.is_some()
+    {
+        return;
+    }
+    match kind {
+        MouseEventKind::ScrollUp => app.chat.scroll_transcript_up(3),
+        MouseEventKind::ScrollDown => app.chat.scroll_transcript_down(3),
+        _ => {}
+    }
 }
 
 fn handle_palette_key(
@@ -1325,13 +1452,23 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
             .collect()
     };
     let transcript_height = layout[1].height.saturating_sub(2) as usize;
-    let scroll = transcript
-        .len()
-        .saturating_sub(transcript_height)
+    let transcript_lines = transcript_line_count(&transcript, layout[1].width.saturating_sub(2));
+    let max_scroll = transcript_lines.saturating_sub(transcript_height);
+    let scroll = max_scroll
+        .saturating_sub(usize::from(view.transcript_scroll_back))
         .min(u16::MAX as usize) as u16;
+    let transcript_title = if view.transcript_scroll_back > 0 {
+        "Transcript (scrolled)"
+    } else {
+        "Transcript"
+    };
     frame.render_widget(
         Paragraph::new(Text::from(transcript))
-            .block(Block::default().borders(Borders::ALL).title("Transcript"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(transcript_title),
+            )
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
         layout[1],
@@ -1342,14 +1479,30 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
             .wrap(Wrap { trim: false }),
         layout[2],
     );
-    let status = view
-        .status
-        .as_deref()
-        .unwrap_or("Enter submit  / commands  Esc cancel  Ctrl-P providers  Ctrl-C quit");
+    let status = view.status.as_deref().unwrap_or(
+        "Enter submit  / commands  Wheel/PgUp scroll  Esc cancel  Ctrl-P providers  Ctrl-C quit",
+    );
     frame.render_widget(
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         layout[3],
     );
+}
+
+fn transcript_line_count(lines: &[Line<'_>], width: u16) -> usize {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|line| {
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            text.split('\n')
+                .map(|part| part.chars().count().max(1).div_ceil(width))
+                .sum::<usize>()
+        })
+        .sum()
 }
 
 fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
@@ -1398,6 +1551,8 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("/diagnostics     show core connection details"),
         Line::from("/help            show this help"),
         Line::from("/quit            exit"),
+        Line::from(""),
+        Line::from("Wheel/PgUp/PgDn  scroll transcript"),
         Line::from(""),
         Line::from("Esc deny/cancel   Ctrl-C quit"),
     ]);
@@ -1694,7 +1849,7 @@ impl TerminalGuard {
     fn enter() -> Result<Self, TuiError> {
         enable_raw_mode()?;
         let mut output = stdout();
-        execute!(output, EnterAlternateScreen)?;
+        execute!(output, EnterAlternateScreen, EnableMouseCapture)?;
         let terminal = Terminal::new(CrosstermBackend::new(output))?;
         Ok(Self { terminal })
     }
@@ -1703,7 +1858,11 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = self.terminal.show_cursor();
     }
 }
@@ -1827,6 +1986,56 @@ mod tests {
             "event": { "type": "text_delta", "text": "wrong" }
         }));
         assert!(view.transcript.is_empty());
+    }
+
+    #[test]
+    fn chat_renders_tool_call_and_result_summaries() {
+        let mut view = ChatView {
+            session_id: Some("session-a".to_owned()),
+            ..ChatView::default()
+        };
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
+            "kind": "durable",
+            "event": {
+                "payload": {
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "shell",
+                    "input": { "command": "ls -la" }
+                }
+            }
+        }));
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
+            "kind": "durable",
+            "event": {
+                "payload": {
+                    "type": "tool_result",
+                    "id": "call-1",
+                    "status": "completed",
+                    "content": "src/lib.rs\nCargo.toml"
+                }
+            }
+        }));
+        assert_eq!(
+            view.transcript,
+            vec![
+                TranscriptEntry::Progress("shell: ls -la".to_owned()),
+                TranscriptEntry::Progress("shell: completed - src/lib.rs (2 lines)".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn transcript_scroll_returns_to_the_bottom() {
+        let mut view = ChatView::default();
+        view.scroll_transcript_up(10);
+        assert_eq!(view.transcript_scroll_back, 10);
+        view.scroll_transcript_down(3);
+        assert_eq!(view.transcript_scroll_back, 7);
+        view.scroll_transcript_down(100);
+        assert_eq!(view.transcript_scroll_back, 0);
     }
 
     #[test]
