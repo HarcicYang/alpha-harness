@@ -37,7 +37,7 @@ pub struct OpenCodeGoConfig {
     #[schemars(with = "BTreeMap<String, String>")]
     pub options: BTreeMap<String, String>,
     /// Optional OpenCode session routing id.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
 

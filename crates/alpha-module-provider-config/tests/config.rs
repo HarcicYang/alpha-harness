@@ -47,6 +47,31 @@ fn toml_store_round_trips_instances() {
 }
 
 #[test]
+fn toml_store_omits_null_config_fields() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let registry = Arc::new(ProviderInstanceRegistry::new());
+    let store = TomlProviderConfigStore::new(path, Arc::new(LocalConfigFile), registry);
+    let mut instance = instance("opencode-go");
+    instance.kind = "opencode-go".to_owned();
+    instance.config = json!({
+        "base_url": "https://opencode.ai/zen/v1",
+        "session_id": null,
+    });
+
+    store.upsert(instance).expect("upsert");
+    let reloaded = Arc::new(ProviderInstanceRegistry::new());
+    let store = TomlProviderConfigStore::new(
+        store.path().to_path_buf(),
+        Arc::new(LocalConfigFile),
+        reloaded.clone(),
+    );
+    store.reload().expect("reload");
+    let persisted = reloaded.get("opencode-go").expect("persisted instance");
+    assert!(persisted.config.get("session_id").is_none());
+}
+
+#[test]
 fn module_loads_the_config_store() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = Ctx::root();

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_provider_api::{ProviderInstance, ProviderInstanceRegistry};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 /// Stable module key.
@@ -268,11 +269,9 @@ impl ProviderInstanceToml {
         Ok(Self {
             kind: instance.kind,
             config_version: instance.config_version,
-            config: toml::Value::try_from(instance.config)
-                .map_err(|error| ProviderConfigError::Instance(error.to_string()))?,
+            config: json_to_toml(instance.config)?,
             auth_ref: instance.auth_ref,
-            model_overrides: toml::Value::try_from(instance.model_overrides)
-                .map_err(|error| ProviderConfigError::Instance(error.to_string()))?,
+            model_overrides: json_to_toml(instance.model_overrides)?,
             disabled: instance.disabled,
         })
     }
@@ -289,5 +288,34 @@ impl ProviderInstanceToml {
                 .map_err(|error| ProviderConfigError::Instance(error.to_string()))?,
             disabled: self.disabled,
         })
+    }
+}
+
+fn json_to_toml(value: Value) -> Result<toml::Value, ProviderConfigError> {
+    match value {
+        Value::Object(values) => {
+            let mut table = toml::Table::new();
+            for (key, value) in values {
+                if value.is_null() {
+                    continue;
+                }
+                table.insert(key, json_to_toml(value)?);
+            }
+            Ok(toml::Value::Table(table))
+        }
+        Value::Array(values) => {
+            let mut array = Vec::with_capacity(values.len());
+            for value in values {
+                if !value.is_null() {
+                    array.push(json_to_toml(value)?);
+                }
+            }
+            Ok(toml::Value::Array(array))
+        }
+        Value::Null => Err(ProviderConfigError::Instance(
+            "null is not supported in TOML provider config".to_owned(),
+        )),
+        value => toml::Value::try_from(value)
+            .map_err(|error| ProviderConfigError::Instance(error.to_string())),
     }
 }
