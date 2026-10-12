@@ -19,6 +19,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use pulldown_cmark::{Event as MarkdownEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -592,9 +593,293 @@ fn assistant_payload_text(payload: &Value) -> String {
                         .then(|| block.get("text").and_then(Value::as_str))
                         .flatten()
                 })
-                .collect::<String>()
+                .collect::<Vec<_>>()
+                .join("\n\n")
         })
         .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, Default)]
+struct MarkdownFormat {
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    code: bool,
+    link: bool,
+    heading: Option<HeadingLevel>,
+    quote: bool,
+}
+
+impl MarkdownFormat {
+    fn style(self) -> Style {
+        let mut style = Style::default();
+        if let Some(level) = self.heading {
+            style = style.fg(match level {
+                HeadingLevel::H1 => Color::Cyan,
+                HeadingLevel::H2 => Color::LightBlue,
+                HeadingLevel::H3 => Color::White,
+                HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6 => Color::Gray,
+            });
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if self.quote {
+            style = style.fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+        }
+        if self.code {
+            style = style.fg(Color::Green);
+        }
+        if self.link {
+            style = style
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::UNDERLINED);
+        }
+        if self.bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if self.italic {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        if self.strike {
+            style = style.add_modifier(Modifier::CROSSED_OUT);
+        }
+        style
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ListState {
+    ordered: bool,
+    next: u64,
+}
+
+#[derive(Default)]
+struct MarkdownRenderer {
+    lines: Vec<Line<'static>>,
+    current: Vec<Span<'static>>,
+    format: MarkdownFormat,
+    quote_depth: usize,
+    lists: Vec<ListState>,
+    item_prefixes: Vec<String>,
+    link_targets: Vec<String>,
+    in_code_block: bool,
+}
+
+impl MarkdownRenderer {
+    fn start(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Paragraph => {}
+            Tag::Heading { level, .. } => {
+                self.flush_line();
+                self.format.heading = Some(level);
+            }
+            Tag::BlockQuote(_) => {
+                self.quote_depth = self.quote_depth.saturating_add(1);
+                self.format.quote = true;
+            }
+            Tag::CodeBlock(_) => {
+                self.flush_line();
+                self.in_code_block = true;
+                self.format.code = true;
+            }
+            Tag::List(start) => {
+                self.lists.push(ListState {
+                    ordered: start.is_some(),
+                    next: start.unwrap_or(1),
+                });
+            }
+            Tag::Item => {
+                self.flush_line();
+                let marker = if let Some(list) = self.lists.last_mut() {
+                    if list.ordered {
+                        let marker = format!("{}. ", list.next);
+                        list.next = list.next.saturating_add(1);
+                        marker
+                    } else {
+                        "- ".to_owned()
+                    }
+                } else {
+                    "- ".to_owned()
+                };
+                self.item_prefixes.push(marker);
+            }
+            Tag::Emphasis => self.format.italic = true,
+            Tag::Strong => self.format.bold = true,
+            Tag::Strikethrough => self.format.strike = true,
+            Tag::Link { dest_url, .. } => {
+                self.link_targets.push(dest_url.to_string());
+                self.format.link = true;
+            }
+            Tag::Image { .. } => self.format.italic = true,
+            Tag::HtmlBlock | Tag::FootnoteDefinition(_) => {}
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph => self.blank_line(),
+            TagEnd::Heading(_) => {
+                self.format.heading = None;
+                self.blank_line();
+            }
+            TagEnd::BlockQuote(_) => {
+                self.quote_depth = self.quote_depth.saturating_sub(1);
+                self.format.quote = self.quote_depth > 0;
+                self.blank_line();
+            }
+            TagEnd::CodeBlock => {
+                self.in_code_block = false;
+                self.format.code = false;
+                self.blank_line();
+            }
+            TagEnd::List(_) => {
+                self.lists.pop();
+                self.blank_line();
+            }
+            TagEnd::Item => {
+                self.flush_line();
+                self.item_prefixes.pop();
+            }
+            TagEnd::Emphasis => self.format.italic = false,
+            TagEnd::Strong => self.format.bold = false,
+            TagEnd::Strikethrough => self.format.strike = false,
+            TagEnd::Link => {
+                self.format.link = false;
+                if let Some(url) = self.link_targets.pop()
+                    && !url.is_empty()
+                {
+                    self.append_styled(&format!(" ({url})"), Style::default().fg(Color::DarkGray));
+                }
+            }
+            TagEnd::Image => self.format.italic = false,
+            TagEnd::HtmlBlock => self.blank_line(),
+            _ => {}
+        }
+    }
+
+    fn text(&mut self, text: &str) {
+        let style = self.format.style();
+        self.append_styled(text, style);
+    }
+
+    fn inline_code(&mut self, text: &str) {
+        let previous = self.format.code;
+        self.format.code = true;
+        self.text(text);
+        self.format.code = previous;
+    }
+
+    fn append_styled(&mut self, text: &str, style: Style) {
+        let mut first = true;
+        for part in text.split('\n') {
+            if !first {
+                self.flush_line();
+            }
+            if !part.is_empty() {
+                self.ensure_prefix();
+                self.current.push(Span::styled(part.to_owned(), style));
+            }
+            first = false;
+        }
+    }
+
+    fn ensure_prefix(&mut self) {
+        if !self.current.is_empty() {
+            return;
+        }
+        let mut prefix = self.line_prefix();
+        if self.in_code_block {
+            prefix.push_str("  ");
+        }
+        if !prefix.is_empty() {
+            self.current
+                .push(Span::styled(prefix, Style::default().fg(Color::DarkGray)));
+        }
+    }
+
+    fn line_prefix(&self) -> String {
+        let mut prefix = "> ".repeat(self.quote_depth);
+        for (index, marker) in self.item_prefixes.iter().enumerate() {
+            if index > 0 {
+                prefix.push_str("  ");
+            }
+            prefix.push_str(marker);
+        }
+        prefix
+    }
+
+    fn flush_line(&mut self) {
+        if !self.current.is_empty() {
+            self.lines
+                .push(Line::from(std::mem::take(&mut self.current)));
+        }
+    }
+
+    fn blank_line(&mut self) {
+        self.flush_line();
+        if self.lines.is_empty() || self.lines.last().is_some_and(|line| line.spans.is_empty()) {
+            return;
+        }
+        self.lines.push(Line::default());
+    }
+
+    fn finish(mut self) -> Vec<Line<'static>> {
+        self.flush_line();
+        while self.lines.last().is_some_and(|line| line.spans.is_empty()) {
+            self.lines.pop();
+        }
+        if self.lines.is_empty() {
+            self.lines.push(Line::default());
+        }
+        self.lines
+    }
+}
+
+fn render_markdown(text: &str) -> Vec<Line<'static>> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    let mut renderer = MarkdownRenderer::default();
+    for event in Parser::new_ext(text, options) {
+        match event {
+            MarkdownEvent::Start(tag) => renderer.start(tag),
+            MarkdownEvent::End(tag) => renderer.end(tag),
+            MarkdownEvent::Text(text) => renderer.text(&text),
+            MarkdownEvent::Code(text) => renderer.inline_code(&text),
+            MarkdownEvent::SoftBreak => renderer.text(" "),
+            MarkdownEvent::HardBreak => renderer.flush_line(),
+            MarkdownEvent::Rule => {
+                renderer.flush_line();
+                renderer
+                    .current
+                    .push(Span::styled("---", Style::default().fg(Color::DarkGray)));
+                renderer.blank_line();
+            }
+            MarkdownEvent::InlineMath(text) | MarkdownEvent::DisplayMath(text) => {
+                renderer.text(&text)
+            }
+            MarkdownEvent::FootnoteReference(name) => renderer.text(&format!("[{name}]")),
+            MarkdownEvent::TaskListMarker(marker) => {
+                renderer.text(if marker { "[x] " } else { "[ ] " })
+            }
+            MarkdownEvent::Html(_) | MarkdownEvent::InlineHtml(_) => {}
+        }
+    }
+    renderer.finish()
+}
+
+fn assistant_transcript_lines(text: &str) -> Vec<Line<'static>> {
+    let mut lines = render_markdown(text);
+    if let Some(first) = lines.first_mut() {
+        let mut spans = vec![Span::styled(
+            "alpha: ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.append(&mut first.spans);
+        *first = Line::from(spans);
+    }
+    lines
 }
 
 fn tool_call_summary(name: &str, input: &Value) -> String {
@@ -1439,9 +1724,7 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
                 TranscriptEntry::User(text) => {
                     vec![Line::from(format!("you: {text}"))]
                 }
-                TranscriptEntry::Assistant(text) => {
-                    vec![Line::from(format!("alpha: {text}"))]
-                }
+                TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
                 TranscriptEntry::Progress(text) => {
                     vec![Line::from(format!("... {text}"))]
                 }
@@ -2025,6 +2308,51 @@ mod tests {
                 TranscriptEntry::Progress("shell: completed - src/lib.rs (2 lines)".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn markdown_output_preserves_blocks_and_inline_styles() {
+        let lines = assistant_transcript_lines(
+            "# Title\n\nHello **world** and `code`.\n\n- one\n- two\n\n```rust\nfn main() {}\n```",
+        );
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line == "alpha: Title"));
+        assert!(rendered.iter().any(|line| line == "Hello world and code."));
+        assert!(rendered.iter().any(|line| line == "- one"));
+        assert!(rendered.iter().any(|line| line == "- two"));
+        assert!(rendered.iter().any(|line| line.contains("fn main() {}")));
+
+        let bold = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == "world")
+            .expect("bold span");
+        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        let code = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == "code")
+            .expect("code span");
+        assert_eq!(code.style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn assistant_payload_separates_text_blocks() {
+        let payload = serde_json::json!({
+            "blocks": [
+                { "type": "text", "text": "first" },
+                { "type": "text", "text": "second" }
+            ]
+        });
+        assert_eq!(assistant_payload_text(&payload), "first\n\nsecond");
     }
 
     #[test]

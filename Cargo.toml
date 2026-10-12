@@ -60,3 +60,4 @@ ureq = "2"
 uuid = { version = "1", features = ["serde", "v7"] }
 ratatui = "0.30.2"
 crossterm = "0.29"
+pulldown-cmark = { version = "0.13", default-features = false }

@@ -45,6 +45,8 @@ fn module_assembles_builtin_sections_in_stable_order() {
     assert!(stop < persona);
     assert!(prompt.contains("`auto`"));
     assert!(prompt.contains("`/workspace/project`"));
+    assert!(prompt.contains("basic Markdown subset"));
+    assert!(prompt.contains("fenced code blocks"));
 }
 
 #[test]

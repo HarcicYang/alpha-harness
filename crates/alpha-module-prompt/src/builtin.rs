@@ -91,6 +91,8 @@ impl PromptSectionProvider for OutputRulesSection {
         Ok(Some(
             "# Your Output\n\n\
              - Plain text is for explaining results to the user; all actual actions must be carried out through tool calls.\n\
+             - The TUI renders this basic Markdown subset: headings (`#` through `######`), paragraphs, unordered lists (`-`, `*`, `+`), ordered lists (`1.`), blockquotes (`>`), fenced code blocks (three backticks), inline code (single backticks), bold (`**text**`), italic (`*text*`), strikethrough (`~~text~~`), and links (`[text](url)`).\n\
+             - Do not use tables, images, HTML, footnotes, task lists, raw ANSI escapes, or other unsupported Markdown features; unsupported syntax is shown as plain text.\n\
              - Keep answers concise and specific, stating directly what was done, what the result was, and what problems remain.\n\
              - Do not restate tool output or process logs unless they are necessary for the conclusion.\n\
              - When work is not finished, state the blocker clearly; do not paper over failures with speculative descriptions."

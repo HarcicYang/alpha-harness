@@ -376,7 +376,8 @@ fn assistant_payload_text(payload: &Value) -> String {
                         .then(|| block.get("text").and_then(Value::as_str))
                         .flatten()
                 })
-                .collect::<String>()
+                .collect::<Vec<_>>()
+                .join("\n\n")
         })
         .unwrap_or_default()
 }
