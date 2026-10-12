@@ -16,6 +16,6 @@ alpha-provider-api.workspace = true
 alpha-schema.workspace = true
 crossterm.workspace = true
 pulldown-cmark.workspace = true
-ratatui.workspace = true
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde_json.workspace = true
 thiserror.workspace = true

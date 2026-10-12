@@ -157,9 +157,25 @@ pub struct ChatView {
     status_changed_at: Option<Instant>,
     /// Last status text observed by the UI loop.
     last_status: Option<String>,
+    /// Monotonic revision for transcript content.
+    transcript_revision: u64,
+    /// Cached rendered transcript for the current width and revision.
+    transcript_cache: Option<TranscriptCache>,
+}
+
+#[derive(Clone, Debug)]
+struct TranscriptCache {
+    width: u16,
+    revision: u64,
+    lines: Vec<Line<'static>>,
+    line_count: usize,
 }
 
 impl ChatView {
+    fn invalidate_transcript(&mut self) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+    }
+
     fn ensure_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
         if self.session_id.is_some() {
             return Ok(());
@@ -193,6 +209,7 @@ impl ChatView {
     fn new_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
         self.session_id = None;
         self.transcript.clear();
+        self.invalidate_transcript();
         self.streaming_assistant = None;
         self.running_turn = None;
         self.interaction = None;
@@ -214,6 +231,7 @@ impl ChatView {
             .map_err(|error| TuiError::Protocol(error.to_string()))?;
         self.session_id = Some(session_id.to_string());
         self.transcript.clear();
+        self.invalidate_transcript();
         self.streaming_assistant = None;
         self.running_turn = None;
         self.tool_names.clear();
@@ -392,6 +410,7 @@ impl ChatView {
             "user_message" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
                     self.transcript.push(TranscriptEntry::User(text.to_owned()));
+                    self.invalidate_transcript();
                     self.streaming_assistant = None;
                 }
             }
@@ -400,10 +419,12 @@ impl ChatView {
                 if let Some(index) = self.streaming_assistant.take() {
                     if let Some(entry) = self.transcript.get_mut(index) {
                         *entry = TranscriptEntry::Assistant(text);
+                        self.invalidate_transcript();
                         return;
                     }
                 }
                 self.transcript.push(TranscriptEntry::Assistant(text));
+                self.invalidate_transcript();
             }
             "tool_call" => {
                 let id = payload
@@ -421,6 +442,7 @@ impl ChatView {
                 }
                 self.transcript
                     .push(TranscriptEntry::Progress(tool_call_summary(name, input)));
+                self.invalidate_transcript();
             }
             "tool_result" => {
                 let id = payload
@@ -443,6 +465,7 @@ impl ChatView {
                     .push(TranscriptEntry::Progress(tool_result_summary(
                         &name, status, content,
                     )));
+                self.invalidate_transcript();
             }
             "turn_ended" => {
                 self.running_turn = None;
@@ -469,11 +492,13 @@ impl ChatView {
                 if let Some(index) = self.streaming_assistant {
                     if let Some(TranscriptEntry::Assistant(text)) = self.transcript.get_mut(index) {
                         text.push_str(delta);
+                        self.invalidate_transcript();
                     }
                 } else {
                     self.transcript
                         .push(TranscriptEntry::Assistant(delta.to_owned()));
                     self.streaming_assistant = Some(self.transcript.len() - 1);
+                    self.invalidate_transcript();
                 }
             }
             "step_started" => {
@@ -505,6 +530,7 @@ impl ChatView {
                     .unwrap_or("model request failed");
                 self.transcript
                     .push(TranscriptEntry::Error(message.to_owned()));
+                self.invalidate_transcript();
                 self.status = Some(message.to_owned());
                 self.running_turn = None;
                 self.transcript_scroll_back = 0;
@@ -1281,12 +1307,23 @@ fn run_loop(
     app: &mut App,
     supervisor: &mut CoreSupervisor,
 ) -> Result<(), TuiError> {
+    let mut redraw = true;
+    let mut next_tick = Instant::now();
     loop {
-        terminal.draw(|frame| draw_app(frame, app))?;
+        let now = Instant::now();
+        let needs_tick = app.chat.status.is_some()
+            || app.chat.interaction.is_some()
+            || app.providers.status.is_some();
+        if redraw || (needs_tick && now >= next_tick) {
+            terminal.draw(|frame| draw_app(frame, app))?;
+            redraw = false;
+            next_tick = now + Duration::from_millis(250);
+        }
         app.chat.expire_interaction(supervisor);
         app.chat.tick_status();
         app.providers.tick_status();
-        if let Some(connection_event) = supervisor.recv_event_timeout(Duration::from_millis(10))? {
+        if let Some(connection_event) = supervisor.recv_event_timeout(Duration::from_millis(20))? {
+            redraw = true;
             match connection_event {
                 ConnectionEvent::Closed(error) => {
                     app.chat.status = Some(format!("core disconnected: {error}"));
@@ -1303,6 +1340,7 @@ fn run_loop(
         if event::poll(Duration::from_millis(0))? {
             match event::read()? {
                 Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                    redraw = true;
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c'))
                     {
@@ -1331,8 +1369,11 @@ fn run_loop(
                         return Ok(());
                     }
                 }
-                Event::Resize(_, _) => {}
-                Event::Mouse(mouse) => handle_mouse_event(app, mouse.kind),
+                Event::Resize(_, _) => redraw = true,
+                Event::Mouse(mouse) => {
+                    handle_mouse_event(app, mouse.kind);
+                    redraw = true;
+                }
                 _ => {}
             }
         }
@@ -1671,9 +1712,9 @@ fn handle_session_picker_key(
     Ok(())
 }
 
-fn draw_app(frame: &mut ratatui::Frame<'_>, app: &App) {
+fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     match app.screen {
-        Screen::Chat => draw_chat_screen(frame, &app.chat),
+        Screen::Chat => draw_chat_screen(frame, &mut app.chat),
         Screen::Providers => draw_provider_screen(frame, &app.providers),
     }
     if let Some(picker) = &app.session_picker {
@@ -1690,7 +1731,7 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &App) {
     }
 }
 
-fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
+fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
     let area = frame.area();
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1715,47 +1756,46 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
         layout[0],
     );
 
-    let transcript: Vec<Line<'static>> = if view.transcript.is_empty() {
-        vec![Line::from("No messages yet")]
-    } else {
-        view.transcript
-            .iter()
-            .flat_map(|entry| match entry {
-                TranscriptEntry::User(text) => {
-                    vec![Line::from(format!("you: {text}"))]
-                }
-                TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
-                TranscriptEntry::Progress(text) => {
-                    vec![Line::from(format!("... {text}"))]
-                }
-                TranscriptEntry::Error(text) => {
-                    vec![Line::from(format!("error: {text}"))]
-                }
-            })
-            .collect()
-    };
-    let transcript_height = layout[1].height.saturating_sub(2) as usize;
-    let transcript_lines = transcript_line_count(&transcript, layout[1].width.saturating_sub(2));
-    let max_scroll = transcript_lines.saturating_sub(transcript_height);
-    let scroll = max_scroll
-        .saturating_sub(usize::from(view.transcript_scroll_back))
-        .min(u16::MAX as usize) as u16;
+    let width = layout[1].width;
+    let cache_stale = view
+        .transcript_cache
+        .as_ref()
+        .is_none_or(|cache| cache.width != width || cache.revision != view.transcript_revision);
+    if cache_stale {
+        let lines = build_transcript_lines(view);
+        let line_count = Paragraph::new(Text::from(lines.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width.saturating_sub(2));
+        view.transcript_cache = Some(TranscriptCache {
+            width,
+            revision: view.transcript_revision,
+            lines,
+            line_count,
+        });
+    }
+    let cache = view
+        .transcript_cache
+        .as_ref()
+        .expect("transcript cache must be populated");
     let transcript_title = if view.transcript_scroll_back > 0 {
         "Transcript (scrolled)"
     } else {
         "Transcript"
     };
-    frame.render_widget(
-        Paragraph::new(Text::from(transcript))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(transcript_title),
-            )
-            .scroll((scroll, 0))
-            .wrap(Wrap { trim: false }),
-        layout[1],
-    );
+    let transcript_widget = Paragraph::new(Text::from(cache.lines.clone()))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(transcript_title),
+        )
+        .wrap(Wrap { trim: false });
+    let max_scroll = cache
+        .line_count
+        .saturating_sub(usize::from(layout[1].height.saturating_sub(2)));
+    let scroll = max_scroll
+        .saturating_sub(usize::from(view.transcript_scroll_back))
+        .min(u16::MAX as usize) as u16;
+    frame.render_widget(transcript_widget.scroll((scroll, 0)), layout[1]);
     frame.render_widget(
         Paragraph::new(format!("> {}", view.composer))
             .block(Block::default().borders(Borders::ALL).title("Composer"))
@@ -1771,21 +1811,19 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &ChatView) {
     );
 }
 
-fn transcript_line_count(lines: &[Line<'_>], width: u16) -> usize {
-    let width = usize::from(width.max(1));
-    lines
+fn build_transcript_lines(view: &ChatView) -> Vec<Line<'static>> {
+    if view.transcript.is_empty() {
+        return vec![Line::from("No messages yet")];
+    }
+    view.transcript
         .iter()
-        .map(|line| {
-            let text = line
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>();
-            text.split('\n')
-                .map(|part| part.chars().count().max(1).div_ceil(width))
-                .sum::<usize>()
+        .flat_map(|entry| match entry {
+            TranscriptEntry::User(text) => vec![Line::from(format!("you: {text}"))],
+            TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
+            TranscriptEntry::Progress(text) => vec![Line::from(format!("... {text}"))],
+            TranscriptEntry::Error(text) => vec![Line::from(format!("error: {text}"))],
         })
-        .sum()
+        .collect()
 }
 
 fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
@@ -2353,6 +2391,45 @@ mod tests {
             ]
         });
         assert_eq!(assistant_payload_text(&payload), "first\n\nsecond");
+    }
+
+    #[test]
+    fn transcript_scroll_reaches_the_last_entry() {
+        let mut view = ChatView {
+            transcript: (0..80)
+                .map(|index| TranscriptEntry::Assistant(format!("line {index}")))
+                .collect(),
+            ..ChatView::default()
+        };
+        let backend = ratatui::backend::TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .expect("draw transcript");
+        assert!(terminal_contains(&terminal, "line 79"));
+
+        view.scroll_transcript_up(u16::MAX);
+        terminal
+            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .expect("draw transcript top");
+        assert!(terminal_contains(&terminal, "line 0"));
+
+        view.scroll_transcript_down(u16::MAX);
+        terminal
+            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .expect("draw transcript bottom");
+        assert!(terminal_contains(&terminal, "line 79"));
+    }
+
+    fn terminal_contains(terminal: &Terminal<ratatui::backend::TestBackend>, needle: &str) -> bool {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .contains(needle)
     }
 
     #[test]
