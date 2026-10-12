@@ -1298,7 +1298,12 @@ pub fn run_tui() -> Result<(), TuiError> {
 
     let mut guard = TerminalGuard::enter()?;
     let result = run_loop(&mut guard.terminal, &mut app, &mut supervisor);
+    let session_id = app.chat.session_id.clone();
     drop(guard);
+    if let Some(session_id) = session_id {
+        println!("session: {session_id}");
+        println!("resume: /resume {session_id}");
+    }
     result
 }
 
