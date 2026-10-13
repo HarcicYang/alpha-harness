@@ -9,14 +9,17 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use alpha_kernel::Ctx;
-use alpha_module_loop::{AgentDriver, LoopError, ProviderToolsOverride, SteerMessage, SteerQueue};
+use alpha_module_loop::{
+    AgentDriver, LoopError, ModelRoute, ModelRouteOverride, ProviderToolsOverride, SteerMessage,
+    SteerQueue,
+};
 use alpha_module_permission::PermissionService;
 use alpha_module_session::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     TurnEndReason, WorkspaceRef,
 };
 use alpha_protocol::{OutboundTransport, RpcError};
-use alpha_schema::{MessageId, PermissionMode, SessionId, TurnId};
+use alpha_schema::{MessageId, PermissionMode, ReasoningLevel, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
@@ -57,6 +60,8 @@ pub struct SessionRuntime {
     pub agent: Arc<dyn AgentDriver>,
     /// Session-level provider-native tool override.
     pub provider_tools_override: Arc<ProviderToolsOverride>,
+    /// Session model and reasoning route.
+    pub model_route: Arc<ModelRouteOverride>,
 }
 
 /// Inputs used to build one session runtime.
@@ -72,6 +77,8 @@ pub struct SessionRuntimeRequest {
     pub provider: String,
     /// Model identifier.
     pub model: String,
+    /// Requested reasoning effort.
+    pub reasoning: ReasoningLevel,
     /// Recovered session capability override.
     pub provider_tools_override: Option<Vec<String>>,
     /// Queue consumed by the default loop at step boundaries.
@@ -98,6 +105,9 @@ pub struct CreateSessionRequest {
     pub provider: String,
     /// Model identifier.
     pub model: String,
+    /// Requested reasoning effort.
+    #[serde(default)]
+    pub reasoning: ReasoningLevel,
 }
 
 /// Result of creating a session.
@@ -110,6 +120,12 @@ pub struct SessionCreated {
     pub mode: PermissionMode,
     /// Workspace root.
     pub workspace: String,
+    /// Effective provider instance id or provider kind.
+    pub provider: String,
+    /// Effective model identifier.
+    pub model: String,
+    /// Effective reasoning effort.
+    pub reasoning: ReasoningLevel,
 }
 
 /// Result of attaching to a session.
@@ -136,6 +152,12 @@ pub struct SessionResumed {
     pub turn_open: bool,
     /// Number of repair events appended.
     pub repairs: usize,
+    /// Effective provider instance id or provider kind.
+    pub provider: String,
+    /// Effective model identifier.
+    pub model: String,
+    /// Effective reasoning effort.
+    pub reasoning: ReasoningLevel,
 }
 
 struct ActorSteerQueue {
@@ -201,6 +223,10 @@ enum SessionCommand {
     },
     SetCapabilities {
         provider_tools: Vec<String>,
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
+    },
+    SetRoute {
+        route: ModelRoute,
         reply: oneshot::Sender<Result<(), AgentHostError>>,
     },
 }
@@ -277,16 +303,21 @@ impl AgentHostService {
             session_id: header.id,
             workspace: workspace.clone(),
             mode: request.mode,
-            provider: request.provider,
-            model: request.model,
+            provider: request.provider.clone(),
+            model: request.model.clone(),
+            reasoning: request.reasoning,
             provider_tools_override: None,
             steer_queue: steer_queue.clone(),
         })?;
+        let route = runtime.model_route.get();
         self.spawn_actor(header, writer, runtime, steer_queue, Vec::new())?;
         Ok(SessionCreated {
             session_id,
             mode,
             workspace: workspace.root,
+            provider: route.provider,
+            model: route.model,
+            reasoning: route.reasoning,
         })
     }
 
@@ -301,6 +332,9 @@ impl AgentHostService {
                 messages: state.messages.len(),
                 turn_open: state.turn_open,
                 repairs: 0,
+                provider: state.provider.clone(),
+                model: state.model.clone(),
+                reasoning: state.reasoning,
             });
         }
         let reader = self
@@ -327,8 +361,9 @@ impl AgentHostService {
             session_id,
             workspace: header.workspace.clone(),
             mode: header.mode,
-            provider: header.provider.clone(),
-            model: header.model.clone(),
+            provider: state.provider.clone(),
+            model: state.model.clone(),
+            reasoning: state.reasoning,
             provider_tools_override: state.provider_tools_override.clone(),
             steer_queue: steer_queue.clone(),
         })?;
@@ -347,6 +382,9 @@ impl AgentHostService {
             messages: state.messages.len(),
             turn_open: state.turn_open,
             repairs,
+            provider: state.provider,
+            model: state.model,
+            reasoning: state.reasoning,
         })
     }
 
@@ -423,6 +461,25 @@ impl AgentHostService {
         actor
             .tx
             .send(SessionCommand::SetMode { mode, reply })
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+        receiver
+            .await
+            .map_err(|_| AgentHostError::ActorStopped(session_id))?
+    }
+
+    /// Change the provider, model, and reasoning route for future model steps.
+    pub async fn set_route(
+        &self,
+        session_id: SessionId,
+        route: ModelRoute,
+    ) -> Result<(), AgentHostError> {
+        let actor = self
+            .actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let (reply, receiver) = oneshot::channel();
+        actor
+            .tx
+            .send(SessionCommand::SetRoute { route, reply })
             .map_err(|_| AgentHostError::ActorStopped(session_id))?;
         receiver
             .await
@@ -1003,6 +1060,23 @@ async fn actor_loop(
                             .append(SessionEvent::CapabilitiesSet { provider_tools })
                             .map(|_| ())
                             .map_err(AgentHostError::Session);
+                        let _ = reply.send(result);
+                    }
+                    SessionCommand::SetRoute { route, reply } => {
+                        let result = writer
+                            .append(SessionEvent::RouteChanged {
+                                provider: route.provider.clone(),
+                                model: route.model.clone(),
+                                reasoning: route.reasoning,
+                            })
+                            .map_err(AgentHostError::Session)
+                            .map(|envelope| {
+                                state
+                                    .lock()
+                                    .expect("session state lock poisoned")
+                                    .apply(&envelope);
+                                runtime.model_route.set(route);
+                            });
                         let _ = reply.send(result);
                     }
                 }

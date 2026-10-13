@@ -10,7 +10,7 @@ use alpha_module_loop::ModelProvider;
 use alpha_provider_api::{
     AdapterProvider, AdapterRequirement, AuthMethodDescriptor, ModelDescriptor,
     ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind, ProviderKindError,
-    ProviderKindRegistry, required_adapter, required_credential_text,
+    ProviderKindRegistry, ReasoningLevel, required_adapter, required_credential_text,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,8 @@ impl ProviderKind for DeepSeekProviderKind {
                 interactive: true,
             }],
             models: vec![
+                model("deepseek-flash", 1_000_000, 384_000, true),
+                model("deepseek-v4-pro", 1_000_000, 384_000, true),
                 model("deepseek-chat", 128_000, 8_192, true),
                 model("deepseek-reasoner", 128_000, 8_192, true),
             ],
@@ -140,6 +142,12 @@ fn model(id: &str, context_window: u64, max_tokens: u64, web_search: bool) -> Mo
         context_window,
         max_tokens,
         reasoning: true,
+        reasoning_levels: vec![
+            ReasoningLevel::Auto,
+            ReasoningLevel::Off,
+            ReasoningLevel::High,
+            ReasoningLevel::Max,
+        ],
         provider_tools: if web_search {
             vec!["web_search".to_owned()]
         } else {

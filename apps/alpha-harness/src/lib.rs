@@ -22,8 +22,8 @@ use alpha_module_credential::{CredentialConfig, CredentialModule, CredentialStor
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
 use alpha_module_loop::{
-    AgentDriver, LoopConfig, LoopModule, ModelProvider, ProviderRegistry, ProviderToolsOverride,
-    SteerQueue,
+    AgentDriver, LoopConfig, LoopModule, ModelProvider, ModelRoute, ModelRouteOverride,
+    ProviderRegistry, ProviderToolsOverride, SteerQueue,
 };
 use alpha_module_permission::{
     ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
@@ -52,6 +52,7 @@ use alpha_protocol::{
 use alpha_provider_api::{
     ApiAdapterRegistry, DynamicProvider, ProviderApiModule, ProviderBuildContext, ProviderInstance,
     ProviderInstanceRegistry, ProviderKindRegistry, build_provider_instance, default_model_id,
+    discover_models, resolve_credential, resolve_provider_choice,
 };
 use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
 use futures::future::BoxFuture;
@@ -319,10 +320,14 @@ impl AppSessionRuntimeFactory {
 
 impl SessionRuntimeFactory for AppSessionRuntimeFactory {
     fn build(&self, request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError> {
-        let (provider, model) = build_session_provider(&self.root, &request)?;
+        let model_route = Arc::new(ModelRouteOverride::default());
+        let provider = build_session_provider(&self.root, &request, model_route.clone())?;
         let location = self.location_context(&request.workspace)?;
         let session_ctx = location
             .child()
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        session_ctx
+            .provide::<ModelRouteOverride>(model_route.clone())
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         session_ctx
             .provide::<dyn SteerQueue>(request.steer_queue.clone())
@@ -369,7 +374,7 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
                 &session_ctx,
                 &LoopConfig {
                     provider: "session".to_owned(),
-                    model,
+                    model: model_route.get().model,
                     ..LoopConfig::default()
                 },
             )
@@ -381,6 +386,7 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
             ctx: session_ctx,
             agent,
             provider_tools_override,
+            model_route,
         })
     }
 }
@@ -426,38 +432,31 @@ impl ApprovalChannel for ProtocolApprovalChannel {
 fn build_session_provider(
     root: &Ctx,
     request: &SessionRuntimeRequest,
-) -> Result<(Arc<dyn ModelProvider>, String), AgentHostError> {
-    let instances = root
-        .require::<ProviderInstanceRegistry>()
-        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-    let requested = request.provider.trim();
-    let instance = if requested.is_empty() {
+    model_route: Arc<ModelRouteOverride>,
+) -> Result<Arc<dyn ModelProvider>, AgentHostError> {
+    let (instance, kind) = if request.provider.trim().is_empty() {
+        let instances = root
+            .require::<ProviderInstanceRegistry>()
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         let default = root
             .get::<dyn ProviderConfigStore>()
             .and_then(|store| store.default_instance());
-        default
-            .and_then(|id| instances.get(&id))
-            .or_else(|| instances.list().into_iter().next())
+        if let Some(instance) = default.and_then(|id| instances.get(&id)) {
+            let kinds = root
+                .require::<ProviderKindRegistry>()
+                .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+            let kind = kinds.get(&instance.kind).ok_or_else(|| {
+                AgentHostError::Runtime(format!("provider kind `{}` is missing", instance.kind))
+            })?;
+            (instance, kind)
+        } else {
+            resolve_provider_choice(root, "")
+                .map_err(|error| AgentHostError::Runtime(error.to_string()))?
+        }
     } else {
-        instances.get(requested).or_else(|| {
-            instances
-                .list()
-                .into_iter()
-                .find(|instance| instance.kind == requested)
-        })
-    }
-    .ok_or_else(|| {
-        AgentHostError::Runtime(format!(
-            "provider instance `{}` is not configured",
-            request.provider
-        ))
-    })?;
-    let kinds = root
-        .require::<ProviderKindRegistry>()
-        .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-    let kind = kinds.get(&instance.kind).ok_or_else(|| {
-        AgentHostError::Runtime(format!("provider kind `{}` is missing", instance.kind))
-    })?;
+        resolve_provider_choice(root, &request.provider)
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?
+    };
     let model = if request.model.trim().is_empty() {
         default_model_id(&instance, kind.as_ref()).ok_or_else(|| {
             AgentHostError::Runtime(format!("provider kind `{}` has no models", instance.kind))
@@ -467,9 +466,17 @@ fn build_session_provider(
     };
     build_provider_instance(root, &instance.id)
         .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-    let provider: Arc<dyn ModelProvider> =
-        Arc::new(DynamicProvider::new(root.clone(), instance.id));
-    Ok((provider, model))
+    model_route.set(ModelRoute::new(
+        instance.id.clone(),
+        model,
+        request.reasoning,
+    ));
+    let provider: Arc<dyn ModelProvider> = Arc::new(DynamicProvider::new_routed(
+        root.clone(),
+        instance.id,
+        model_route,
+    ));
+    Ok(provider)
 }
 
 /// Approval channel that prompts on the terminal.
@@ -1301,6 +1308,35 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
             }
         }
     });
+    let router = router.method("provider.list_models", {
+        let kinds = kind_registry.clone();
+        let instances = instance_registry.clone();
+        let ctx = ctx.clone();
+        move |params: Value| {
+            let kinds = kinds.clone();
+            let instances = instances.clone();
+            let ctx = ctx.clone();
+            async move {
+                let params: InstanceIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                let instance = instances
+                    .get(&params.id)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider instance"))?;
+                let kind = kinds
+                    .get(&instance.kind)
+                    .ok_or_else(|| RpcError::invalid_params("unknown provider kind"))?;
+                let credential = resolve_credential(&ctx, &instance)
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                let http = ctx
+                    .require::<dyn HttpClient>()
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                let models = discover_models(&instance, kind.as_ref(), http, credential)
+                    .await
+                    .map_err(|error| RpcError::internal(error.to_string()))?;
+                serde_json::to_value(models).map_err(|error| RpcError::internal(error.to_string()))
+            }
+        }
+    });
     let router = router.method("provider.create_instance", {
         let kinds = kind_registry.clone();
         let instances = instance_registry.clone();
@@ -1439,6 +1475,30 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                 store
                     .set_default_instance(params.id)
                     .map_err(|error| RpcError::internal(error.to_string()))?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let router = router.method("provider.set_default_model", {
+        let instances = instance_registry.clone();
+        let config_store = config_store.clone();
+        move |params: Value| {
+            let instances = instances.clone();
+            let config_store = config_store.clone();
+            async move {
+                let params: DefaultModelParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                if instances.get(&params.id).is_none() {
+                    return Err(RpcError::invalid_params("unknown provider instance"));
+                }
+                let store = config_store
+                    .ok_or_else(|| RpcError::internal("provider config store is unavailable"))?;
+                if !store
+                    .set_default_model(&params.id, &params.model)
+                    .map_err(|error| RpcError::internal(error.to_string()))?
+                {
+                    return Err(RpcError::invalid_params("unknown provider instance"));
+                }
                 Ok(json!({ "ok": true }))
             }
         }
@@ -1670,6 +1730,23 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
             }
         }
     });
+    let router = router.method("session.set_route", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SetRouteParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.set_route(
+                    params.session_id,
+                    ModelRoute::new(params.provider, params.model, params.reasoning),
+                )
+                .await
+                .map_err(agent_host_rpc_error)?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
     let router = router.method("session.set_capabilities", {
         let host = host.clone();
         move |params: Value| {
@@ -1772,6 +1849,12 @@ struct DefaultInstanceParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct DefaultModelParams {
+    id: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct AuthInstanceParams {
     id: String,
     secret: String,
@@ -1831,6 +1914,16 @@ struct SessionIdParams {
 struct SetModeParams {
     session_id: SessionId,
     mode: PermissionMode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetRouteParams {
+    session_id: SessionId,
+    provider: String,
+    model: String,
+    #[serde(default)]
+    reasoning: alpha_schema::ReasoningLevel,
 }
 
 #[derive(Debug, Deserialize)]

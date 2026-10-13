@@ -7,15 +7,17 @@ use std::sync::{Arc, RwLock};
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_module_credential::CredentialStore;
-use alpha_module_http::HttpClient;
+use alpha_module_http::{HttpClient, HttpRequest};
 use alpha_module_loop::{
-    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
-    ProviderCapabilities, ProviderError, ToolCall, ToolDefinition,
+    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
+    ModelRouteOverride, ProviderCapabilities, ProviderError, ToolCall, ToolDefinition,
 };
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use alpha_schema::ReasoningLevel;
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "provider.api";
@@ -55,9 +57,16 @@ pub struct ModelDescriptor {
     pub max_tokens: u64,
     /// Whether reasoning controls are supported.
     pub reasoning: bool,
+    /// Selectable reasoning levels for this model.
+    #[serde(default = "default_reasoning_levels")]
+    pub reasoning_levels: Vec<ReasoningLevel>,
     /// Provider-native tools supported by the model.
     #[serde(default)]
     pub provider_tools: Vec<String>,
+}
+
+fn default_reasoning_levels() -> Vec<ReasoningLevel> {
+    vec![ReasoningLevel::Auto]
 }
 
 /// Provider kind metadata consumed by the front.
@@ -302,6 +311,8 @@ pub struct AdapterRequest {
     pub headers: BTreeMap<String, String>,
     /// Model id.
     pub model: String,
+    /// Requested reasoning effort.
+    pub reasoning: ReasoningLevel,
     /// Provider-facing history.
     pub messages: Vec<ChatMessage>,
     /// Tool definitions.
@@ -371,6 +382,7 @@ impl AdapterProvider {
             api_key: self.api_key.clone(),
             headers: self.headers.clone(),
             model: request.model,
+            reasoning: request.reasoning,
             messages: request.messages,
             tools: request.tools,
             provider_tools,
@@ -423,6 +435,40 @@ pub fn resolve_provider_instance(
     })
 }
 
+/// Resolve a configured provider choice.
+///
+/// An empty choice uses the first registered instance.
+/// An exact instance id wins; otherwise the first instance of that kind is used.
+pub fn resolve_provider_choice(
+    root: &Ctx,
+    requested: &str,
+) -> Result<(ProviderInstance, Arc<dyn ProviderKind>), ProviderError> {
+    let instances = root
+        .require::<ProviderInstanceRegistry>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    let requested = requested.trim();
+    let instance = if requested.is_empty() {
+        instances.list().into_iter().next()
+    } else {
+        instances.get(requested).or_else(|| {
+            instances
+                .list()
+                .into_iter()
+                .find(|instance| instance.kind == requested)
+        })
+    }
+    .ok_or_else(|| {
+        ProviderError::Request(format!("provider instance `{requested}` is not configured"))
+    })?;
+    let kinds = root
+        .require::<ProviderKindRegistry>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    let kind = kinds.get(&instance.kind).ok_or_else(|| {
+        ProviderError::Request(format!("provider kind `{}` is missing", instance.kind))
+    })?;
+    Ok((instance, kind))
+}
+
 /// Build a model provider from the current provider instance state.
 pub fn build_provider_instance(
     root: &Ctx,
@@ -446,19 +492,7 @@ pub fn build_provider_instance(
     let http = root
         .require::<dyn HttpClient>()
         .map_err(|error| ProviderError::Request(error.to_string()))?;
-    let credential = match instance.auth_ref.as_deref() {
-        Some(auth_ref) => {
-            let store = root
-                .require::<dyn CredentialStore>()
-                .map_err(|error| ProviderError::Request(error.to_string()))?;
-            Some(
-                store
-                    .read(auth_ref)
-                    .map_err(|error| ProviderError::Request(error.to_string()))?,
-            )
-        }
-        None => None,
-    };
+    let credential = resolve_credential(root, &instance)?;
     kind.build(
         &instance,
         &ProviderBuildContext {
@@ -470,15 +504,217 @@ pub fn build_provider_instance(
     .map_err(|error| ProviderError::Request(error.to_string()))
 }
 
+/// Resolve the stored credential for one provider instance.
+pub fn resolve_credential(
+    root: &Ctx,
+    instance: &ProviderInstance,
+) -> Result<Option<Vec<u8>>, ProviderError> {
+    let Some(auth_ref) = instance.auth_ref.as_deref() else {
+        return Ok(None);
+    };
+    let store = root
+        .require::<dyn CredentialStore>()
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    store
+        .read(auth_ref)
+        .map(Some)
+        .map_err(|error| ProviderError::Request(error.to_string()))
+}
+
+/// Fetch the provider's current model catalog.
+pub async fn discover_models(
+    instance: &ProviderInstance,
+    kind: &dyn ProviderKind,
+    client: Arc<dyn HttpClient>,
+    credential: Option<Vec<u8>>,
+) -> Result<Vec<ModelDescriptor>, ProviderError> {
+    let descriptor = kind.descriptor();
+    let config = instance.config.as_object();
+    let base_url = config
+        .and_then(|config| config.get("base_url"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProviderError::Request(format!(
+                "provider instance `{}` has no base_url",
+                instance.id
+            ))
+        })?;
+    let credential = credential
+        .map(|value| {
+            String::from_utf8(value).map_err(|error| ProviderError::Request(error.to_string()))
+        })
+        .transpose()?;
+    let mut request = match instance.kind.as_str() {
+        "anthropic-messages" => {
+            let url = anthropic_models_endpoint(base_url);
+            let mut request = HttpRequest::get(url).with_header("anthropic-version", "2023-06-01");
+            if let Some(credential) = credential.as_deref() {
+                request = request.with_header("x-api-key", credential);
+            }
+            request
+        }
+        "deepseek" => {
+            let url = deepseek_models_endpoint(base_url);
+            let mut request = HttpRequest::get(url);
+            if let Some(credential) = credential.as_deref() {
+                request = request.with_header("authorization", format!("Bearer {credential}"));
+            }
+            request
+        }
+        _ => {
+            let url = format!("{}/models", base_url.trim_end_matches('/'));
+            let mut request = HttpRequest::get(url);
+            if let Some(credential) = credential.as_deref() {
+                request = request.with_header("authorization", format!("Bearer {credential}"));
+            }
+            request
+        }
+    };
+    if let Some(headers) = config
+        .and_then(|config| config.get("headers"))
+        .and_then(Value::as_object)
+    {
+        for (name, value) in headers {
+            if let Some(value) = value.as_str() {
+                request = request.with_header(name, value);
+            }
+        }
+    }
+    let response = client
+        .request(request)
+        .await
+        .map_err(|error| ProviderError::Request(error.to_string()))?;
+    if !response.is_success() {
+        return Err(ProviderError::Request(format!(
+            "model catalog status {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        )));
+    }
+    let value: Value = serde_json::from_slice(&response.body)
+        .map_err(|error| ProviderError::Request(format!("invalid model catalog: {error}")))?;
+    let discovered = model_entries(&value);
+    if discovered.is_empty() {
+        return Err(ProviderError::Request(
+            "model catalog returned no models".to_owned(),
+        ));
+    }
+    let static_models = descriptor.models;
+    let fallback_adapter = config
+        .and_then(|config| config.get("adapter"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| static_models.first().map(|model| model.adapter.clone()))
+        .or_else(|| {
+            descriptor
+                .adapters
+                .first()
+                .map(|adapter| adapter.key.clone())
+        })
+        .ok_or_else(|| ProviderError::Request("provider has no adapter".to_owned()))?;
+    let reasoning = static_models.iter().any(|model| model.reasoning);
+    let mut seen = BTreeMap::new();
+    for (id, name) in discovered {
+        if seen.contains_key(&id) {
+            continue;
+        }
+        let inferred_reasoning = reasoning || model_id_is_reasoning(&id);
+        let model = static_models
+            .iter()
+            .find(|model| model.id == id)
+            .cloned()
+            .map(|mut model| {
+                if let Some(name) = name.clone() {
+                    model.name = name;
+                }
+                model
+            })
+            .unwrap_or_else(|| ModelDescriptor {
+                id: id.clone(),
+                name: name.unwrap_or_else(|| id.clone()),
+                adapter: fallback_adapter.clone(),
+                context_window: 128_000,
+                max_tokens: 8_192,
+                reasoning: inferred_reasoning,
+                reasoning_levels: if inferred_reasoning {
+                    ReasoningLevel::ALL.to_vec()
+                } else {
+                    vec![ReasoningLevel::Auto]
+                },
+                provider_tools: Vec::new(),
+            });
+        seen.insert(id, model);
+    }
+    Ok(seen.into_values().collect())
+}
+
+fn model_id_is_reasoning(id: &str) -> bool {
+    id.starts_with("gpt-5")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+        || id.contains("reason")
+        || id.contains("thinking")
+}
+
+fn anthropic_models_endpoint(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if base.ends_with("/v1") {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
+fn deepseek_models_endpoint(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let base = base.strip_suffix("/anthropic").unwrap_or(base);
+    format!("{base}/models")
+}
+
+fn model_entries(value: &Value) -> Vec<(String, Option<String>)> {
+    let entries = value
+        .get("data")
+        .or_else(|| value.get("models"))
+        .and_then(Value::as_array)
+        .or_else(|| value.as_array());
+    let Some(entries) = entries else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            if let Some(id) = entry.as_str() {
+                return Some((id.to_owned(), None));
+            }
+            let id = entry.get("id").and_then(Value::as_str)?;
+            let name = entry
+                .get("display_name")
+                .or_else(|| entry.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            Some((id.to_owned(), name))
+        })
+        .collect()
+}
+
 /// Apply user metadata overrides to a provider kind model catalog.
 pub fn effective_model_catalog(
     instance: &ProviderInstance,
     kind: &dyn ProviderKind,
 ) -> Vec<ModelDescriptor> {
+    effective_models(instance, &kind.descriptor().models)
+}
+
+/// Apply user metadata overrides to a model list.
+pub fn effective_models(
+    instance: &ProviderInstance,
+    models: &[ModelDescriptor],
+) -> Vec<ModelDescriptor> {
     let overrides = instance.model_overrides.as_object();
-    kind.descriptor()
-        .models
-        .into_iter()
+    models
+        .iter()
+        .cloned()
         .map(|mut model| {
             let Some(override_value) = overrides
                 .and_then(|overrides| overrides.get(&model.id))
@@ -500,8 +736,23 @@ pub fn effective_model_catalog(
             if let Some(max_tokens) = override_value.get("max_tokens").and_then(Value::as_u64) {
                 model.max_tokens = max_tokens;
             }
-            if let Some(reasoning) = override_value.get("reasoning").and_then(Value::as_bool) {
+            let explicit_reasoning = override_value.get("reasoning").and_then(Value::as_bool);
+            if let Some(reasoning) = explicit_reasoning {
                 model.reasoning = reasoning;
+                if reasoning && model.reasoning_levels.as_slice() == [ReasoningLevel::Auto] {
+                    model.reasoning_levels = ReasoningLevel::ALL.to_vec();
+                }
+            }
+            if let Some(levels) = override_value
+                .get("reasoning_levels")
+                .or_else(|| override_value.get("thinking_levels"))
+                .cloned()
+                .and_then(|value| serde_json::from_value::<Vec<ReasoningLevel>>(value).ok())
+            {
+                if explicit_reasoning.is_none() {
+                    model.reasoning = levels.iter().any(|level| *level != ReasoningLevel::Auto);
+                }
+                model.reasoning_levels = levels;
             }
             if let Some(tools) = override_value
                 .get("provider_tools")
@@ -536,6 +787,7 @@ pub fn default_model_id(instance: &ProviderInstance, kind: &dyn ProviderKind) ->
 pub struct DynamicProvider {
     root: Ctx,
     instance_id: String,
+    route: Option<Arc<ModelRouteOverride>>,
 }
 
 impl DynamicProvider {
@@ -544,13 +796,55 @@ impl DynamicProvider {
         Self {
             root,
             instance_id: instance_id.into(),
+            route: None,
         }
+    }
+
+    /// Create a dynamic provider whose instance and model follow a session route.
+    pub fn new_routed(
+        root: Ctx,
+        instance_id: impl Into<String>,
+        route: Arc<ModelRouteOverride>,
+    ) -> Self {
+        Self {
+            root,
+            instance_id: instance_id.into(),
+            route: Some(route),
+        }
+    }
+
+    fn current_route(&self) -> ModelRoute {
+        self.route
+            .as_ref()
+            .map(|route| route.get())
+            .unwrap_or_else(|| ModelRoute::new(self.instance_id.clone(), "", ReasoningLevel::Auto))
+    }
+
+    fn prepare_request(
+        &self,
+        mut request: CompletionRequest,
+    ) -> Result<(Arc<dyn ModelProvider>, CompletionRequest), ProviderError> {
+        let route = self.current_route();
+        let (instance, kind) = resolve_provider_choice(&self.root, &route.provider)?;
+        let model = if route.model.trim().is_empty() {
+            default_model_id(&instance, kind.as_ref()).ok_or_else(|| {
+                ProviderError::Request(format!("provider kind `{}` has no models", instance.kind))
+            })?
+        } else {
+            route.model
+        };
+        request.model = model;
+        request.reasoning = route.reasoning;
+        let provider = build_provider_instance(&self.root, &instance.id)?;
+        Ok((provider, request))
     }
 }
 
 impl ModelProvider for DynamicProvider {
     fn capabilities(&self) -> ProviderCapabilities {
-        build_provider_instance(&self.root, &self.instance_id)
+        let route = self.current_route();
+        resolve_provider_choice(&self.root, &route.provider)
+            .and_then(|(instance, _)| build_provider_instance(&self.root, &instance.id))
             .map(|provider| provider.capabilities())
             .unwrap_or_default()
     }
@@ -559,8 +853,8 @@ impl ModelProvider for DynamicProvider {
         &self,
         request: CompletionRequest,
     ) -> BoxFuture<'_, Result<CompletionResponse, ProviderError>> {
-        let provider = match build_provider_instance(&self.root, &self.instance_id) {
-            Ok(provider) => provider,
+        let (provider, request) = match self.prepare_request(request) {
+            Ok(prepared) => prepared,
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         Box::pin(async move { provider.complete(request).await })
@@ -570,8 +864,8 @@ impl ModelProvider for DynamicProvider {
         self: Arc<Self>,
         request: CompletionRequest,
     ) -> BoxStream<'static, Result<CompletionChunk, ProviderError>> {
-        match build_provider_instance(&self.root, &self.instance_id) {
-            Ok(provider) => provider.stream(request),
+        match self.prepare_request(request) {
+            Ok((provider, request)) => provider.stream(request),
             Err(error) => Box::pin(futures::stream::iter(vec![Err(error)])),
         }
     }

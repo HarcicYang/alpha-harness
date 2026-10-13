@@ -19,9 +19,9 @@ pub use agent::{
     SteerQueue, TurnOutcome,
 };
 pub use provider::{
-    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
-    ProviderCapabilities, ProviderError, ProviderRegistry, ProviderToolsOverride, RegistryError,
-    ToolCall, ToolCallDelta, ToolDefinition,
+    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
+    ModelRouteOverride, ProviderCapabilities, ProviderError, ProviderRegistry,
+    ProviderToolsOverride, RegistryError, ToolCall, ToolCallDelta, ToolDefinition,
 };
 
 /// Configuration for the default loop module.

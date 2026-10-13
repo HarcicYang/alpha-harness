@@ -84,6 +84,8 @@ pub trait ProviderConfigStore: Send + Sync + 'static {
     fn default_instance(&self) -> Option<String>;
     /// Set the default provider instance id.
     fn set_default_instance(&self, id: Option<String>) -> Result<(), ProviderConfigError>;
+    /// Set the default model for one provider instance.
+    fn set_default_model(&self, id: &str, model: &str) -> Result<bool, ProviderConfigError>;
 }
 
 /// TOML-backed provider config store.
@@ -176,6 +178,27 @@ impl ProviderConfigStore for TomlProviderConfigStore {
         let mut file = self.read_file()?;
         file.providers.default_instance = id;
         self.write_file(&file)
+    }
+
+    fn set_default_model(&self, id: &str, model: &str) -> Result<bool, ProviderConfigError> {
+        let mut file = self.read_file()?;
+        let Some(instance) = file.providers.instances.get_mut(id) else {
+            return Ok(false);
+        };
+        let overrides = instance.model_overrides.as_table_mut().ok_or_else(|| {
+            ProviderConfigError::Instance(format!(
+                "model_overrides for provider instance `{id}` is not a table"
+            ))
+        })?;
+        overrides.insert("default".to_owned(), toml::Value::String(model.to_owned()));
+        let overrides = serde_json::to_value(&*overrides)
+            .map_err(|error| ProviderConfigError::Instance(error.to_string()))?;
+        self.write_file(&file)?;
+        if let Some(mut runtime) = self.registry.get(id) {
+            runtime.model_overrides = overrides;
+            self.registry.upsert(runtime);
+        }
+        Ok(true)
     }
 }
 

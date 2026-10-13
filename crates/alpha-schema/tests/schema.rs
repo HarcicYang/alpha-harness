@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use alpha_schema::{
-    EventEnvelope, MessageId, PermissionMode, Seq, SessionId, Timestamp, ToolCallId,
+    EventEnvelope, MessageId, PermissionMode, ReasoningLevel, Seq, SessionId, Timestamp, ToolCallId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,4 +58,17 @@ fn permission_modes_serialize_as_lowercase() {
     );
     assert!(PermissionMode::from_str("nope").is_err());
     assert_eq!(PermissionMode::default(), PermissionMode::Auto);
+}
+
+#[test]
+fn reasoning_levels_round_trip_with_stable_names() {
+    assert_eq!(
+        serde_json::to_string(&ReasoningLevel::XHigh).expect("serialize"),
+        "\"xhigh\""
+    );
+    assert_eq!(
+        serde_json::from_str::<ReasoningLevel>("\"max\"").expect("parse"),
+        ReasoningLevel::Max
+    );
+    assert_eq!(ReasoningLevel::default(), ReasoningLevel::Auto);
 }

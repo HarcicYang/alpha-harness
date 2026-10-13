@@ -10,7 +10,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use alpha_front_client::ConnectionEvent;
 use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
 use alpha_protocol::{Id, Request};
-use alpha_provider_api::{ProviderDescriptor, ProviderInstance};
+use alpha_provider_api::{
+    ModelDescriptor, ProviderDescriptor, ProviderInstance, ReasoningLevel, effective_models,
+};
 use alpha_schema::PermissionMode;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind,
@@ -22,11 +24,20 @@ use crossterm::terminal::{
 use pulldown_cmark::{Event as MarkdownEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use serde_json::{Value, json};
+
+const COLOR_BRAND: Color = Color::Rgb(90, 221, 225);
+const COLOR_ACCENT: Color = Color::Rgb(97, 192, 224);
+const COLOR_BRIGHT: Color = Color::Rgb(184, 255, 254);
+const COLOR_TEXT: Color = Color::Rgb(215, 255, 255);
+const COLOR_MUTED: Color = Color::Rgb(65, 128, 176);
+const COLOR_SUCCESS: Color = Color::Rgb(93, 227, 144);
+const COLOR_WARNING: Color = Color::Rgb(82, 171, 237);
+const COLOR_ERROR: Color = Color::Rgb(255, 48, 70);
 
 /// TUI runtime failure.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +69,8 @@ pub struct ProviderView {
     pub kinds: Vec<ProviderDescriptor>,
     /// Persisted provider instances.
     pub instances: Vec<ProviderInstance>,
+    /// Dynamically discovered model catalogs.
+    pub model_cache: BTreeMap<String, Vec<ModelDescriptor>>,
     /// Selected provider kind index.
     pub selected_kind: usize,
     /// Selected instance index within the current kind.
@@ -149,6 +162,10 @@ pub struct ChatView {
     pub provider: String,
     /// Model used for new sessions.
     pub model: String,
+    /// Reasoning effort used for new sessions.
+    pub reasoning: ReasoningLevel,
+    /// Effective permission mode.
+    pub mode: PermissionMode,
     /// Tool names keyed by durable call identity.
     tool_names: BTreeMap<String, String>,
     /// Distance from the transcript bottom after manual scrolling.
@@ -190,6 +207,7 @@ impl ChatView {
                     "mode": "auto",
                     "provider": self.provider,
                     "model": self.model,
+                    "reasoning": self.reasoning,
                 })),
             )
             .map_err(|error| TuiError::Protocol(error.to_string()))?;
@@ -201,6 +219,26 @@ impl ChatView {
             return Err(TuiError::Protocol(
                 "session.create returned no session id".to_owned(),
             ));
+        }
+        if let Some(provider) = created.get("provider").and_then(Value::as_str) {
+            self.provider = provider.to_owned();
+        }
+        if let Some(model) = created.get("model").and_then(Value::as_str) {
+            self.model = model.to_owned();
+        }
+        if let Some(reasoning) = created
+            .get("reasoning")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            self.reasoning = reasoning;
+        }
+        if let Some(mode) = created
+            .get("mode")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            self.mode = mode;
         }
         self.status = Some("session ready".to_owned());
         Ok(())
@@ -230,6 +268,26 @@ impl ChatView {
             .request("session.resume", Some(json!({ "sessionId": session_id })))
             .map_err(|error| TuiError::Protocol(error.to_string()))?;
         self.session_id = Some(session_id.to_string());
+        if let Some(provider) = resumed.get("provider").and_then(Value::as_str) {
+            self.provider = provider.to_owned();
+        }
+        if let Some(model) = resumed.get("model").and_then(Value::as_str) {
+            self.model = model.to_owned();
+        }
+        if let Some(reasoning) = resumed
+            .get("reasoning")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            self.reasoning = reasoning;
+        }
+        if let Some(mode) = resumed
+            .get("mode")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            self.mode = mode;
+        }
         self.transcript.clear();
         self.invalidate_transcript();
         self.streaming_assistant = None;
@@ -266,7 +324,43 @@ impl ChatView {
                 Some(json!({ "sessionId": session_id, "mode": mode })),
             )
             .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        self.mode = mode;
         self.status = Some(format!("mode: {mode}"));
+        Ok(())
+    }
+
+    fn set_route(
+        &mut self,
+        supervisor: &mut CoreSupervisor,
+        provider: String,
+        model: String,
+        reasoning: ReasoningLevel,
+    ) -> Result<(), TuiError> {
+        if provider.trim().is_empty() || model.trim().is_empty() {
+            return Err(TuiError::Protocol(
+                "provider and model must not be empty".to_owned(),
+            ));
+        }
+        if let Some(session_id) = &self.session_id {
+            supervisor
+                .request(
+                    "session.set_route",
+                    Some(json!({
+                        "sessionId": session_id,
+                        "provider": provider,
+                        "model": model,
+                        "reasoning": reasoning,
+                    })),
+                )
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        }
+        self.provider = provider;
+        self.model = model;
+        self.reasoning = reasoning;
+        self.status = Some(format!(
+            "route: {}/{}  think:{}",
+            self.provider, self.model, self.reasoning
+        ));
         Ok(())
     }
 
@@ -472,9 +566,32 @@ impl ChatView {
                 self.status = Some("turn finished".to_owned());
             }
             "mode_changed" => {
-                if let Some(mode) = payload.get("mode").and_then(Value::as_str) {
+                if let Ok(mode) =
+                    serde_json::from_value(payload.get("mode").cloned().unwrap_or(Value::Null))
+                {
+                    self.mode = mode;
                     self.status = Some(format!("mode: {mode}"));
                 }
+            }
+            "route_changed" => {
+                if let Some(provider) = payload.get("provider").and_then(Value::as_str) {
+                    self.provider = provider.to_owned();
+                }
+                if let Some(model) = payload.get("model").and_then(Value::as_str) {
+                    self.model = model.to_owned();
+                }
+                if let Ok(reasoning) = serde_json::from_value(
+                    payload
+                        .get("reasoning")
+                        .cloned()
+                        .unwrap_or(Value::String("auto".to_owned())),
+                ) {
+                    self.reasoning = reasoning;
+                }
+                self.status = Some(format!(
+                    "route: {}/{}  think:{}",
+                    self.provider, self.model, self.reasoning
+                ));
             }
             "steer_queued" => self.status = Some("steer queued".to_owned()),
             "steer_injected" => self.status = Some("steer injected".to_owned()),
@@ -641,23 +758,21 @@ impl MarkdownFormat {
         let mut style = Style::default();
         if let Some(level) = self.heading {
             style = style.fg(match level {
-                HeadingLevel::H1 => Color::Cyan,
-                HeadingLevel::H2 => Color::LightBlue,
-                HeadingLevel::H3 => Color::White,
-                HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6 => Color::Gray,
+                HeadingLevel::H1 => COLOR_BRIGHT,
+                HeadingLevel::H2 => COLOR_BRAND,
+                HeadingLevel::H3 => COLOR_TEXT,
+                HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6 => COLOR_MUTED,
             });
             style = style.add_modifier(Modifier::BOLD);
         }
         if self.quote {
-            style = style.fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+            style = style.fg(COLOR_MUTED).add_modifier(Modifier::ITALIC);
         }
         if self.code {
-            style = style.fg(Color::Green);
+            style = style.fg(COLOR_SUCCESS);
         }
         if self.link {
-            style = style
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::UNDERLINED);
+            style = style.fg(COLOR_WARNING).add_modifier(Modifier::UNDERLINED);
         }
         if self.bold {
             style = style.add_modifier(Modifier::BOLD);
@@ -774,7 +889,7 @@ impl MarkdownRenderer {
                 if let Some(url) = self.link_targets.pop()
                     && !url.is_empty()
                 {
-                    self.append_styled(&format!(" ({url})"), Style::default().fg(Color::DarkGray));
+                    self.append_styled(&format!(" ({url})"), Style::default().fg(COLOR_MUTED));
                 }
             }
             TagEnd::Image => self.format.italic = false,
@@ -819,7 +934,7 @@ impl MarkdownRenderer {
         }
         if !prefix.is_empty() {
             self.current
-                .push(Span::styled(prefix, Style::default().fg(Color::DarkGray)));
+                .push(Span::styled(prefix, Style::default().fg(COLOR_MUTED)));
         }
     }
 
@@ -877,7 +992,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
                 renderer.flush_line();
                 renderer
                     .current
-                    .push(Span::styled("---", Style::default().fg(Color::DarkGray)));
+                    .push(Span::styled("---", Style::default().fg(COLOR_MUTED)));
                 renderer.blank_line();
             }
             MarkdownEvent::InlineMath(text) | MarkdownEvent::DisplayMath(text) => {
@@ -899,7 +1014,7 @@ fn assistant_transcript_lines(text: &str) -> Vec<Line<'static>> {
         let mut spans = vec![Span::styled(
             "alpha: ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(COLOR_BRAND)
                 .add_modifier(Modifier::BOLD),
         )];
         spans.append(&mut first.spans);
@@ -967,18 +1082,179 @@ enum Screen {
     Providers,
 }
 
+fn model_choices(view: &ProviderView) -> Vec<ModelChoice> {
+    let mut choices = Vec::new();
+    for instance in view.instances.iter().filter(|instance| !instance.disabled) {
+        let Some(kind) = view.kinds.iter().find(|kind| kind.kind == instance.kind) else {
+            continue;
+        };
+        let mut models = view
+            .model_cache
+            .get(&instance.id)
+            .cloned()
+            .unwrap_or_else(|| effective_models(instance, &kind.models));
+        let default_model = instance
+            .model_overrides
+            .get("default")
+            .and_then(Value::as_str);
+        models.sort_by_key(|model| Some(model.id.as_str()) != default_model);
+        for model in models {
+            choices.push(ModelChoice {
+                provider: instance.id.clone(),
+                provider_name: kind.name.clone(),
+                model: model.id,
+                model_name: model.name,
+                reasoning_levels: if model.reasoning {
+                    model.reasoning_levels
+                } else {
+                    vec![ReasoningLevel::Auto]
+                },
+            });
+        }
+    }
+    choices
+}
+
+fn current_model_choice<'a>(
+    choices: &'a [ModelChoice],
+    provider: &str,
+    model: &str,
+) -> Option<&'a ModelChoice> {
+    choices
+        .iter()
+        .find(|choice| choice.provider == provider && choice.model == model)
+}
+
+fn supported_reasoning_levels(
+    choices: &[ModelChoice],
+    provider: &str,
+    model: &str,
+) -> Vec<ReasoningLevel> {
+    current_model_choice(choices, provider, model)
+        .map(|choice| choice.reasoning_levels.clone())
+        .unwrap_or_else(|| vec![ReasoningLevel::Auto])
+}
+
+fn resolve_model_selection(
+    choices: &[ModelChoice],
+    current_provider: &str,
+    target: &str,
+) -> Option<ModelChoice> {
+    let target = target.trim();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(choice) = choices
+        .iter()
+        .find(|choice| format!("{}/{}", choice.provider, choice.model) == target)
+        .or_else(|| {
+            choices
+                .iter()
+                .find(|choice| choice.provider == current_provider && choice.model == target)
+        })
+        .or_else(|| {
+            let mut matches = choices.iter().filter(|choice| choice.model == target);
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        })
+    {
+        return Some(choice.clone());
+    }
+
+    let explicit = choices.iter().find_map(|choice| {
+        target
+            .strip_prefix(&format!("{}/", choice.provider))
+            .map(|model| (choice.provider.clone(), model.to_owned()))
+    });
+    let (provider, model) = explicit.unwrap_or_else(|| {
+        let provider = if choices
+            .iter()
+            .any(|choice| choice.provider == current_provider)
+        {
+            current_provider.to_owned()
+        } else {
+            choices
+                .first()
+                .map(|choice| choice.provider.clone())
+                .unwrap_or_default()
+        };
+        (provider, target.to_owned())
+    });
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    let provider_name = choices
+        .iter()
+        .find(|choice| choice.provider == provider)
+        .map(|choice| choice.provider_name.clone())
+        .unwrap_or_else(|| provider.clone());
+    Some(ModelChoice {
+        provider,
+        provider_name,
+        model: model.clone(),
+        model_name: model,
+        reasoning_levels: ReasoningLevel::ALL.to_vec(),
+    })
+}
+
+fn parse_reasoning_level(value: &str) -> Result<ReasoningLevel, TuiError> {
+    serde_json::from_value(Value::String(value.to_owned()))
+        .map_err(|error| TuiError::Protocol(error.to_string()))
+}
+
+fn set_default_model(
+    supervisor: &mut CoreSupervisor,
+    provider: &str,
+    model: &str,
+) -> Result<(), TuiError> {
+    supervisor
+        .request(
+            "provider.set_default_model",
+            Some(json!({ "id": provider, "model": model })),
+        )
+        .map_err(|error| TuiError::Protocol(error.to_string()))?;
+    supervisor
+        .request(
+            "provider.set_default_instance",
+            Some(json!({ "id": provider })),
+        )
+        .map_err(|error| TuiError::Protocol(error.to_string()))?;
+    Ok(())
+}
+
 struct App {
     chat: ChatView,
     providers: ProviderView,
     screen: Screen,
     palette: Option<String>,
     session_picker: Option<SessionPicker>,
+    model_picker: Option<ModelPicker>,
+    thinking_picker: Option<ThinkingPicker>,
     help: bool,
     quit: bool,
 }
 
 struct SessionPicker {
     sessions: Vec<Value>,
+    selected: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ModelChoice {
+    provider: String,
+    provider_name: String,
+    model: String,
+    model_name: String,
+    reasoning_levels: Vec<ReasoningLevel>,
+}
+
+struct ModelPicker {
+    choices: Vec<ModelChoice>,
+    selected: usize,
+}
+
+struct ThinkingPicker {
+    levels: Vec<ReasoningLevel>,
     selected: usize,
 }
 
@@ -1001,6 +1277,44 @@ impl ProviderView {
         self.credential_status = Some(parse_credential_status(&credential_status));
         self.selected_kind = self.selected_kind.min(self.kinds.len().saturating_sub(1));
         self.clamp_instance_selection();
+        Ok(())
+    }
+
+    /// Refresh dynamic model catalogs, retaining static metadata on failure.
+    pub fn refresh_models(
+        &mut self,
+        supervisor: &mut CoreSupervisor,
+        provider: Option<&str>,
+    ) -> Result<(), TuiError> {
+        let mut instance_ids = self
+            .instances
+            .iter()
+            .filter(|instance| !instance.disabled)
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>();
+        if let Some(provider) = provider {
+            instance_ids.retain(|id| id == provider);
+        }
+        self.model_cache
+            .retain(|id, _| instance_ids.iter().any(|instance_id| instance_id == id));
+        let mut failures = Vec::new();
+        for id in instance_ids {
+            if self.model_cache.contains_key(&id) {
+                continue;
+            }
+            match supervisor.request("provider.list_models", Some(json!({ "id": id }))) {
+                Ok(value) => match serde_json::from_value::<Vec<ModelDescriptor>>(value) {
+                    Ok(models) => {
+                        self.model_cache.insert(id, models);
+                    }
+                    Err(error) => failures.push(format!("{id}: {error}")),
+                },
+                Err(error) => failures.push(format!("{id}: {error}")),
+            }
+        }
+        if !failures.is_empty() {
+            self.status = Some(format!("model catalog fallback: {}", failures.join("; ")));
+        }
         Ok(())
     }
 
@@ -1222,6 +1536,7 @@ impl ProviderView {
             self.config_editor = Some(editor);
             return Ok(());
         }
+        self.model_cache.remove(&editor.instance.id);
         self.refresh(supervisor)?;
         self.status = Some(format!("updated {}", editor.instance.id));
         Ok(())
@@ -1284,6 +1599,8 @@ pub fn run_tui() -> Result<(), TuiError> {
         screen: Screen::Providers,
         palette: None,
         session_picker: None,
+        model_picker: None,
+        thinking_picker: None,
         help: false,
         quit: false,
     };
@@ -1359,6 +1676,14 @@ fn run_loop(
                     }
                     if app.session_picker.is_some() {
                         handle_session_picker_key(app, supervisor, key.code)?;
+                        continue;
+                    }
+                    if app.model_picker.is_some() {
+                        handle_model_picker_key(app, supervisor, key.code)?;
+                        continue;
+                    }
+                    if app.thinking_picker.is_some() {
+                        handle_thinking_picker_key(app, supervisor, key.code)?;
                         continue;
                     }
                     if app.palette.is_some() {
@@ -1468,6 +1793,7 @@ fn handle_provider_key(
         }
         KeyCode::Char('r') => {
             app.providers.status = None;
+            app.providers.model_cache.clear();
             if let Err(error) = app.providers.refresh(supervisor) {
                 app.providers.status = Some(error.to_string());
             }
@@ -1536,6 +1862,21 @@ fn handle_chat_key(
         return Ok(());
     }
     match code {
+        KeyCode::BackTab => {
+            if let Err(error) = cycle_thinking_level(app, supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('l') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Err(error) = open_model_picker(app, supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
+        KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Err(error) = open_thinking_picker(app, supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
         KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.screen = Screen::Providers;
             app.providers.status = None;
@@ -1575,6 +1916,8 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
     if app.screen != Screen::Chat
         || app.help
         || app.session_picker.is_some()
+        || app.model_picker.is_some()
+        || app.thinking_picker.is_some()
         || app.palette.is_some()
         || app.chat.interaction.is_some()
     {
@@ -1597,7 +1940,9 @@ fn handle_palette_key(
         KeyCode::Esc => app.palette = None,
         KeyCode::Enter => {
             let command = app.palette.take().unwrap_or_default();
-            execute_palette_command(app, supervisor, &command)?;
+            if let Err(error) = execute_palette_command(app, supervisor, &command) {
+                app.chat.status = Some(error.to_string());
+            }
         }
         KeyCode::Backspace => {
             if let Some(palette) = &mut app.palette {
@@ -1629,12 +1974,91 @@ fn execute_palette_command(
             app.providers.refresh(supervisor)?;
         }
         "provider" => {
-            app.chat.provider = argument.to_owned();
-            app.chat.status = Some(format!("provider: {argument}"));
+            app.providers.refresh(supervisor)?;
+            app.providers.refresh_models(supervisor, Some(argument))?;
+            let choices = model_choices(&app.providers);
+            let Some(choice) = choices.iter().find(|choice| choice.provider == argument) else {
+                return Err(TuiError::Protocol(format!(
+                    "unknown provider instance: {argument}"
+                )));
+            };
+            let reasoning = if choice.reasoning_levels.contains(&app.chat.reasoning) {
+                app.chat.reasoning
+            } else {
+                choice
+                    .reasoning_levels
+                    .first()
+                    .copied()
+                    .unwrap_or(ReasoningLevel::Auto)
+            };
+            app.chat.set_route(
+                supervisor,
+                choice.provider.clone(),
+                choice.model.clone(),
+                reasoning,
+            )?;
+            set_default_model(supervisor, &choice.provider, &choice.model)?;
         }
-        "model" if !argument.is_empty() => {
-            app.chat.model = argument.to_owned();
-            app.chat.status = Some(format!("model: {argument}"));
+        "model" if argument.is_empty() => {
+            open_model_picker(app, supervisor)?;
+        }
+        "model" => {
+            let mut parts = argument.split_whitespace();
+            let target = parts.next().unwrap_or_default();
+            let requested_reasoning = parts
+                .next()
+                .map(parse_reasoning_level)
+                .transpose()?
+                .unwrap_or(app.chat.reasoning);
+            if parts.next().is_some() {
+                return Err(TuiError::Protocol(
+                    "usage: /model <model> [thinking-level]".to_owned(),
+                ));
+            }
+            app.providers.refresh(supervisor)?;
+            app.providers
+                .refresh_models(supervisor, Some(&app.chat.provider))?;
+            let choices = model_choices(&app.providers);
+            let selected = resolve_model_selection(&choices, &app.chat.provider, target)
+                .ok_or_else(|| TuiError::Protocol(format!("unknown model: {target}")))?;
+            let reasoning = if selected.reasoning_levels.contains(&requested_reasoning) {
+                requested_reasoning
+            } else {
+                selected
+                    .reasoning_levels
+                    .first()
+                    .copied()
+                    .unwrap_or(ReasoningLevel::Auto)
+            };
+            app.chat.set_route(
+                supervisor,
+                selected.provider.clone(),
+                selected.model.clone(),
+                reasoning,
+            )?;
+            set_default_model(supervisor, &selected.provider, &selected.model)?;
+        }
+        "thinking" | "effort" if argument.is_empty() => {
+            open_thinking_picker(app, supervisor)?;
+        }
+        "thinking" | "effort" => {
+            let level = parse_reasoning_level(argument)?;
+            app.providers.refresh(supervisor)?;
+            app.providers
+                .refresh_models(supervisor, Some(&app.chat.provider))?;
+            let choices = model_choices(&app.providers);
+            let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
+            if !levels.contains(&level) {
+                return Err(TuiError::Protocol(format!(
+                    "thinking level `{level}` is not available for this model"
+                )));
+            }
+            app.chat.set_route(
+                supervisor,
+                app.chat.provider.clone(),
+                app.chat.model.clone(),
+                level,
+            )?;
         }
         "mode" => {
             let mode = argument
@@ -1717,6 +2141,181 @@ fn handle_session_picker_key(
     Ok(())
 }
 
+fn open_model_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    app.providers.refresh(supervisor)?;
+    app.providers
+        .refresh_models(supervisor, Some(&app.chat.provider))?;
+    let mut choices = model_choices(&app.providers);
+    if !app.chat.provider.is_empty()
+        && !app.chat.model.is_empty()
+        && !choices
+            .iter()
+            .any(|choice| choice.provider == app.chat.provider && choice.model == app.chat.model)
+    {
+        let provider_name = app
+            .providers
+            .instances
+            .iter()
+            .find(|instance| instance.id == app.chat.provider)
+            .and_then(|instance| {
+                app.providers
+                    .kinds
+                    .iter()
+                    .find(|kind| kind.kind == instance.kind)
+            })
+            .map(|kind| kind.name.clone())
+            .unwrap_or_else(|| app.chat.provider.clone());
+        choices.push(ModelChoice {
+            provider: app.chat.provider.clone(),
+            provider_name,
+            model: app.chat.model.clone(),
+            model_name: app.chat.model.clone(),
+            reasoning_levels: ReasoningLevel::ALL.to_vec(),
+        });
+    }
+    if choices.is_empty() {
+        app.chat.status = Some("no models configured".to_owned());
+        return Ok(());
+    }
+    let selected = choices
+        .iter()
+        .position(|choice| choice.provider == app.chat.provider && choice.model == app.chat.model)
+        .unwrap_or(0);
+    app.model_picker = Some(ModelPicker { choices, selected });
+    Ok(())
+}
+
+fn handle_model_picker_key(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    code: KeyCode,
+) -> Result<(), TuiError> {
+    let Some(picker) = &mut app.model_picker else {
+        return Ok(());
+    };
+    match code {
+        KeyCode::Esc => app.model_picker = None,
+        KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
+        KeyCode::Down => {
+            picker.selected = picker
+                .selected
+                .saturating_add(1)
+                .min(picker.choices.len().saturating_sub(1));
+        }
+        KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(10),
+        KeyCode::PageDown => {
+            picker.selected = picker
+                .selected
+                .saturating_add(10)
+                .min(picker.choices.len().saturating_sub(1));
+        }
+        KeyCode::Enter => {
+            let Some(choice) = picker.choices.get(picker.selected).cloned() else {
+                return Ok(());
+            };
+            let reasoning = if choice.reasoning_levels.contains(&app.chat.reasoning) {
+                app.chat.reasoning
+            } else {
+                choice
+                    .reasoning_levels
+                    .first()
+                    .copied()
+                    .unwrap_or(ReasoningLevel::Auto)
+            };
+            app.chat
+                .set_route(supervisor, choice.provider, choice.model, reasoning)?;
+            set_default_model(supervisor, &app.chat.provider, &app.chat.model)?;
+            app.model_picker = None;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn open_thinking_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    app.providers.refresh(supervisor)?;
+    app.providers
+        .refresh_models(supervisor, Some(&app.chat.provider))?;
+    let choices = model_choices(&app.providers);
+    let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
+    if levels.len() <= 1 {
+        app.chat.status = Some("current model has no thinking-level controls".to_owned());
+        return Ok(());
+    }
+    let selected = levels
+        .iter()
+        .position(|level| *level == app.chat.reasoning)
+        .unwrap_or(0);
+    app.thinking_picker = Some(ThinkingPicker { levels, selected });
+    Ok(())
+}
+
+fn handle_thinking_picker_key(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    code: KeyCode,
+) -> Result<(), TuiError> {
+    let Some(picker) = &mut app.thinking_picker else {
+        return Ok(());
+    };
+    match code {
+        KeyCode::Esc => app.thinking_picker = None,
+        KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
+        KeyCode::Down => {
+            picker.selected = picker
+                .selected
+                .saturating_add(1)
+                .min(picker.levels.len().saturating_sub(1));
+        }
+        KeyCode::Enter => {
+            let Some(level) = picker.levels.get(picker.selected).copied() else {
+                return Ok(());
+            };
+            if app.chat.provider.is_empty() || app.chat.model.is_empty() {
+                app.chat.status = Some("select a model first".to_owned());
+                app.thinking_picker = None;
+                return Ok(());
+            }
+            app.chat.set_route(
+                supervisor,
+                app.chat.provider.clone(),
+                app.chat.model.clone(),
+                level,
+            )?;
+            app.thinking_picker = None;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn cycle_thinking_level(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    if app.chat.provider.is_empty() || app.chat.model.is_empty() {
+        app.chat.status = Some("select a model first".to_owned());
+        return Ok(());
+    }
+    app.providers.refresh(supervisor)?;
+    app.providers
+        .refresh_models(supervisor, Some(&app.chat.provider))?;
+    let choices = model_choices(&app.providers);
+    let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
+    if levels.len() <= 1 {
+        app.chat.status = Some("current model has no thinking-level controls".to_owned());
+        return Ok(());
+    }
+    let current = levels
+        .iter()
+        .position(|level| *level == app.chat.reasoning)
+        .unwrap_or(0);
+    let next = levels[(current + 1) % levels.len()];
+    app.chat.set_route(
+        supervisor,
+        app.chat.provider.clone(),
+        app.chat.model.clone(),
+        next,
+    )
+}
+
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     match app.screen {
         Screen::Chat => draw_chat_screen(frame, &mut app.chat),
@@ -1724,6 +2323,12 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     }
     if let Some(picker) = &app.session_picker {
         draw_session_picker(frame, picker);
+    }
+    if let Some(picker) = &app.model_picker {
+        draw_model_picker(frame, picker, &app.chat);
+    }
+    if let Some(picker) = &app.thinking_picker {
+        draw_thinking_picker(frame, picker);
     }
     if app.help {
         draw_help(frame);
@@ -1748,17 +2353,51 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
         ])
         .split(area);
     let session = view.session_id.as_deref().unwrap_or("new session");
+    let header = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(layout[0]);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
                 "alpha",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(COLOR_BRAND)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("  {session}")),
+            Span::styled(
+                format!("  {}", short_session_id(session)),
+                Style::default().fg(COLOR_MUTED),
+            ),
         ])),
-        layout[0],
+        header[0],
+    );
+    let provider = if view.provider.is_empty() {
+        "default"
+    } else {
+        view.provider.as_str()
+    };
+    let model = if view.model.is_empty() {
+        "unset"
+    } else {
+        view.model.as_str()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{provider}/{model}"),
+                Style::default().fg(COLOR_TEXT),
+            ),
+            Span::styled("  think:", Style::default().fg(COLOR_MUTED)),
+            Span::styled(
+                view.reasoning.to_string(),
+                Style::default().fg(COLOR_SUCCESS),
+            ),
+            Span::styled("  mode:", Style::default().fg(COLOR_MUTED)),
+            Span::styled(view.mode.to_string(), Style::default().fg(COLOR_WARNING)),
+        ]))
+        .alignment(Alignment::Right),
+        header[1],
     );
 
     let width = layout[1].width;
@@ -1791,8 +2430,13 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(transcript_title),
+                .border_style(Style::default().fg(COLOR_MUTED))
+                .title(Span::styled(
+                    transcript_title,
+                    Style::default().fg(COLOR_BRAND),
+                )),
         )
+        .style(Style::default().fg(COLOR_TEXT))
         .wrap(Wrap { trim: false });
     let max_scroll = cache
         .line_count
@@ -1802,31 +2446,78 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
         .min(u16::MAX as usize) as u16;
     frame.render_widget(transcript_widget.scroll((scroll, 0)), layout[1]);
     frame.render_widget(
-        Paragraph::new(format!("> {}", view.composer))
-            .block(Block::default().borders(Borders::ALL).title("Composer"))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "> ",
+                Style::default()
+                    .fg(COLOR_BRAND)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(view.composer.clone(), Style::default().fg(COLOR_TEXT)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_MUTED))
+                .title(Span::styled("Composer", Style::default().fg(COLOR_BRAND))),
+        )
+        .wrap(Wrap { trim: false }),
         layout[2],
     );
     let status = view.status.as_deref().unwrap_or(
-        "Enter submit  / commands  Wheel/PgUp scroll  Esc cancel  Ctrl-P providers  Ctrl-C quit",
+        "Enter send  Ctrl-L model  Shift-Tab thinking  Ctrl-T levels  Ctrl-P providers  / commands",
     );
     frame.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(status).style(if view.status.is_some() {
+            Style::default().fg(COLOR_WARNING)
+        } else {
+            Style::default().fg(COLOR_MUTED)
+        }),
         layout[3],
     );
 }
 
+fn short_session_id(session: &str) -> &str {
+    if session.len() <= 12 {
+        session
+    } else {
+        &session[..8]
+    }
+}
+
 fn build_transcript_lines(view: &ChatView) -> Vec<Line<'static>> {
     if view.transcript.is_empty() {
-        return vec![Line::from("No messages yet")];
+        return vec![Line::styled(
+            "No messages yet",
+            Style::default().fg(COLOR_MUTED),
+        )];
     }
     view.transcript
         .iter()
         .flat_map(|entry| match entry {
-            TranscriptEntry::User(text) => vec![Line::from(format!("you: {text}"))],
+            TranscriptEntry::User(text) => vec![Line::from(vec![
+                Span::styled(
+                    "you: ",
+                    Style::default()
+                        .fg(COLOR_ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
+            ])],
             TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
-            TranscriptEntry::Progress(text) => vec![Line::from(format!("... {text}"))],
-            TranscriptEntry::Error(text) => vec![Line::from(format!("error: {text}"))],
+            TranscriptEntry::Progress(text) => vec![Line::from(vec![
+                Span::styled("... ", Style::default().fg(COLOR_WARNING)),
+                Span::styled(text.clone(), Style::default().fg(COLOR_MUTED)),
+            ])],
+            TranscriptEntry::Error(text) => vec![Line::from(vec![
+                Span::styled(
+                    "error: ",
+                    Style::default()
+                        .fg(COLOR_ERROR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
+            ])],
         })
         .collect()
 }
@@ -1859,14 +2550,159 @@ fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
     );
 }
 
+fn draw_model_picker(frame: &mut ratatui::Frame<'_>, picker: &ModelPicker, chat: &ChatView) {
+    let area = centered_rect(78, 20, frame.area());
+    frame.render_widget(Clear, area);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(area);
+    let capacity = usize::from(layout[0].height.saturating_sub(2)).max(1);
+    let start = picker
+        .selected
+        .saturating_sub(capacity / 2)
+        .min(picker.choices.len().saturating_sub(capacity));
+    let visible = picker
+        .choices
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+        .map(|(index, choice)| {
+            let marker = if index == picker.selected { ">" } else { " " };
+            let current = choice.provider == chat.provider && choice.model == chat.model;
+            let marker_style = if index == picker.selected {
+                Style::default()
+                    .fg(COLOR_BRAND)
+                    .add_modifier(Modifier::BOLD)
+            } else if current {
+                Style::default().fg(COLOR_SUCCESS)
+            } else {
+                Style::default().fg(COLOR_MUTED)
+            };
+            let model_style = if current {
+                Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(COLOR_TEXT)
+            };
+            let levels = choice
+                .reasoning_levels
+                .iter()
+                .map(|level| level.as_str())
+                .collect::<Vec<_>>()
+                .join("/");
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{marker} "), marker_style),
+                Span::styled(
+                    format!("[{}] ", choice.provider_name),
+                    Style::default().fg(COLOR_ACCENT),
+                ),
+                Span::styled(choice.model_name.clone(), model_style),
+                Span::styled(
+                    format!("  {}  think:{}", choice.model, levels),
+                    Style::default().fg(COLOR_MUTED),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(visible).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_MUTED))
+                .title(Span::styled(
+                    format!("Models ({}/{})", start + 1, picker.choices.len()),
+                    Style::default().fg(COLOR_BRAND),
+                )),
+        ),
+        layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter apply   Up/Down move   Esc cancel")
+            .style(Style::default().fg(COLOR_MUTED)),
+        layout[1],
+    );
+}
+
+fn draw_thinking_picker(frame: &mut ratatui::Frame<'_>, picker: &ThinkingPicker) {
+    let area = centered_rect(58, 14, frame.area());
+    frame.render_widget(Clear, area);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(area);
+    let capacity = usize::from(layout[0].height.saturating_sub(2)).max(1);
+    let start = picker
+        .selected
+        .saturating_sub(capacity / 2)
+        .min(picker.levels.len().saturating_sub(capacity));
+    let items = picker
+        .levels
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+        .map(|(index, level)| {
+            let marker = if index == picker.selected { ">" } else { " " };
+            let style = if index == picker.selected {
+                Style::default()
+                    .fg(COLOR_BRAND)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(COLOR_TEXT)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{marker} "), style),
+                Span::styled(format!("{level:<8}"), style),
+                Span::styled(
+                    reasoning_description(*level),
+                    Style::default().fg(COLOR_MUTED),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_MUTED))
+                .title(Span::styled(
+                    "Thinking level",
+                    Style::default().fg(COLOR_BRAND),
+                )),
+        ),
+        layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter apply   Up/Down move   Esc cancel")
+            .style(Style::default().fg(COLOR_MUTED)),
+        layout[1],
+    );
+}
+
+fn reasoning_description(level: ReasoningLevel) -> &'static str {
+    match level {
+        ReasoningLevel::Auto => "provider default",
+        ReasoningLevel::Off => "disable reasoning when supported",
+        ReasoningLevel::Minimal => "quickest reasoning",
+        ReasoningLevel::Low => "light reasoning",
+        ReasoningLevel::Medium => "balanced reasoning",
+        ReasoningLevel::High => "deep reasoning",
+        ReasoningLevel::XHigh => "extra-deep reasoning",
+        ReasoningLevel::Max => "maximum reasoning",
+    }
+}
+
 fn draw_help(frame: &mut ratatui::Frame<'_>) {
-    let area = centered_rect(70, 16, frame.area());
+    let area = centered_rect(70, 20, frame.area());
     frame.render_widget(Clear, area);
     let text = Text::from(vec![
         Line::from("Commands"),
         Line::from(""),
         Line::from("/provider [ID]   open provider manager or select provider"),
-        Line::from("/model MODEL     select model for new sessions"),
+        Line::from("/model [MODEL] [LEVEL]  open the picker or switch the route"),
+        Line::from("/thinking LEVEL  set auto, off, minimal, low, medium, high, xhigh, or max"),
+        Line::from("/effort LEVEL    alias for /thinking"),
         Line::from("/mode MODE       set read, auto, or free"),
         Line::from("/confirm         run pending steers"),
         Line::from("/discard         discard pending steers"),
@@ -1878,13 +2714,21 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("/help            show this help"),
         Line::from("/quit            exit"),
         Line::from(""),
+        Line::from("Ctrl-L           open model picker"),
+        Line::from("Ctrl-T           open thinking picker"),
+        Line::from("Shift-Tab        cycle thinking level"),
         Line::from("Wheel/PgUp/PgDn  scroll transcript"),
         Line::from(""),
-        Line::from("Esc deny/cancel   Ctrl-C quit"),
+        Line::from("Esc deny/cancel   Ctrl-P providers   Ctrl-C quit"),
     ]);
     frame.render_widget(
         Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title("Help"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLOR_MUTED))
+                    .title(Span::styled("Help", Style::default().fg(COLOR_BRAND))),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -1938,7 +2782,7 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
             Span::styled(
                 "alpha",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(COLOR_BRAND)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  providers"),
@@ -2018,9 +2862,9 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
             "n new  e config  c credential  t test  s default  x remove  r refresh  q back"
         });
     let status_style = if view.status.is_some() || view.credential_hint().is_some() {
-        Style::default().fg(Color::Red)
+        Style::default().fg(COLOR_ERROR)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(COLOR_MUTED)
     };
     frame.render_widget(Paragraph::new(status).style(status_style), layout[2]);
 
@@ -2032,7 +2876,7 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
             height: 1,
         };
         frame.render_widget(
-            Paragraph::new(hint).style(Style::default().fg(Color::Red)),
+            Paragraph::new(hint).style(Style::default().fg(COLOR_ERROR)),
             hint_area,
         );
     }
@@ -2216,6 +3060,7 @@ mod tests {
                 context_window: 1_000,
                 max_tokens: 100,
                 reasoning: false,
+                reasoning_levels: vec![ReasoningLevel::Auto],
                 provider_tools: Vec::new(),
             }],
             adapters: vec![AdapterRequirement {
@@ -2237,6 +3082,29 @@ mod tests {
         assert_eq!(view.selected_kind, 1);
         view.move_kind_selection(1);
         assert_eq!(view.selected_kind, 1);
+    }
+
+    #[test]
+    fn arbitrary_model_ids_resolve_to_the_current_provider() {
+        let view = ProviderView {
+            kinds: vec![descriptor()],
+            instances: vec![ProviderInstance {
+                id: "test".to_owned(),
+                kind: "test".to_owned(),
+                config_version: 1,
+                config: serde_json::json!({}),
+                auth_ref: None,
+                model_overrides: serde_json::json!({}),
+                disabled: false,
+            }],
+            ..ProviderView::default()
+        };
+        let choices = model_choices(&view);
+        let selected =
+            resolve_model_selection(&choices, "test", "deepseek-v4.1-flash").expect("selection");
+        assert_eq!(selected.provider, "test");
+        assert_eq!(selected.model, "deepseek-v4.1-flash");
+        assert_eq!(selected.reasoning_levels, ReasoningLevel::ALL.to_vec());
     }
 
     #[test]
@@ -2315,6 +3183,48 @@ mod tests {
     }
 
     #[test]
+    fn route_event_updates_the_active_route() {
+        let mut view = ChatView {
+            session_id: Some("session-a".to_owned()),
+            ..ChatView::default()
+        };
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
+            "kind": "durable",
+            "event": {
+                "payload": {
+                    "type": "route_changed",
+                    "provider": "provider-b",
+                    "model": "model-b",
+                    "reasoning": "high"
+                }
+            }
+        }));
+        assert_eq!(view.provider, "provider-b");
+        assert_eq!(view.model, "model-b");
+        assert_eq!(view.reasoning, ReasoningLevel::High);
+    }
+
+    #[test]
+    fn chat_header_draws_route_and_shortcuts() {
+        let mut view = ChatView {
+            provider: "provider-a".to_owned(),
+            model: "model-a".to_owned(),
+            reasoning: ReasoningLevel::High,
+            mode: PermissionMode::Auto,
+            ..ChatView::default()
+        };
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .expect("draw chat");
+        assert!(terminal_contains(&terminal, "provider-a/model-a"));
+        assert!(terminal_contains(&terminal, "think:high"));
+        assert!(terminal_contains(&terminal, "Ctrl-L model"));
+    }
+
+    #[test]
     fn chat_renders_tool_call_and_result_summaries() {
         let mut view = ChatView {
             session_id: Some("session-a".to_owned()),
@@ -2384,7 +3294,7 @@ mod tests {
             .flat_map(|line| &line.spans)
             .find(|span| span.content == "code")
             .expect("code span");
-        assert_eq!(code.style.fg, Some(Color::Green));
+        assert_eq!(code.style.fg, Some(COLOR_SUCCESS));
     }
 
     #[test]

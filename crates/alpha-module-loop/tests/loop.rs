@@ -5,15 +5,15 @@ use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{
     AgentLoop, AgentStepStarted, AgentToolFinished, AgentToolStarted, ChatMessage, CompletionChunk,
     CompletionRequest, CompletionResponse, ContextError, ContextPreparer, LoopConfig, LoopModule,
-    ModelProvider, ProviderError, ProviderRegistry, ProviderToolsOverride, ToolCall, ToolCallDelta,
-    TurnOutcome,
+    ModelProvider, ModelRoute, ModelRouteOverride, ProviderError, ProviderRegistry,
+    ProviderToolsOverride, ToolCall, ToolCallDelta, TurnOutcome,
 };
 use alpha_module_session::{
     SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
     TurnEndReason, WorkspaceRef,
 };
 use alpha_module_tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResponse};
-use alpha_schema::{MessageId, PermissionMode, Seq, SessionId};
+use alpha_schema::{MessageId, PermissionMode, ReasoningLevel, Seq, SessionId};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -361,6 +361,7 @@ async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
     let chunks: Vec<CompletionChunk> = provider
         .stream(CompletionRequest {
             model: "echo".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
@@ -391,6 +392,43 @@ async fn session_provider_tool_override_reaches_the_request() {
         .expect("turn");
     let requests = provider.requests.lock().expect("request lock");
     assert_eq!(requests[0].provider_tools, vec!["web_search".to_owned()]);
+}
+
+#[tokio::test]
+async fn route_override_reaches_the_request_and_header() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(EchoProvider::default());
+    let agent = AgentLoop::new(provider.clone(), "fallback");
+    let ctx = Ctx::root();
+    ctx.provide::<ModelRouteOverride>(Arc::new(ModelRouteOverride::new(ModelRoute::new(
+        "provider-a",
+        "routed-model",
+        ReasoningLevel::High,
+    ))))
+    .expect("model route override");
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    agent
+        .run_turn(&ctx, &writer, &state, "hello")
+        .await
+        .expect("turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert_eq!(requests[0].model, "routed-model");
+    assert_eq!(requests[0].reasoning, ReasoningLevel::High);
+    drop(requests);
+    drop(writer);
+
+    let reader = store.open_read(header.id).expect("read");
+    assert!(reader.events().iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::RequestHeader {
+            provider,
+            model,
+            reasoning: ReasoningLevel::High,
+            ..
+        } if provider == "provider-a" && model == "routed-model"
+    )));
 }
 
 #[tokio::test]

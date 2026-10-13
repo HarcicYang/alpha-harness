@@ -10,16 +10,20 @@ use alpha_module_loop::ModelProvider;
 use alpha_provider_api::{
     AdapterProvider, AdapterRequirement, AuthMethodDescriptor, ModelDescriptor,
     ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind, ProviderKindError,
-    ProviderKindRegistry, required_adapter, required_credential_text,
+    ProviderKindRegistry, ReasoningLevel, required_adapter, required_credential_text,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// Stable module key.
 pub const __ALPHA_MODULE__: &str = "provider.opencode-go";
 /// Provider kind.
 pub const PROVIDER_KIND: &str = "opencode-go";
+/// Current OpenCode Go API base URL.
+pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+const LEGACY_BASE_URL: &str = "https://opencode.ai/zen/v1";
+const LEGACY_BASE_ROOT: &str = "https://opencode.ai/zen";
 
 /// OpenCode Go provider config.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -44,7 +48,7 @@ pub struct OpenCodeGoConfig {
 impl Default for OpenCodeGoConfig {
     fn default() -> Self {
         Self {
-            base_url: "https://opencode.ai/zen/v1".to_owned(),
+            base_url: DEFAULT_BASE_URL.to_owned(),
             adapter: default_adapter(),
             headers: BTreeMap::new(),
             options: BTreeMap::new(),
@@ -75,9 +79,95 @@ impl ProviderKind for OpenCodeGoProviderKind {
                 interactive: true,
             }],
             models: vec![
-                model("gpt-5", "openai-responses", 400_000, 128_000),
-                model("claude-sonnet-4", "anthropic-messages", 200_000, 64_000),
-                model("deepseek-v4-pro", "openai-chat-completions", 128_000, 8_192),
+                model_with_levels(
+                    "deepseek-v4.1-flash",
+                    "openai-chat-completions",
+                    1_000_000,
+                    384_000,
+                    vec![
+                        ReasoningLevel::Auto,
+                        ReasoningLevel::Low,
+                        ReasoningLevel::High,
+                        ReasoningLevel::Max,
+                    ],
+                ),
+                model_with_levels(
+                    "deepseek-v4-flash",
+                    "openai-chat-completions",
+                    1_000_000,
+                    384_000,
+                    vec![
+                        ReasoningLevel::Auto,
+                        ReasoningLevel::Low,
+                        ReasoningLevel::High,
+                        ReasoningLevel::Max,
+                    ],
+                ),
+                model_with_levels(
+                    "deepseek-v4-pro",
+                    "openai-chat-completions",
+                    1_000_000,
+                    384_000,
+                    vec![
+                        ReasoningLevel::Auto,
+                        ReasoningLevel::High,
+                        ReasoningLevel::Max,
+                    ],
+                ),
+                model(
+                    "deepseek-v4-flash-vision-exp",
+                    "openai-chat-completions",
+                    1_000_000,
+                    384_000,
+                ),
+                model("claude-haiku-5-5", "anthropic-messages", 1_000_000, 128_000),
+                model("minimax-m3", "anthropic-messages", 1_000_000, 131_072),
+                model("qwen3.8-flash", "anthropic-messages", 1_000_000, 131_072),
+                model("qwen3.8-max", "anthropic-messages", 1_000_000, 131_072),
+                model("gpt-5.6-luna", "openai-responses", 1_050_000, 128_000),
+                model("gpt-6-luna", "openai-responses", 1_050_000, 128_000),
+                model("grok-4.7", "openai-responses", 500_000, 500_000),
+                model(
+                    "muse-spark-1.3-contributor",
+                    "openai-responses",
+                    1_048_576,
+                    131_072,
+                ),
+                model("glm-5.2", "openai-chat-completions", 1_000_000, 131_072),
+                model("glm-5.3", "openai-chat-completions", 1_000_000, 131_072),
+                model(
+                    "glm-5.3-flash",
+                    "openai-chat-completions",
+                    1_000_000,
+                    131_072,
+                ),
+                model(
+                    "kimi-k2.7-code",
+                    "openai-chat-completions",
+                    262_144,
+                    262_144,
+                ),
+                model("kimi-k3", "openai-chat-completions", 1_048_576, 131_072),
+                model(
+                    "mimo-v2.6-pro",
+                    "openai-chat-completions",
+                    1_048_576,
+                    131_072,
+                ),
+                model("hy4-preview", "openai-chat-completions", 1_024_000, 64_000),
+                model(
+                    "longcat-2.5-preview-free",
+                    "openai-chat-completions",
+                    1_000_000,
+                    131_072,
+                ),
+                model("space-bunny", "openai-chat-completions", 1_048_576, 524_288),
+                model(
+                    "step-5-preview-free",
+                    "openai-chat-completions",
+                    1_000_000,
+                    65_536,
+                ),
             ],
             adapters: vec![
                 AdapterRequirement {
@@ -97,7 +187,22 @@ impl ProviderKind for OpenCodeGoProviderKind {
     }
 
     fn config_version(&self) -> u32 {
-        1
+        2
+    }
+
+    fn migrate_config(&self, from: u32, config: Value) -> Result<Value, ProviderKindError> {
+        if from != 1 {
+            return Err(ProviderKindError::Migration(format!(
+                "no migration from version {from} to 2"
+            )));
+        }
+        let mut config: OpenCodeGoConfig = serde_json::from_value(config)
+            .map_err(|error| ProviderKindError::InvalidConfig(error.to_string()))?;
+        let base = config.base_url.trim_end_matches('/');
+        if base == LEGACY_BASE_URL || base == LEGACY_BASE_ROOT {
+            config.base_url = DEFAULT_BASE_URL.to_owned();
+        }
+        serde_json::to_value(config).map_err(|error| ProviderKindError::Build(error.to_string()))
     }
 
     fn build(
@@ -142,6 +247,22 @@ impl ProviderKind for OpenCodeGoProviderKind {
 }
 
 fn model(id: &str, adapter: &str, context_window: u64, max_tokens: u64) -> ModelDescriptor {
+    model_with_levels(
+        id,
+        adapter,
+        context_window,
+        max_tokens,
+        ReasoningLevel::ALL.to_vec(),
+    )
+}
+
+fn model_with_levels(
+    id: &str,
+    adapter: &str,
+    context_window: u64,
+    max_tokens: u64,
+    reasoning_levels: Vec<ReasoningLevel>,
+) -> ModelDescriptor {
     ModelDescriptor {
         id: id.to_owned(),
         name: id.to_owned(),
@@ -149,6 +270,7 @@ fn model(id: &str, adapter: &str, context_window: u64, max_tokens: u64) -> Model
         context_window,
         max_tokens,
         reasoning: true,
+        reasoning_levels,
         provider_tools: Vec::new(),
     }
 }

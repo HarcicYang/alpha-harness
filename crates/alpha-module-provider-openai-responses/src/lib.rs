@@ -10,7 +10,7 @@ use alpha_module_loop::ModelProvider;
 use alpha_provider_api::{
     AdapterProvider, AdapterRequirement, AuthMethodDescriptor, ModelDescriptor,
     ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind, ProviderKindError,
-    ProviderKindRegistry, required_adapter, required_credential_text,
+    ProviderKindRegistry, ReasoningLevel, required_adapter, required_credential_text,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,9 +65,18 @@ impl ProviderKind for OpenAiResponsesProviderKind {
                 interactive: true,
             }],
             models: vec![
+                model("gpt-5.6-luna", 272_000, 128_000),
+                model("gpt-5.6-sol", 272_000, 128_000),
+                model("gpt-5.6-terra", 272_000, 128_000),
+                model("gpt-5.5", 272_000, 128_000),
+                model("gpt-5.4", 272_000, 128_000),
+                model("gpt-5.3-codex", 400_000, 128_000),
+                model("gpt-5.2", 400_000, 128_000),
+                model("gpt-5.1", 400_000, 128_000),
                 model("gpt-5", 400_000, 128_000),
-                model("gpt-4.1", 1_000_000, 32_768),
+                model("o4-mini", 200_000, 100_000),
                 model("o3", 200_000, 100_000),
+                model("gpt-4.1", 1_000_000, 32_768),
             ],
             adapters: vec![AdapterRequirement {
                 key: ADAPTER_KEY.to_owned(),
@@ -111,6 +120,7 @@ fn model(id: &str, context_window: u64, max_tokens: u64) -> ModelDescriptor {
         context_window,
         max_tokens,
         reasoning: true,
+        reasoning_levels: ReasoningLevel::ALL.to_vec(),
         provider_tools: Vec::new(),
     }
 }

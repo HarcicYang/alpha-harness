@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use alpha_schema::AssistantContentBlock;
+use alpha_schema::{AssistantContentBlock, ReasoningLevel};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -90,12 +90,68 @@ pub struct ToolCall {
 pub struct CompletionRequest {
     /// Model identifier.
     pub model: String,
+    /// Requested reasoning effort.
+    pub reasoning: ReasoningLevel,
     /// Conversation history.
     pub messages: Vec<ChatMessage>,
     /// Tools advertised for this request.
     pub tools: Vec<ToolDefinition>,
     /// Provider-native tools for this request.
     pub provider_tools: Vec<String>,
+}
+
+/// Effective provider route for a session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelRoute {
+    /// Provider instance id or provider kind.
+    pub provider: String,
+    /// Model identifier. Empty means the provider default.
+    pub model: String,
+    /// Requested reasoning effort.
+    pub reasoning: ReasoningLevel,
+}
+
+impl ModelRoute {
+    /// Create a route.
+    pub fn new(
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        reasoning: ReasoningLevel,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            reasoning,
+        }
+    }
+}
+
+/// Mutable route shared by the session actor, loop, and dynamic provider.
+#[derive(Debug, Default)]
+pub struct ModelRouteOverride {
+    route: RwLock<ModelRoute>,
+}
+
+impl ModelRouteOverride {
+    /// Create an override with an initial route.
+    pub fn new(route: ModelRoute) -> Self {
+        Self {
+            route: RwLock::new(route),
+        }
+    }
+
+    /// Read the current route.
+    pub fn get(&self) -> ModelRoute {
+        self.route
+            .read()
+            .expect("model route lock poisoned")
+            .clone()
+    }
+
+    /// Replace the current route.
+    pub fn set(&self, route: ModelRoute) {
+        *self.route.write().expect("model route lock poisoned") = route;
+    }
 }
 
 /// Session-level provider-native tool override.

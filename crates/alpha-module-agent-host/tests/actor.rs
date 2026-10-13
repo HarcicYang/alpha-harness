@@ -7,12 +7,14 @@ use alpha_module_agent_host::{
     AgentHostError, AgentHostService, CreateSessionRequest, SessionRuntime, SessionRuntimeFactory,
     SessionRuntimeRequest,
 };
-use alpha_module_loop::{AgentDriver, LoopError, ProviderToolsOverride, TurnOutcome};
+use alpha_module_loop::{
+    AgentDriver, LoopError, ModelRoute, ModelRouteOverride, ProviderToolsOverride, TurnOutcome,
+};
 use alpha_module_session::{
     SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason,
 };
 use alpha_protocol::{OutboundTransport, RpcError};
-use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode};
+use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -34,15 +36,28 @@ impl AgentDriver for EchoDriver {
                 text: prompt.to_owned(),
             })?;
             let id = MessageId::new();
-            let text = match ctx
+            let tools = match ctx
                 .get::<ProviderToolsOverride>()
                 .and_then(|override_value| override_value.get())
             {
-                Some(provider_tools) if !provider_tools.is_empty() => {
-                    format!("echo:{prompt}:{}", provider_tools.join(","))
-                }
-                _ => format!("echo:{prompt}"),
+                Some(provider_tools) if !provider_tools.is_empty() => provider_tools.join(","),
+                _ => String::new(),
             };
+            let route = ctx
+                .get::<ModelRouteOverride>()
+                .map(|override_value| override_value.get())
+                .unwrap_or_default();
+            let route_suffix = if route.provider.is_empty() || route.model.is_empty() {
+                String::new()
+            } else {
+                format!(":{}:{}:{}", route.provider, route.model, route.reasoning)
+            };
+            let tools_suffix = if tools.is_empty() {
+                String::new()
+            } else {
+                format!(":{tools}")
+            };
+            let text = format!("echo:{prompt}{route_suffix}{tools_suffix}");
             writer.append(SessionEvent::AssistantMessage {
                 id,
                 blocks: vec![AssistantContentBlock::Text { text: text.clone() }],
@@ -67,6 +82,9 @@ impl SessionRuntimeFactory for EchoFactory {
         request: SessionRuntimeRequest,
     ) -> Result<SessionRuntime, alpha_module_agent_host::AgentHostError> {
         let ctx = Ctx::root();
+        let model_route = Arc::new(ModelRouteOverride::default());
+        ctx.provide::<ModelRouteOverride>(model_route.clone())
+            .expect("model route override");
         let provider_tools_override = Arc::new(ProviderToolsOverride::default());
         provider_tools_override.set(request.provider_tools_override);
         ctx.provide::<ProviderToolsOverride>(provider_tools_override.clone())
@@ -75,6 +93,7 @@ impl SessionRuntimeFactory for EchoFactory {
             ctx,
             agent: Arc::new(EchoDriver),
             provider_tools_override,
+            model_route,
         })
     }
 }
@@ -136,6 +155,7 @@ impl SessionRuntimeFactory for BlockingFactory {
                 runs: AtomicUsize::new(0),
             }),
             provider_tools_override: Arc::new(ProviderToolsOverride::default()),
+            model_route: Arc::new(ModelRouteOverride::default()),
         })
     }
 }
@@ -182,6 +202,7 @@ fn actor_streams_durable_events_and_completes_a_turn() {
                 mode: PermissionMode::Auto,
                 provider: "test".to_owned(),
                 model: "test".to_owned(),
+                reasoning: Default::default(),
             })
             .expect("create");
         host.submit(created.session_id, "hello".to_owned())
@@ -255,6 +276,7 @@ fn a_second_host_reports_session_busy() {
                 mode: PermissionMode::Auto,
                 provider: "test".to_owned(),
                 model: "test".to_owned(),
+                reasoning: Default::default(),
             })
             .expect("create");
         let second = AgentHostService::new(
@@ -266,6 +288,68 @@ fn a_second_host_reports_session_busy() {
             second.resume_session(created.session_id),
             Err(AgentHostError::SessionBusy(_))
         ));
+    });
+}
+
+#[test]
+fn route_changes_update_the_live_session_projection() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let transport = Arc::new(RecordingTransport::default());
+        let host = AgentHostService::new(
+            SessionStore::new(dir.path()),
+            transport.clone(),
+            Arc::new(EchoFactory),
+        );
+        let created = host
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+                reasoning: ReasoningLevel::Auto,
+            })
+            .expect("create");
+        host.set_route(
+            created.session_id,
+            ModelRoute::new("provider-b", "model-b", ReasoningLevel::Max),
+        )
+        .await
+        .expect("set route");
+
+        let resumed = host
+            .resume_session(created.session_id)
+            .expect("resume live session");
+        assert_eq!(resumed.provider, "provider-b");
+        assert_eq!(resumed.model, "model-b");
+        assert_eq!(resumed.reasoning, ReasoningLevel::Max);
+
+        host.submit(created.session_id, "hello".to_owned())
+            .expect("submit");
+        for _ in 0..50 {
+            let completed = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned")
+                .iter()
+                .any(|(method, params)| {
+                    method == "session.event"
+                        && params["kind"] == "durable"
+                        && params["event"]["payload"]["type"] == "assistant_message"
+                        && params["event"]["payload"]["blocks"][0]["text"]
+                            == "echo:hello:provider-b:model-b:max"
+                });
+            if completed {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("route-aware response was not recorded");
     });
 }
 
@@ -287,6 +371,7 @@ fn pending_steers_require_confirmation() {
                 mode: PermissionMode::Auto,
                 provider: "test".to_owned(),
                 model: "test".to_owned(),
+                reasoning: Default::default(),
             })
             .expect("create");
         host.steer(created.session_id, "confirmed".to_owned())
@@ -353,6 +438,7 @@ fn pending_steers_survive_actor_restart() {
                 mode: PermissionMode::Auto,
                 provider: "test".to_owned(),
                 model: "test".to_owned(),
+                reasoning: Default::default(),
             })
             .expect("create");
         first
@@ -432,6 +518,7 @@ fn running_steer_starts_the_next_turn_after_completion() {
                 mode: PermissionMode::Auto,
                 provider: "test".to_owned(),
                 model: "test".to_owned(),
+                reasoning: Default::default(),
             })
             .expect("create");
         host.submit(created.session_id, "first".to_owned())
@@ -498,6 +585,7 @@ fn cancel_stops_the_turn_without_replaying_it() {
                 mode: PermissionMode::Auto,
                 provider: "test".to_owned(),
                 model: "test".to_owned(),
+                reasoning: Default::default(),
             })
             .expect("create");
         let turn_id = host

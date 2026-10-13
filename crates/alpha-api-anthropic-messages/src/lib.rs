@@ -10,7 +10,9 @@ use alpha_module_http::{HttpClient, HttpRequest, HttpResponseStream};
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, ProviderError, ToolCallDelta, ToolDefinition,
 };
-use alpha_provider_api::{AdapterCapabilities, AdapterRequest, ApiAdapter, ApiAdapterRegistry};
+use alpha_provider_api::{
+    AdapterCapabilities, AdapterRequest, ApiAdapter, ApiAdapterRegistry, ReasoningLevel,
+};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Deserialize;
@@ -243,6 +245,20 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     payload.insert("messages".to_owned(), Value::Array(messages));
     payload.insert("stream".to_owned(), json!(true));
     payload.insert("max_tokens".to_owned(), json!(4096));
+    match request.reasoning {
+        ReasoningLevel::Auto => {}
+        ReasoningLevel::Off => {
+            payload.insert("thinking".to_owned(), json!({ "type": "disabled" }));
+        }
+        reasoning => {
+            if let Some(budget_tokens) = reasoning.budget_tokens() {
+                payload.insert(
+                    "thinking".to_owned(),
+                    json!({ "type": "enabled", "budget_tokens": budget_tokens }),
+                );
+            }
+        }
+    }
     if !system.is_empty() {
         payload.insert("system".to_owned(), json!(system.join("\n\n")));
     }

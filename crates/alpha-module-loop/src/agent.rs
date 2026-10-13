@@ -9,15 +9,15 @@ use alpha_module_session::{
     TurnEndReason,
 };
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
-use alpha_schema::{AssistantContentBlock, MessageId, ToolCallId, TurnId};
+use alpha_schema::{AssistantContentBlock, MessageId, ReasoningLevel, ToolCallId, TurnId};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ProviderError, ToolCall,
-    ToolDefinition,
+    ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
+    ModelRouteOverride, ProviderError, ToolCall, ToolDefinition,
 };
 
 const DEFAULT_MAX_STEPS: usize = 24;
@@ -140,6 +140,7 @@ impl AgentLoop {
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
         let session_id = writer.header().id;
+        let initial_route = self.route(ctx);
         let mut effective_state = state.clone();
         if let Some(preparer) = &self.context_preparer {
             let _ = preparer
@@ -147,7 +148,7 @@ impl AgentLoop {
                     writer,
                     &mut effective_state,
                     self.provider.as_ref(),
-                    &self.model,
+                    &initial_route.model,
                     prompt,
                 )
                 .await;
@@ -168,15 +169,19 @@ impl AgentLoop {
 
         for step in 0..self.max_steps {
             self.inject_steers(writer, &mut messages)?;
+            let route = self.route(ctx);
             let provider_tools = self.provider_tools(ctx);
             writer.append(SessionEvent::RequestHeader {
-                model: self.model.clone(),
+                provider: route.provider.clone(),
+                model: route.model.clone(),
+                reasoning: route.reasoning,
                 tools: tools.iter().map(|tool| tool.name.clone()).collect(),
                 provider_tools: provider_tools.clone(),
             })?;
             ctx.parallel(AgentStepStarted { step: step + 1 }).await;
             let request = CompletionRequest {
-                model: self.model.clone(),
+                model: route.model,
+                reasoning: route.reasoning,
                 messages: messages.clone(),
                 tools: tools.clone(),
                 provider_tools,
@@ -261,14 +266,18 @@ impl AgentLoop {
         }
 
         // Wrap up without tools so the user still gets a summary.
+        let route = self.route(ctx);
         let provider_tools = self.provider_tools(ctx);
         writer.append(SessionEvent::RequestHeader {
-            model: self.model.clone(),
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            reasoning: route.reasoning,
             tools: Vec::new(),
             provider_tools: provider_tools.clone(),
         })?;
         let request = CompletionRequest {
-            model: self.model.clone(),
+            model: route.model,
+            reasoning: route.reasoning,
             messages: messages.clone(),
             tools: Vec::new(),
             provider_tools,
@@ -450,6 +459,17 @@ impl AgentLoop {
         ctx.get::<crate::ProviderToolsOverride>()
             .and_then(|override_value| override_value.get())
             .unwrap_or_else(|| self.provider.capabilities().provider_tools)
+    }
+
+    fn route(&self, ctx: &Ctx) -> ModelRoute {
+        let mut route = ctx
+            .get::<ModelRouteOverride>()
+            .map(|override_value| override_value.get())
+            .unwrap_or_else(|| ModelRoute::new("", self.model.clone(), ReasoningLevel::Auto));
+        if route.model.is_empty() {
+            route.model = self.model.clone();
+        }
+        route
     }
 
     fn inject_steers(

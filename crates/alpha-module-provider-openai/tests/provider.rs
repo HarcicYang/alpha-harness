@@ -111,6 +111,7 @@ async fn sends_chat_completion_requests_and_parses_text() {
     let response = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
@@ -140,6 +141,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
     let error = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
@@ -157,6 +159,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
     let error = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
@@ -194,6 +197,7 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
     let completion = provider
         .complete(CompletionRequest {
             model: "gpt-test".to_owned(),
+            reasoning: Default::default(),
             messages: vec![
                 ChatMessage::User("read a.txt".to_owned()),
                 ChatMessage::AssistantToolCalls {
@@ -257,6 +261,7 @@ async fn streams_text_deltas_and_requests_streaming_mode() {
     let chunks: Vec<Result<CompletionChunk, _>> = provider
         .stream(CompletionRequest {
             model: "stream-model".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
@@ -295,6 +300,7 @@ async fn accumulates_tool_call_deltas_split_across_network_chunks() {
     let chunks: Vec<CompletionChunk> = provider
         .stream(CompletionRequest {
             model: "stream-model".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("read".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
@@ -336,6 +342,7 @@ async fn rejects_malformed_stream_events() {
     let error = provider
         .stream(CompletionRequest {
             model: "stream-model".to_owned(),
+            reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),

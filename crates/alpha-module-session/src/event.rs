@@ -1,6 +1,8 @@
 //! Durable session events.
 
-use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode, ToolCallId, TurnId};
+use alpha_schema::{
+    AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, ToolCallId, TurnId,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::header::WorkspaceRef;
@@ -84,12 +86,28 @@ pub enum SessionEvent {
     },
     /// Frozen request capabilities for one model step.
     RequestHeader {
+        /// Provider instance id or provider kind.
+        #[serde(default)]
+        provider: String,
         /// Model identifier.
         model: String,
+        /// Requested reasoning effort.
+        #[serde(default)]
+        reasoning: ReasoningLevel,
         /// Local tool names.
         tools: Vec<String>,
         /// Provider-native tool names.
         provider_tools: Vec<String>,
+    },
+    /// Session provider route changed.
+    RouteChanged {
+        /// Provider instance id or provider kind.
+        provider: String,
+        /// Model identifier. Empty means the provider default.
+        model: String,
+        /// Requested reasoning effort.
+        #[serde(default)]
+        reasoning: ReasoningLevel,
     },
     /// Session-level provider-native tool override.
     CapabilitiesSet {

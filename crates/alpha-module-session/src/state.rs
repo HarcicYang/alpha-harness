@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 
 use alpha_schema::{
-    AssistantContentBlock, EventEnvelope, MessageId, PermissionMode, Seq, ToolCallId,
+    AssistantContentBlock, EventEnvelope, MessageId, PermissionMode, ReasoningLevel, Seq,
+    ToolCallId,
 };
 
 use crate::event::{SessionEvent, ToolStatus};
@@ -90,6 +91,12 @@ pub struct SessionState {
     pub compaction: Option<CompactionRecord>,
     /// Effective permission mode.
     pub mode: PermissionMode,
+    /// Effective provider instance id or provider kind.
+    pub provider: String,
+    /// Effective model identifier. Empty means the provider default.
+    pub model: String,
+    /// Effective reasoning effort.
+    pub reasoning: ReasoningLevel,
     /// Session-level provider-native tool override.
     pub provider_tools_override: Option<Vec<String>>,
     /// Effective workspace binding.
@@ -111,6 +118,9 @@ impl SessionState {
             system_prompt: None,
             compaction: None,
             mode: header.mode,
+            provider: header.provider.clone(),
+            model: header.model.clone(),
+            reasoning: ReasoningLevel::Auto,
             provider_tools_override: None,
             workspace: header.workspace.clone(),
             messages: Vec::new(),
@@ -151,6 +161,15 @@ impl SessionState {
             }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::RequestHeader { .. } => {}
+            SessionEvent::RouteChanged {
+                provider,
+                model,
+                reasoning,
+            } => {
+                self.provider = provider.clone();
+                self.model = model.clone();
+                self.reasoning = *reasoning;
+            }
             SessionEvent::CapabilitiesSet { provider_tools } => {
                 self.provider_tools_override = Some(provider_tools.clone());
             }

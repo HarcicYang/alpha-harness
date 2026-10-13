@@ -10,7 +10,7 @@ use alpha_module_loop::ModelProvider;
 use alpha_provider_api::{
     AdapterProvider, AdapterRequirement, AuthMethodDescriptor, ModelDescriptor,
     ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind, ProviderKindError,
-    ProviderKindRegistry, required_adapter, required_credential_text,
+    ProviderKindRegistry, ReasoningLevel, required_adapter, required_credential_text,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,9 +65,16 @@ impl ProviderKind for AnthropicMessagesProviderKind {
                 interactive: true,
             }],
             models: vec![
-                model("claude-sonnet-4-20250514", 200_000, 64_000, false),
-                model("claude-opus-4-20250514", 200_000, 32_000, true),
-                model("claude-3-7-sonnet-20250219", 200_000, 64_000, true),
+                model("claude-sonnet-5-5", 1_000_000, 128_000, true),
+                model("claude-opus-5-5", 1_000_000, 128_000, true),
+                model("claude-haiku-5-5", 1_000_000, 128_000, true),
+                model("claude-sonnet-5", 1_000_000, 128_000, true),
+                model("claude-opus-5", 1_000_000, 128_000, true),
+                model("claude-sonnet-4-6", 1_000_000, 128_000, true),
+                model("claude-opus-4-8", 1_000_000, 128_000, true),
+                model("claude-haiku-4-5", 200_000, 64_000, true),
+                model("claude-sonnet-4-5", 200_000, 64_000, true),
+                model("claude-opus-4-5", 200_000, 64_000, true),
             ],
             adapters: vec![AdapterRequirement {
                 key: ADAPTER_KEY.to_owned(),
@@ -111,6 +118,7 @@ fn model(id: &str, context_window: u64, max_tokens: u64, provider_tools: bool) -
         context_window,
         max_tokens,
         reasoning: true,
+        reasoning_levels: ReasoningLevel::ALL.to_vec(),
         provider_tools: if provider_tools {
             vec!["web_search".to_owned()]
         } else {

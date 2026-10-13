@@ -49,6 +49,14 @@ credential entry, validation, schema-guided JSON configuration editing, and
 refresh. Secrets are written to the platform keyring by the core and are never
 returned to the TUI.
 
+The chat header always shows the effective provider, model, thinking level, and
+permission mode. `Ctrl-L` opens the model picker, `Shift-Tab` cycles thinking
+levels, and `Ctrl-T` opens the thinking-level picker. The equivalent commands
+are `/model`, `/thinking`, and `/effort`. Route changes are recorded in the
+session log and restored when the session is resumed. Model selection also
+becomes the persisted default for new sessions, and model pickers prefer the
+provider's live `/models` catalog over bundled fallback metadata.
+
 ## Prompting and context
 
 - `AGENTS.md` and `.alpha/AGENTS.md` files are discovered from the workspace

@@ -10,7 +10,7 @@ use alpha_module_loop::ModelProvider;
 use alpha_provider_api::{
     AdapterProvider, AdapterRequirement, AuthMethodDescriptor, ModelDescriptor,
     ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind, ProviderKindError,
-    ProviderKindRegistry, required_adapter, required_credential_text,
+    ProviderKindRegistry, ReasoningLevel, required_adapter, required_credential_text,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,8 @@ impl ProviderKind for OpenAiChatProviderKind {
                 interactive: true,
             }],
             models: vec![
+                model("gpt-4.1", 1_000_000, 32_768),
+                model("gpt-4.1-mini", 1_000_000, 32_768),
                 model("gpt-4o-mini", 128_000, 16_384),
                 model("gpt-4o", 128_000, 16_384),
             ],
@@ -110,6 +112,7 @@ fn model(id: &str, context_window: u64, max_tokens: u64) -> ModelDescriptor {
         context_window,
         max_tokens,
         reasoning: false,
+        reasoning_levels: vec![ReasoningLevel::Auto],
         provider_tools: Vec::new(),
     }
 }

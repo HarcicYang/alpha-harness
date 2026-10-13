@@ -170,6 +170,9 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     if !tools.is_empty() {
         payload.insert("tools".to_owned(), Value::Array(tools));
     }
+    if let Some(effort) = request.reasoning.api_effort() {
+        payload.insert("reasoning_effort".to_owned(), json!(effort));
+    }
     payload.insert("stream".to_owned(), json!(true));
     if let Value::Object(options) = &request.options {
         for (key, value) in options {

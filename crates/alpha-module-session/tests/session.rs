@@ -6,7 +6,8 @@ use alpha_module_session::{
     TurnEndReason, WorkspaceRef,
 };
 use alpha_schema::{
-    AssistantContentBlock, MessageId, PermissionMode, SessionId, Timestamp, ToolCallId,
+    AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, SessionId, Timestamp,
+    ToolCallId,
 };
 
 fn header() -> SessionHeader {
@@ -142,6 +143,31 @@ fn context_compaction_is_projected_from_the_log() {
     assert_eq!(compaction.summary, "summary");
     assert_eq!(compaction.from_seq.get(), 1);
     assert_eq!(compaction.through_seq.get(), 2);
+}
+
+#[test]
+fn route_changes_are_projected_from_the_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let id = header.id;
+
+    {
+        let writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::RouteChanged {
+                provider: "provider-b".to_owned(),
+                model: "model-b".to_owned(),
+                reasoning: ReasoningLevel::High,
+            })
+            .expect("append route");
+    }
+
+    let reader = store.open_read(id).expect("open read");
+    let state = reader.state();
+    assert_eq!(state.provider, "provider-b");
+    assert_eq!(state.model, "model-b");
+    assert_eq!(state.reasoning, ReasoningLevel::High);
 }
 
 #[test]

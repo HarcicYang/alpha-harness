@@ -31,8 +31,20 @@ fn toml_store_round_trips_instances() {
     store
         .set_default_instance(Some("test".to_owned()))
         .expect("default");
+    assert!(
+        store
+            .set_default_model("test", "deepseek-v4.1-flash")
+            .expect("default model")
+    );
     assert_eq!(store.list().len(), 1);
     assert_eq!(store.default_instance().as_deref(), Some("test"));
+    assert_eq!(
+        registry
+            .get("test")
+            .expect("runtime instance")
+            .model_overrides["default"],
+        json!("deepseek-v4.1-flash")
+    );
 
     let reloaded = Arc::new(ProviderInstanceRegistry::new());
     let store = TomlProviderConfigStore::new(
@@ -41,7 +53,12 @@ fn toml_store_round_trips_instances() {
         reloaded.clone(),
     );
     store.reload().expect("reload");
-    assert_eq!(reloaded.get("test").expect("instance").id, "test");
+    let persisted = reloaded.get("test").expect("instance");
+    assert_eq!(persisted.id, "test");
+    assert_eq!(
+        persisted.model_overrides["default"],
+        json!("deepseek-v4.1-flash")
+    );
     assert!(store.remove("test").expect("remove"));
     assert!(reloaded.get("test").is_none());
 }
@@ -55,7 +72,7 @@ fn toml_store_omits_null_config_fields() {
     let mut instance = instance("opencode-go");
     instance.kind = "opencode-go".to_owned();
     instance.config = json!({
-        "base_url": "https://opencode.ai/zen/v1",
+        "base_url": "https://opencode.ai/zen/go/v1",
         "session_id": null,
     });
 

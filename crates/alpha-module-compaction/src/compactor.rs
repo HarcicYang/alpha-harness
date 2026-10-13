@@ -133,6 +133,7 @@ impl DefaultContextCompactor {
             let response = provider
                 .complete(CompletionRequest {
                     model: model.to_owned(),
+                    reasoning: Default::default(),
                     messages: vec![
                         ChatMessage::System(SUMMARY_PROMPT.to_owned()),
                         ChatMessage::User(input),

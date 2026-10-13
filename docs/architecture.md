@@ -443,6 +443,15 @@ It uses a full-screen alternate terminal and starts and stops its own core
 process. Secrets are never returned by provider reads and never enter front
 state after submission.
 
+The chat screen keeps the effective provider/model route and permission mode
+visible. `Ctrl-L` selects a configured provider/model, `Shift-Tab` cycles the
+model's configured thinking levels, and `Ctrl-T` opens the thinking-level
+picker. `/model`, `/thinking`, and `/effort` provide the same controls. Route
+changes apply to the next model step and are durable, so resuming a session
+restores the effective provider, model, and thinking level. Selecting a model
+also persists it as the provider instance's default model and default provider
+selection, so new sessions start from the same route.
+
 ### D26: Credential storage
 
 Provider secrets are stored only through the credential module. The module
@@ -476,10 +485,18 @@ Responses, and Anthropic Messages kinds plus dedicated DeepSeek and OpenCode
 Go kinds. DeepSeek uses the Anthropic Messages adapter so provider-native web
 search can be exposed through the same request path.
 
-Model catalogs are static provider metadata. `model_overrides` in the user
-TOML may change a model name, adapter, context window, output limit, reasoning
-flag, or provider tools, and may select a default model. No remote model-list
-refresh is performed.
+Model catalogs are layered. The core prefers the provider's `/models` endpoint
+using the stored credential, preserves static metadata for known ids, and
+derives fallback metadata for newly discovered ids. Static provider metadata
+remains the offline fallback. `model_overrides` in the user TOML may change a
+model name, adapter, context window, output limit, reasoning flag,
+`reasoning_levels` (or `thinking_levels`), or provider tools, and may select a
+default model.
+
+Provider requests carry the selected reasoning level. OpenAI Chat Completions
+and Responses map it to `reasoning_effort` and `reasoning.effort`; Anthropic
+Messages maps it to a thinking mode and token budget. `auto` omits the explicit
+control.
 
 Provider config migration failures keep the previous config, mark the instance
 disabled, and reject it during provider construction until the user repairs or
@@ -511,14 +528,19 @@ and citations. Local tool calls still produce independent `ToolCall` and
 and never enter the local tool registry.
 
 Schema 1 assistant messages with a plain `text` field are migrated at read
-time into a single text block. The current durable schema is version 3.
+time into a single text block. The current durable schema is version 6.
 Provider-native tools, including Anthropic `web_search`, are represented as
 provider tool blocks so the transcript and replay path do not need
 provider-specific event types.
 
+Each session has an effective provider/model route and thinking level. The
+initial route comes from session creation metadata; later changes append
+`route_changed` events and apply to the next model step. Session resume rebuilds
+the route from the durable projection.
+
 Before each model step the loop appends a durable `request_header` event with
-the model, local tool names, and provider-native tool names. The event is the
-capability snapshot for that request.
+the provider, model, thinking level, local tool names, and provider-native tool
+names. The event is the capability snapshot for that request.
 
 `session.set_capabilities` can override provider-native tools for one session.
 The override is recorded as a durable `capabilities_set` event and applies to

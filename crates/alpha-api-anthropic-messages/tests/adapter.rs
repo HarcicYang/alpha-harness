@@ -5,7 +5,9 @@ use alpha_api_anthropic_messages::{ADAPTER_KEY, AnthropicMessagesApiModule};
 use alpha_kernel::{Ctx, Module};
 use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
-use alpha_provider_api::{AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule};
+use alpha_provider_api::{
+    AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
+};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -72,6 +74,7 @@ async fn streams_text_and_tool_input_deltas() {
                 api_key: Some("secret".to_owned()),
                 headers: BTreeMap::new(),
                 model: "claude-test".to_owned(),
+                reasoning: Default::default(),
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: vec!["web_search".to_owned()],
@@ -132,6 +135,7 @@ async fn streams_provider_native_web_search_blocks() {
                 api_key: Some("secret".to_owned()),
                 headers: BTreeMap::new(),
                 model: "claude-test".to_owned(),
+                reasoning: Default::default(),
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: vec!["web_search".to_owned()],
@@ -178,6 +182,7 @@ async fn groups_consecutive_tool_results_into_one_user_message() {
                 api_key: Some("secret".to_owned()),
                 headers: BTreeMap::new(),
                 model: "claude-test".to_owned(),
+                reasoning: Default::default(),
                 messages: vec![
                     ChatMessage::User("inspect the workspace".to_owned()),
                     ChatMessage::AssistantToolCalls {
@@ -233,6 +238,41 @@ async fn groups_consecutive_tool_results_into_one_user_message() {
     assert_eq!(results[0]["tool_use_id"], json!("call-1"));
     assert_eq!(results[1]["type"], json!("tool_result"));
     assert_eq!(results[1]["tool_use_id"], json!("call-2"));
+}
+
+#[tokio::test]
+async fn maps_reasoning_level_into_thinking_budget() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![b"data: {\"type\":\"message_stop\"}\n\n".to_vec()],
+    });
+    alpha_api_anthropic_messages::AnthropicMessagesAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.anthropic.test".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "claude-test".to_owned(),
+                reasoning: ReasoningLevel::Medium,
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["thinking"]["type"], json!("enabled"));
+    assert_eq!(payload["thinking"]["budget_tokens"], json!(2048));
 }
 
 #[test]

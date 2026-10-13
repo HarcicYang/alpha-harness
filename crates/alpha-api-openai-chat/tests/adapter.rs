@@ -5,7 +5,9 @@ use alpha_api_openai_chat::{ADAPTER_KEY, OpenAiChatApiModule};
 use alpha_kernel::{Ctx, Module};
 use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
-use alpha_provider_api::{AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule};
+use alpha_provider_api::{
+    AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
+};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -68,6 +70,7 @@ async fn streams_openai_chat_text_deltas() {
                 api_key: Some("secret".to_owned()),
                 headers: BTreeMap::new(),
                 model: "test-model".to_owned(),
+                reasoning: Default::default(),
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
@@ -100,6 +103,40 @@ async fn streams_openai_chat_text_deltas() {
     );
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["stream"], json!(true));
+}
+
+#[tokio::test]
+async fn maps_reasoning_effort_into_chat_requests() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![b"data: [DONE]\n\n".to_vec()],
+    });
+    alpha_api_openai_chat::OpenAiChatAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "reasoning-model".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["reasoning_effort"], json!("high"));
 }
 
 #[test]
