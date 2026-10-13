@@ -21,8 +21,9 @@ These instructions apply to the entire repository.
 
 ## Workflow
 
-- Use English Conventional Commit subjects with no body.
-- Keep commits small and scoped to one logical change.
+- After completing each small, self-contained feature, create a commit.
+- Use an English Conventional Commit subject with no body.
+- Keep each commit scoped to one logical change.
 - Before committing, run:
 
 ```sh
