@@ -110,6 +110,7 @@ async fn sends_chat_completion_requests_and_parses_text() {
     let provider = OpenAiProvider::new(http, "https://api.test/v1", "secret-key");
     let response = provider
         .complete(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "gpt-test".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
@@ -140,6 +141,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
     let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let error = provider
         .complete(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "gpt-test".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
@@ -158,6 +160,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
     let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let error = provider
         .complete(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "gpt-test".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
@@ -196,6 +199,7 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
     let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let completion = provider
         .complete(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "gpt-test".to_owned(),
             reasoning: Default::default(),
             messages: vec![
@@ -260,6 +264,7 @@ async fn streams_text_deltas_and_requests_streaming_mode() {
     let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let chunks: Vec<Result<CompletionChunk, _>> = provider
         .stream(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "stream-model".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],
@@ -299,6 +304,7 @@ async fn accumulates_tool_call_deltas_split_across_network_chunks() {
     let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let chunks: Vec<CompletionChunk> = provider
         .stream(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "stream-model".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("read".to_owned())],
@@ -341,6 +347,7 @@ async fn rejects_malformed_stream_events() {
     let provider = Arc::new(OpenAiProvider::new(http, "https://api.test/v1", "key"));
     let error = provider
         .stream(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "stream-model".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],

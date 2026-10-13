@@ -241,7 +241,8 @@ impl ProviderKind for OpenCodeGoProviderKind {
                 Vec::new(),
                 options,
             )
-            .with_model_adapters(model_adapters),
+            .with_model_adapters(model_adapters)
+            .with_session_header("x-opencode-session"),
         ))
     }
 }

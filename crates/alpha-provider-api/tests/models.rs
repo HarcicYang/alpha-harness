@@ -2,19 +2,47 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse};
-use alpha_module_loop::ModelProvider;
+use alpha_module_loop::{ChatMessage, CompletionChunk, CompletionRequest, ModelProvider};
 use alpha_provider_api::{
-    AuthMethodDescriptor, ModelDescriptor, ProviderBuildContext, ProviderDescriptor,
-    ProviderInstance, ProviderKind, ProviderKindError, ReasoningLevel, default_model_id,
-    discover_models, effective_model_catalog,
+    AdapterCapabilities, AdapterProvider, AdapterRequest, ApiAdapter, AuthMethodDescriptor,
+    ModelDescriptor, ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind,
+    ProviderKindError, ReasoningLevel, default_model_id, discover_models, effective_model_catalog,
 };
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use serde_json::json;
 
 struct TestKind;
 
 struct CatalogHttp {
     request: Mutex<Option<HttpRequest>>,
+}
+
+struct CaptureAdapter {
+    request: Mutex<Option<AdapterRequest>>,
+}
+
+impl ApiAdapter for CaptureAdapter {
+    fn key(&self) -> &'static str {
+        "capture"
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities {
+            streaming: true,
+            tool_calls: true,
+            provider_tools: false,
+        }
+    }
+
+    fn stream(
+        &self,
+        _client: Arc<dyn HttpClient>,
+        request: AdapterRequest,
+    ) -> BoxStream<'static, Result<CompletionChunk, alpha_module_loop::ProviderError>> {
+        *self.request.lock().expect("request lock") = Some(request);
+        Box::pin(futures::stream::empty())
+    }
 }
 
 impl HttpClient for CatalogHttp {
@@ -163,5 +191,48 @@ fn dynamic_catalog_prioritizes_provider_models() {
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer secret")
+    );
+}
+
+#[test]
+fn session_header_is_added_to_provider_requests() {
+    let adapter = Arc::new(CaptureAdapter {
+        request: Mutex::new(None),
+    });
+    let provider = Arc::new(
+        AdapterProvider::new(
+            adapter.clone(),
+            Arc::new(CatalogHttp {
+                request: Mutex::new(None),
+            }),
+            "https://api.test/v1",
+            None,
+            Default::default(),
+            Vec::new(),
+            json!({}),
+        )
+        .with_session_header("x-opencode-session"),
+    );
+    let _stream = provider.stream(CompletionRequest {
+        session_id: "session-123".to_owned(),
+        model: "deepseek-v4.1-flash".to_owned(),
+        reasoning: ReasoningLevel::Auto,
+        messages: vec![ChatMessage::User("hello".to_owned())],
+        tools: Vec::new(),
+        provider_tools: Vec::new(),
+    });
+
+    let request = adapter
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("adapter request");
+    assert_eq!(
+        request
+            .headers
+            .get("x-opencode-session")
+            .map(String::as_str),
+        Some("session-123")
     );
 }

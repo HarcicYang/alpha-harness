@@ -109,6 +109,7 @@ impl DefaultContextCompactor {
         &self,
         provider: &dyn ModelProvider,
         model: &str,
+        session_id: &str,
         state: &SessionState,
         records: &[&MessageRecord],
     ) -> Result<String, ContextError> {
@@ -132,6 +133,7 @@ impl DefaultContextCompactor {
             input.push_str(&chunk);
             let response = provider
                 .complete(CompletionRequest {
+                    session_id: session_id.to_owned(),
                     model: model.to_owned(),
                     reasoning: Default::default(),
                     messages: vec![
@@ -210,7 +212,15 @@ impl ContextPreparer for DefaultContextCompactor {
             if records.is_empty() {
                 return Ok(());
             }
-            let summary = self.summarize(provider, model, state, &records).await?;
+            let summary = self
+                .summarize(
+                    provider,
+                    model,
+                    &writer.header().id.to_string(),
+                    state,
+                    &records,
+                )
+                .await?;
             let from_seq = records.first().expect("non-empty records").seq();
             let through_seq = records.last().expect("non-empty records").seq();
             let envelope = writer

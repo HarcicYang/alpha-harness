@@ -360,6 +360,7 @@ async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
     let provider = Arc::new(EchoProvider::default());
     let chunks: Vec<CompletionChunk> = provider
         .stream(CompletionRequest {
+            session_id: "test-session".to_owned(),
             model: "echo".to_owned(),
             reasoning: Default::default(),
             messages: vec![ChatMessage::User("hi".to_owned())],

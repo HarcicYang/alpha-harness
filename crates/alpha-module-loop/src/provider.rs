@@ -88,6 +88,8 @@ pub struct ToolCall {
 /// One completion request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionRequest {
+    /// Session identity used for provider routing.
+    pub session_id: String,
     /// Model identifier.
     pub model: String,
     /// Requested reasoning effort.

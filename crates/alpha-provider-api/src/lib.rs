@@ -331,6 +331,7 @@ pub struct AdapterProvider {
     base_url: String,
     api_key: Option<String>,
     headers: BTreeMap<String, String>,
+    session_header: Option<&'static str>,
     provider_tools: Vec<String>,
     options: Value,
 }
@@ -353,6 +354,7 @@ impl AdapterProvider {
             base_url: base_url.into(),
             api_key,
             headers,
+            session_header: None,
             provider_tools,
             options,
         }
@@ -361,6 +363,12 @@ impl AdapterProvider {
     /// Add model-specific adapter overrides.
     pub fn with_model_adapters(mut self, adapters: BTreeMap<String, Arc<dyn ApiAdapter>>) -> Self {
         self.model_adapters = adapters;
+        self
+    }
+
+    /// Add the session id to requests using a provider-specific routing header.
+    pub fn with_session_header(mut self, name: &'static str) -> Self {
+        self.session_header = Some(name);
         self
     }
 
@@ -377,10 +385,19 @@ impl AdapterProvider {
         } else {
             request.provider_tools
         };
+        let mut headers = self.headers.clone();
+        if let Some(name) = self.session_header
+            && !request.session_id.is_empty()
+            && !headers
+                .keys()
+                .any(|header| header.eq_ignore_ascii_case(name))
+        {
+            headers.insert(name.to_owned(), request.session_id);
+        }
         AdapterRequest {
             base_url: self.base_url.clone(),
             api_key: self.api_key.clone(),
-            headers: self.headers.clone(),
+            headers,
             model: request.model,
             reasoning: request.reasoning,
             messages: request.messages,

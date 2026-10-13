@@ -180,6 +180,7 @@ impl AgentLoop {
             })?;
             ctx.parallel(AgentStepStarted { step: step + 1 }).await;
             let request = CompletionRequest {
+                session_id: session_id.to_string(),
                 model: route.model,
                 reasoning: route.reasoning,
                 messages: messages.clone(),
@@ -276,6 +277,7 @@ impl AgentLoop {
             provider_tools: provider_tools.clone(),
         })?;
         let request = CompletionRequest {
+            session_id: session_id.to_string(),
             model: route.model,
             reasoning: route.reasoning,
             messages: messages.clone(),

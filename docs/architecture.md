@@ -498,6 +498,10 @@ and Responses map it to `reasoning_effort` and `reasoning.effort`; Anthropic
 Messages maps it to a thinking mode and token budget. `auto` omits the explicit
 control.
 
+OpenCode Go requests also receive the durable session id in
+`x-opencode-session`. This is the provider's required per-conversation routing
+header; an explicitly configured header still takes precedence.
+
 Provider config migration failures keep the previous config, mark the instance
 disabled, and reject it during provider construction until the user repairs or
 replaces the configuration.
