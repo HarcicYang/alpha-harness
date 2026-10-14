@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use alpha_kernel::Ctx;
+use alpha_kernel::{Ctx, Module};
 use alpha_module_agent_host::{
     AgentHostError, AgentHostService, CreateSessionRequest, SessionRuntime, SessionRuntimeFactory,
     SessionRuntimeRequest,
@@ -10,6 +10,7 @@ use alpha_module_agent_host::{
 use alpha_module_loop::{
     AgentDriver, LoopError, ModelRoute, ModelRouteOverride, ProviderToolsOverride, TurnOutcome,
 };
+use alpha_module_permission::{PermissionConfig, PermissionModule, PermissionService};
 use alpha_module_session::{
     SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason,
 };
@@ -52,12 +53,18 @@ impl AgentDriver for EchoDriver {
             } else {
                 format!(":{}:{}:{}", route.provider, route.model, route.reasoning)
             };
+            let mode_suffix = ctx
+                .get::<dyn PermissionService>()
+                .map(|permission| permission.mode())
+                .filter(|mode| *mode != PermissionMode::Auto)
+                .map(|mode| format!(":mode={mode}"))
+                .unwrap_or_default();
             let tools_suffix = if tools.is_empty() {
                 String::new()
             } else {
                 format!(":{tools}")
             };
-            let text = format!("echo:{prompt}{route_suffix}{tools_suffix}");
+            let text = format!("echo:{prompt}{route_suffix}{mode_suffix}{tools_suffix}");
             writer.append(SessionEvent::AssistantMessage {
                 id,
                 blocks: vec![AssistantContentBlock::Text { text: text.clone() }],
@@ -82,6 +89,15 @@ impl SessionRuntimeFactory for EchoFactory {
         request: SessionRuntimeRequest,
     ) -> Result<SessionRuntime, alpha_module_agent_host::AgentHostError> {
         let ctx = Ctx::root();
+        PermissionModule
+            .activate(
+                &ctx,
+                &PermissionConfig {
+                    mode: request.mode,
+                    ..PermissionConfig::default()
+                },
+            )
+            .expect("permission module");
         let model_route = Arc::new(ModelRouteOverride::default());
         ctx.provide::<ModelRouteOverride>(model_route.clone())
             .expect("model route override");
@@ -350,6 +366,71 @@ fn route_changes_update_the_live_session_projection() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("route-aware response was not recorded");
+    });
+}
+
+#[test]
+fn mode_changes_survive_actor_resume() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let transport = Arc::new(RecordingTransport::default());
+        let host = AgentHostService::new(
+            SessionStore::new(dir.path()),
+            transport.clone(),
+            Arc::new(EchoFactory),
+        )
+        .with_idle_timeout(Duration::from_millis(20));
+        let created = host
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+                reasoning: ReasoningLevel::Auto,
+            })
+            .expect("create");
+        host.set_mode(created.session_id, PermissionMode::Free)
+            .await
+            .expect("set mode");
+        assert_eq!(
+            host.resume_session(created.session_id)
+                .expect("resume before eviction")
+                .mode,
+            PermissionMode::Free
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(host.session_count(), 0);
+        let resumed = host
+            .resume_session(created.session_id)
+            .expect("resume after eviction");
+        assert_eq!(resumed.mode, PermissionMode::Free);
+
+        host.submit(created.session_id, "hello".to_owned())
+            .expect("submit");
+        for _ in 0..50 {
+            let completed = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned")
+                .iter()
+                .any(|(method, params)| {
+                    method == "session.event"
+                        && params["kind"] == "durable"
+                        && params["event"]["payload"]["type"] == "assistant_message"
+                        && params["event"]["payload"]["blocks"][0]["text"] == "echo:hello:mode=free"
+                });
+            if completed {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("restored mode did not reach the new runtime");
     });
 }
 

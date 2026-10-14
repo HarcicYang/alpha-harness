@@ -14,6 +14,8 @@ use crate::request::{ApprovalDecision, GrantScope, PermissionOutcome, Permission
 pub trait PermissionService: Send + Sync + 'static {
     /// Decide whether a request may proceed.
     fn check(&self, request: PermissionRequest) -> BoxFuture<'_, PermissionOutcome>;
+    /// The effective mode for later checks.
+    fn mode(&self) -> PermissionMode;
     /// Change the effective mode for later checks.
     fn set_mode(&self, mode: PermissionMode);
 }
@@ -295,6 +297,10 @@ impl PermissionService for LocalPermissionService {
 
     fn set_mode(&self, mode: PermissionMode) {
         *self.mode.lock().expect("mode lock poisoned") = mode;
+    }
+
+    fn mode(&self) -> PermissionMode {
+        *self.mode.lock().expect("mode lock poisoned")
     }
 }
 

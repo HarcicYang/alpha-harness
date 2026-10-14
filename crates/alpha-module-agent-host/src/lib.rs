@@ -360,7 +360,7 @@ impl AgentHostService {
         let runtime = self.factory.build(SessionRuntimeRequest {
             session_id,
             workspace: header.workspace.clone(),
-            mode: header.mode,
+            mode: state.mode,
             provider: state.provider.clone(),
             model: state.model.clone(),
             reasoning: state.reasoning,
@@ -983,13 +983,16 @@ async fn actor_loop(
                     }
                     SessionCommand::SetMode { mode, reply } => {
                         let result = match runtime.ctx.require::<dyn PermissionService>() {
-                            Ok(permission) => {
-                                permission.set_mode(mode);
-                                writer
-                                    .append(SessionEvent::ModeChanged { mode })
-                                    .map(|_| ())
-                                    .map_err(AgentHostError::Session)
-                            }
+                            Ok(permission) => writer
+                                .append(SessionEvent::ModeChanged { mode })
+                                .map_err(AgentHostError::Session)
+                                .map(|envelope| {
+                                    permission.set_mode(mode);
+                                    state
+                                        .lock()
+                                        .expect("session state lock poisoned")
+                                        .apply(&envelope);
+                                }),
                             Err(error) => Err(AgentHostError::Runtime(error.to_string())),
                         };
                         let _ = reply.send(result);
