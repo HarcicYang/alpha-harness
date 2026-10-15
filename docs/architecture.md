@@ -279,7 +279,7 @@ mode on every call. `auto` and `reviewed` use workspace-rooted filesystem and
 sandboxed process runners; `free` uses full-access local filesystem and process
 runners. Mode changes therefore apply without rebuilding the session runtime.
 
-M1 ships `read`, `auto`, and `free`. `reviewed` lands in M1.5.
+M1 ships `read`, `auto`, `reviewed`, and `free`.
 
 Approval prompts offer three choices: deny, allow once, allow for this session.
 There is no "always allow" button. Session grants are durable events and
@@ -293,19 +293,22 @@ messaging.
 `reviewed` decision order:
 
 1. Static rules; deny wins; protected classes are intercepted.
-2. Reads and workspace edits inside the sandbox: approved.
-3. Claude-style intent classifier. Approval continues.
-4. Otherwise Codex-style auto review: exfiltration, credential probing,
-   persistent security weakening, destructive actions, risk tiers.
-5. Low and medium risk proceed; high risk prompts the user; critical risk is
-   denied; reviewer failures fail closed (the action does not run; the prompt
-   is marked as review-unavailable and times out to denied).
-6. Both verdicts and reasons are durable events.
+2. The intent classifier decides whether the request can proceed directly. The
+   default classifier allows sandbox-contained requests and hands everything
+   else to review.
+3. The automatic approval reviewer makes the final decision after classifier
+   handoff. `allow` proceeds; `deny` is final and the action does not run.
+4. The default reviewer allows local read-only actions and denies other
+   unsandboxed requests. Custom classifier and reviewer providers can be
+   mounted through the permission module; reviewer failures fail closed by
+   returning `deny`.
+5. Both verdicts and decision sources are durable events.
 
-The reviewer is a seam with providers: `user`, `auto`, `deny`, `policy-only`.
-Reviewer requests contain the action, arguments, model-provided reason, target
-paths and domains, and policy text. Raw tool output and repository content are
-stripped to resist prompt injection.
+The classifier and reviewer are replaceable service seams. Model-backed
+implementations can classify intent and assess risk; the built-in providers are
+deterministic and conservative. Reviewer requests contain the action,
+resources, model-provided reason, and sandbox-boundary status. Raw tool output
+and repository content are not part of the permission request.
 
 Sandbox matrix follows Codex: Linux uses bubblewrap plus seccomp (bubblewrap is
 already available in the development environment); WSL2 reuses the Linux
@@ -669,8 +672,8 @@ Acceptance criteria:
 - **M1**: everything in section 6.
 - **Post-M1 A/B**: prompt snapshots, project instructions, context compaction,
   provider streaming, agent live events, and streamed CLI output.
-- **M1.5**: `reviewed` mode (classifier plus auto review), macOS Seatbelt and
-  Windows MXC sandbox drivers, reviewer policy files.
+- **M1.5**: model-backed reviewer providers, macOS Seatbelt and Windows MXC
+  sandbox drivers, reviewer policy files.
 - **M2**: TUI profile, MCP client module, subagents, multi-Location daemon.
 
 ## 8. Open items

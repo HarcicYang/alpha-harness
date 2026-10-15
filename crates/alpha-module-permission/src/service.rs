@@ -9,6 +9,7 @@ use futures::future::BoxFuture;
 use crate::Policy;
 use crate::policy::RuleDecision;
 use crate::request::{ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest};
+use crate::review::{ApprovalReviewer, IntentClassifier, IntentDecision, ReviewDecision};
 
 /// Permission checks used by tools.
 pub trait PermissionService: Send + Sync + 'static {
@@ -48,6 +49,10 @@ pub enum DecisionSource {
     Default,
     /// A protected pattern forced the path.
     Protected,
+    /// The reviewed-mode intent classifier allowed the request.
+    IntentClassifier,
+    /// Automatic approval review decided.
+    ApprovalReviewer,
     /// An approval channel decided.
     Approval,
     /// The request needed approval but no channel existed.
@@ -64,6 +69,8 @@ impl DecisionSource {
             Self::Policy => "policy",
             Self::Default => "default",
             Self::Protected => "protected",
+            Self::IntentClassifier => "intent_classifier",
+            Self::ApprovalReviewer => "approval_reviewer",
             Self::Approval => "approval",
             Self::NoChannel => "no_channel",
             Self::Timeout => "timeout",
@@ -120,8 +127,38 @@ pub struct LocalPermissionService {
     mode: Mutex<PermissionMode>,
     policy: Policy,
     grants: Mutex<BTreeSet<(String, String)>>,
+    classifier: Arc<dyn IntentClassifier>,
+    reviewer: Arc<dyn ApprovalReviewer>,
     channel: Option<Arc<dyn ApprovalChannel>>,
     audit: Option<Arc<dyn AuditSink>>,
+}
+
+struct SandboxIntentClassifier;
+
+impl IntentClassifier for SandboxIntentClassifier {
+    fn classify(&self, request: PermissionRequest) -> BoxFuture<'_, IntentDecision> {
+        Box::pin(async move {
+            if request.sandboxed {
+                IntentDecision::Allow
+            } else {
+                IntentDecision::Review
+            }
+        })
+    }
+}
+
+struct ReadOnlyApprovalReviewer;
+
+impl ApprovalReviewer for ReadOnlyApprovalReviewer {
+    fn review(&self, request: PermissionRequest) -> BoxFuture<'_, ReviewDecision> {
+        Box::pin(async move {
+            if is_local_read_only(&request.action) {
+                ReviewDecision::Allow
+            } else {
+                ReviewDecision::Deny
+            }
+        })
+    }
 }
 
 impl LocalPermissionService {
@@ -131,6 +168,8 @@ impl LocalPermissionService {
             mode: Mutex::new(mode),
             policy,
             grants: Mutex::new(BTreeSet::new()),
+            classifier: Arc::new(SandboxIntentClassifier),
+            reviewer: Arc::new(ReadOnlyApprovalReviewer),
             channel: None,
             audit: None,
         }
@@ -145,6 +184,18 @@ impl LocalPermissionService {
     /// Attach an audit sink.
     pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
         self.audit = Some(audit);
+        self
+    }
+
+    /// Override the reviewed-mode intent classifier.
+    pub fn with_intent_classifier(mut self, classifier: Arc<dyn IntentClassifier>) -> Self {
+        self.classifier = classifier;
+        self
+    }
+
+    /// Override the reviewed-mode automatic approval reviewer.
+    pub fn with_approval_reviewer(mut self, reviewer: Arc<dyn ApprovalReviewer>) -> Self {
+        self.reviewer = reviewer;
         self
     }
 
@@ -242,7 +293,30 @@ impl LocalPermissionService {
                         self.ask(request, false).await
                     }
                 }
-                PermissionMode::Reviewed => self.ask(request, false).await,
+                PermissionMode::Reviewed => self.review(request).await,
+            },
+        }
+    }
+
+    async fn review(&self, request: &PermissionRequest) -> (PermissionOutcome, DecisionSource) {
+        match self.classifier.classify(request.clone()).await {
+            IntentDecision::Allow => (
+                PermissionOutcome::Allowed {
+                    scope: GrantScope::Once,
+                },
+                DecisionSource::IntentClassifier,
+            ),
+            IntentDecision::Review => match self.reviewer.review(request.clone()).await {
+                ReviewDecision::Allow => (
+                    PermissionOutcome::Allowed {
+                        scope: GrantScope::Once,
+                    },
+                    DecisionSource::ApprovalReviewer,
+                ),
+                ReviewDecision::Deny => (
+                    denied("denied by automatic approval review"),
+                    DecisionSource::ApprovalReviewer,
+                ),
             },
         }
     }
@@ -333,4 +407,10 @@ fn is_read_only(action: &str) -> bool {
     ]
     .iter()
     .any(|prefix| action == *prefix || action.starts_with(prefix))
+}
+
+fn is_local_read_only(action: &str) -> bool {
+    ["fs.read", "fs.list", "fs.stat", "tool.read", "tool.grep"]
+        .iter()
+        .any(|prefix| action == *prefix || action.starts_with(prefix))
 }

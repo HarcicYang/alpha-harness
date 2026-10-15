@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_permission::{
-    ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditRecord, AuditSink, DecisionSource,
-    LocalPermissionService, PermissionConfig, PermissionModule, PermissionOutcome,
-    PermissionRequest, PermissionService, Policy, Rule, RuleDecision, default_protected,
-    wildcard_match,
+    ApprovalChannel, ApprovalDecision, ApprovalPrompt, ApprovalReviewer, AuditRecord, AuditSink,
+    DecisionSource, IntentClassifier, IntentDecision, LocalPermissionService, PermissionConfig,
+    PermissionModule, PermissionOutcome, PermissionRequest, PermissionService, Policy,
+    ReviewDecision, Rule, RuleDecision, default_protected, wildcard_match,
 };
 use alpha_schema::PermissionMode;
 use futures::future::BoxFuture;
@@ -51,6 +51,32 @@ struct Audit {
 impl AuditSink for Audit {
     fn record(&self, record: AuditRecord) {
         self.records.lock().expect("audit lock").push(record);
+    }
+}
+
+struct FixedClassifier {
+    decision: IntentDecision,
+    trace: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl IntentClassifier for FixedClassifier {
+    fn classify(&self, _request: PermissionRequest) -> BoxFuture<'_, IntentDecision> {
+        self.trace.lock().expect("trace lock").push("classifier");
+        let decision = self.decision;
+        Box::pin(async move { decision })
+    }
+}
+
+struct FixedReviewer {
+    decision: ReviewDecision,
+    trace: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl ApprovalReviewer for FixedReviewer {
+    fn review(&self, _request: PermissionRequest) -> BoxFuture<'_, ReviewDecision> {
+        self.trace.lock().expect("trace lock").push("reviewer");
+        let decision = self.decision;
+        Box::pin(async move { decision })
     }
 }
 
@@ -183,6 +209,135 @@ async fn auto_mode_fails_closed_for_unsandboxed_requests_without_a_channel() {
         outcome,
         PermissionOutcome::Denied { ref reason } if reason.contains("no approval channel")
     ));
+}
+
+#[tokio::test]
+async fn reviewed_classifier_allow_skips_the_reviewer() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let service = LocalPermissionService::new(PermissionMode::Reviewed, Policy::default())
+        .with_intent_classifier(Arc::new(FixedClassifier {
+            decision: IntentDecision::Allow,
+            trace: trace.clone(),
+        }))
+        .with_approval_reviewer(Arc::new(FixedReviewer {
+            decision: ReviewDecision::Deny,
+            trace: trace.clone(),
+        }));
+
+    assert!(
+        service
+            .check(unsandboxed_request("network.fetch", "api.example.com"))
+            .await
+            .is_allowed()
+    );
+    assert_eq!(*trace.lock().expect("trace lock"), vec!["classifier"]);
+}
+
+#[tokio::test]
+async fn reviewed_reviewer_can_allow_after_classifier_handoff() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let service = LocalPermissionService::new(PermissionMode::Reviewed, Policy::default())
+        .with_intent_classifier(Arc::new(FixedClassifier {
+            decision: IntentDecision::Review,
+            trace: trace.clone(),
+        }))
+        .with_approval_reviewer(Arc::new(FixedReviewer {
+            decision: ReviewDecision::Allow,
+            trace: trace.clone(),
+        }));
+
+    assert!(
+        service
+            .check(unsandboxed_request("network.fetch", "api.example.com"))
+            .await
+            .is_allowed()
+    );
+    assert_eq!(
+        *trace.lock().expect("trace lock"),
+        vec!["classifier", "reviewer"]
+    );
+}
+
+#[tokio::test]
+async fn reviewed_reviewer_denial_is_final() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let audit = Arc::new(Audit::default());
+    let service = LocalPermissionService::new(PermissionMode::Reviewed, Policy::default())
+        .with_intent_classifier(Arc::new(FixedClassifier {
+            decision: IntentDecision::Review,
+            trace: trace.clone(),
+        }))
+        .with_approval_reviewer(Arc::new(FixedReviewer {
+            decision: ReviewDecision::Deny,
+            trace: trace.clone(),
+        }))
+        .with_audit(audit.clone());
+
+    let outcome = service
+        .check(unsandboxed_request("network.fetch", "api.example.com"))
+        .await;
+    assert!(matches!(
+        outcome,
+        PermissionOutcome::Denied { ref reason }
+            if reason.contains("automatic approval review")
+    ));
+    assert_eq!(
+        *trace.lock().expect("trace lock"),
+        vec!["classifier", "reviewer"]
+    );
+    assert_eq!(
+        audit.records.lock().expect("audit lock")[0].source,
+        DecisionSource::ApprovalReviewer
+    );
+}
+
+#[tokio::test]
+async fn reviewed_default_policy_classifies_and_reviews_requests() {
+    let audit = Arc::new(Audit::default());
+    let service = LocalPermissionService::new(PermissionMode::Reviewed, Policy::default())
+        .with_audit(audit.clone());
+
+    assert!(
+        service
+            .check(request("fs.write", "workspace/main.rs"))
+            .await
+            .is_allowed()
+    );
+    assert!(
+        service
+            .check(unsandboxed_request("fs.read", "outside/main.rs"))
+            .await
+            .is_allowed()
+    );
+    assert!(
+        !service
+            .check(unsandboxed_request("fs.write", "outside/main.rs"))
+            .await
+            .is_allowed()
+    );
+    assert!(
+        !service
+            .check(unsandboxed_request("http.get", "https://example.com"))
+            .await
+            .is_allowed()
+    );
+
+    let sources: Vec<DecisionSource> = audit
+        .records
+        .lock()
+        .expect("audit lock")
+        .iter()
+        .map(|record| record.source)
+        .collect();
+    assert_eq!(
+        sources,
+        vec![
+            DecisionSource::IntentClassifier,
+            DecisionSource::ApprovalReviewer,
+            DecisionSource::ApprovalReviewer,
+            DecisionSource::ApprovalReviewer,
+        ]
+    );
 }
 
 #[tokio::test]

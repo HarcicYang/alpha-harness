@@ -8,6 +8,7 @@
 
 pub mod policy;
 pub mod request;
+pub mod review;
 pub mod service;
 
 use std::sync::Arc;
@@ -21,6 +22,7 @@ pub const __ALPHA_MODULE__: &str = "permission";
 
 pub use policy::{Policy, Rule, RuleDecision, default_protected, wildcard_match};
 pub use request::{ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest};
+pub use review::{ApprovalReviewer, IntentClassifier, IntentDecision, ReviewDecision};
 pub use service::{
     ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, CollectingAuditSink, DecisionSource,
     LocalPermissionService, PermissionService,
@@ -58,6 +60,12 @@ impl Module for PermissionModule {
         protected.extend(config.protected.iter().cloned());
         let policy = Policy::new(config.rules.clone(), protected);
         let mut service = LocalPermissionService::new(config.mode, policy);
+        if let Some(classifier) = ctx.get::<dyn IntentClassifier>() {
+            service = service.with_intent_classifier(classifier);
+        }
+        if let Some(reviewer) = ctx.get::<dyn ApprovalReviewer>() {
+            service = service.with_approval_reviewer(reviewer);
+        }
         if let Some(channel) = ctx.get::<dyn ApprovalChannel>() {
             service = service.with_channel(channel);
         }
