@@ -33,19 +33,25 @@ fn module_assembles_builtin_sections_in_stable_order() {
         .find("# Your Runtime and Operating Model")
         .expect("runtime");
     let rules = prompt.find("# Mandatory Rules").expect("rules");
+    let presets = prompt
+        .find("# Permission Presets")
+        .expect("permission presets");
     let output = prompt.find("# Your Output").expect("output");
     let tools = prompt.find("# Tool Use").expect("tools");
     let stop = prompt.find("# Stop Conditions").expect("stop");
     let persona = prompt.find("# Persona").expect("persona");
 
     assert!(runtime < rules);
-    assert!(rules < output);
+    assert!(rules < presets);
+    assert!(presets < output);
     assert!(output < tools);
     assert!(tools < stop);
     assert!(stop < persona);
     assert!(prompt.contains("`auto`"));
     assert!(prompt.contains("`/workspace/project`"));
-    assert!(prompt.contains("basic Markdown subset"));
+    assert!(prompt.contains("Codex-compatible default"));
+    assert!(prompt.contains("reviewer denial is final"));
+    assert!(prompt.contains("GFM tables"));
     assert!(prompt.contains("fenced code blocks"));
 }
 

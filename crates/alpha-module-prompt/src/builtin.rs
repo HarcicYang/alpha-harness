@@ -12,6 +12,7 @@ pub(crate) fn sections(config: &PromptConfig) -> Vec<Arc<dyn PromptSectionProvid
     let mut sections: Vec<Arc<dyn PromptSectionProvider>> = vec![
         Arc::new(RuntimeSection),
         Arc::new(MandatoryRulesSection),
+        Arc::new(PermissionModesSection),
         Arc::new(OutputRulesSection),
         Arc::new(ToolRulesSection),
         Arc::new(StopConditionsSection),
@@ -46,6 +47,32 @@ impl PromptSectionProvider for RuntimeSection {
              - You can read, search, and edit files and run commands through tools; when an action is required you must call a tool.\n\
              - Every tool call is a real operation; before executing, confirm the target and the scope of impact.",
             request.state.mode, request.state.workspace.root, request.state.workspace.cwd
+        )))
+    }
+}
+
+/// Permission preset and approval-flow reference.
+pub struct PermissionModesSection;
+
+impl PromptSectionProvider for PermissionModesSection {
+    fn key(&self) -> &'static str {
+        "permission-modes"
+    }
+
+    fn priority(&self) -> PromptPriority {
+        PromptPriority::Policy
+    }
+
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
+        Ok(Some(format!(
+            "# Permission Presets\n\n\
+             - `read`: read-only workspace access with network disabled. Mutations and shell execution are denied.\n\
+             - `auto`: the Codex-compatible default. It uses a workspace-write sandbox with network disabled. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require approval.\n\
+             - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final.\n\
+             - `free`: full local filesystem and process access with network enabled and no approval prompts.\n\
+             - Protected operations still require approval outside `free` mode.\n\
+             - Current mode: `{}`. Do not attempt to bypass the active mode, sandbox, or approval decision.",
+            request.state.mode
         )))
     }
 }
@@ -91,8 +118,8 @@ impl PromptSectionProvider for OutputRulesSection {
         Ok(Some(
             "# Your Output\n\n\
              - Plain text is for explaining results to the user; all actual actions must be carried out through tool calls.\n\
-             - The TUI renders this basic Markdown subset: headings (`#` through `######`), paragraphs, unordered lists (`-`, `*`, `+`), ordered lists (`1.`), blockquotes (`>`), fenced code blocks (three backticks), inline code (single backticks), bold (`**text**`), italic (`*text*`), strikethrough (`~~text~~`), and links (`[text](url)`).\n\
-             - Do not use tables, images, HTML, footnotes, task lists, raw ANSI escapes, or other unsupported Markdown features; unsupported syntax is shown as plain text.\n\
+             - The TUI renders this Markdown subset: headings (`#` through `######`), paragraphs, unordered lists (`-`, `*`, `+`), ordered lists (`1.`), blockquotes (`>`), fenced code blocks (three backticks), inline code (single backticks), bold (`**text**`), italic (`*text*`), strikethrough (`~~text~~`), links (`[text](url)`), and GFM tables.\n\
+             - Do not use images, HTML, footnotes, task lists, raw ANSI escapes, or other unsupported Markdown features; unsupported syntax is shown as plain text.\n\
              - Keep answers concise and specific, stating directly what was done, what the result was, and what problems remain.\n\
              - Do not restate tool output or process logs unless they are necessary for the conclusion.\n\
              - When work is not finished, state the blocker clearly; do not paper over failures with speculative descriptions."

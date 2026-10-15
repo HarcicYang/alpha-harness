@@ -10,8 +10,8 @@ use serde::Deserialize;
 mod builtin;
 
 pub use builtin::{
-    MandatoryRulesSection, OutputRulesSection, PersonaSection, StopConditionsSection,
-    ToolRulesSection,
+    MandatoryRulesSection, OutputRulesSection, PermissionModesSection, PersonaSection,
+    StopConditionsSection, ToolRulesSection,
 };
 
 /// Stable module key used by the generated composition table.
