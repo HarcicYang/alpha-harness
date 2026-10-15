@@ -120,6 +120,8 @@ pub enum TranscriptEntry {
     User(String),
     /// Assistant message.
     Assistant(String),
+    /// Assistant reasoning or thinking content.
+    Thinking(String),
     /// Tool or system progress.
     Progress(String),
     /// Error or warning.
@@ -150,6 +152,8 @@ pub struct ChatView {
     pub transcript: Vec<TranscriptEntry>,
     /// Index of the in-progress assistant line.
     pub streaming_assistant: Option<usize>,
+    /// Index of the in-progress thinking line.
+    pub streaming_thinking: Option<usize>,
     /// Composer input.
     pub composer: String,
     /// Status or error line.
@@ -249,6 +253,7 @@ impl ChatView {
         self.transcript.clear();
         self.invalidate_transcript();
         self.streaming_assistant = None;
+        self.streaming_thinking = None;
         self.running_turn = None;
         self.interaction = None;
         self.tool_names.clear();
@@ -291,6 +296,7 @@ impl ChatView {
         self.transcript.clear();
         self.invalidate_transcript();
         self.streaming_assistant = None;
+        self.streaming_thinking = None;
         self.running_turn = None;
         self.tool_names.clear();
         self.transcript_scroll_back = 0;
@@ -506,18 +512,13 @@ impl ChatView {
                     self.transcript.push(TranscriptEntry::User(text.to_owned()));
                     self.invalidate_transcript();
                     self.streaming_assistant = None;
+                    self.streaming_thinking = None;
                 }
             }
             "assistant_message" => {
-                let text = assistant_payload_text(payload);
-                if let Some(index) = self.streaming_assistant.take() {
-                    if let Some(entry) = self.transcript.get_mut(index) {
-                        *entry = TranscriptEntry::Assistant(text);
-                        self.invalidate_transcript();
-                        return;
-                    }
-                }
-                self.transcript.push(TranscriptEntry::Assistant(text));
+                let entries = assistant_payload_entries(payload);
+                self.clear_live_assistant();
+                self.transcript.extend(entries);
                 self.invalidate_transcript();
             }
             "tool_call" => {
@@ -618,6 +619,23 @@ impl ChatView {
                     self.invalidate_transcript();
                 }
             }
+            "thinking_delta" => {
+                let delta = event
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Some(index) = self.streaming_thinking {
+                    if let Some(TranscriptEntry::Thinking(text)) = self.transcript.get_mut(index) {
+                        text.push_str(delta);
+                        self.invalidate_transcript();
+                    }
+                } else {
+                    self.transcript
+                        .push(TranscriptEntry::Thinking(delta.to_owned()));
+                    self.streaming_thinking = Some(self.transcript.len() - 1);
+                    self.invalidate_transcript();
+                }
+            }
             "step_started" => {
                 if let Some(step) = event.get("step").and_then(Value::as_u64) {
                     self.status = Some(format!("model step {step}"));
@@ -645,6 +663,7 @@ impl ChatView {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("model request failed");
+                self.clear_live_assistant();
                 self.transcript
                     .push(TranscriptEntry::Error(message.to_owned()));
                 self.invalidate_transcript();
@@ -654,6 +673,27 @@ impl ChatView {
             }
             _ => {}
         }
+    }
+
+    fn clear_live_assistant(&mut self) {
+        let mut indices = [self.streaming_thinking, self.streaming_assistant]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        indices.sort_unstable();
+        indices.dedup();
+        for index in indices.into_iter().rev() {
+            if index < self.transcript.len()
+                && matches!(
+                    &self.transcript[index],
+                    TranscriptEntry::Assistant(_) | TranscriptEntry::Thinking(_)
+                )
+            {
+                self.transcript.remove(index);
+            }
+        }
+        self.streaming_thinking = None;
+        self.streaming_assistant = None;
     }
 
     fn tick_status(&mut self) {
@@ -719,27 +759,36 @@ impl ChatView {
     }
 }
 
-fn assistant_payload_text(payload: &Value) -> String {
-    if let Some(text) = payload.get("text").and_then(Value::as_str) {
-        if !text.is_empty() {
-            return text.to_owned();
+fn assistant_payload_entries(payload: &Value) -> Vec<TranscriptEntry> {
+    let mut entries = Vec::new();
+    if let Some(blocks) = payload.get("blocks").and_then(Value::as_array) {
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("thinking") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str)
+                        && !text.is_empty()
+                    {
+                        entries.push(TranscriptEntry::Thinking(text.to_owned()));
+                    }
+                }
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str)
+                        && !text.is_empty()
+                    {
+                        entries.push(TranscriptEntry::Assistant(text.to_owned()));
+                    }
+                }
+                _ => {}
+            }
         }
     }
-    payload
-        .get("blocks")
-        .and_then(Value::as_array)
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|block| {
-                    (block.get("type").and_then(Value::as_str) == Some("text"))
-                        .then(|| block.get("text").and_then(Value::as_str))
-                        .flatten()
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        })
-        .unwrap_or_default()
+    if entries.is_empty()
+        && let Some(text) = payload.get("text").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        entries.push(TranscriptEntry::Assistant(text.to_owned()));
+    }
+    entries
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2505,6 +2554,7 @@ fn build_transcript_lines(view: &ChatView) -> Vec<Line<'static>> {
                 Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
             ])],
             TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
+            TranscriptEntry::Thinking(text) => thinking_transcript_lines(text),
             TranscriptEntry::Progress(text) => vec![Line::from(vec![
                 Span::styled("... ", Style::default().fg(COLOR_WARNING)),
                 Span::styled(text.clone(), Style::default().fg(COLOR_MUTED)),
@@ -2520,6 +2570,29 @@ fn build_transcript_lines(view: &ChatView) -> Vec<Line<'static>> {
             ])],
         })
         .collect()
+}
+
+fn thinking_transcript_lines(text: &str) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(COLOR_MUTED)
+        .add_modifier(Modifier::ITALIC);
+    let mut lines = Vec::new();
+    for (index, part) in text.lines().enumerate() {
+        let prefix = if index == 0 { "think: " } else { "       " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                prefix,
+                Style::default()
+                    .fg(COLOR_BRAND)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            Span::styled(part.to_owned(), style),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled("think:", Style::default().fg(COLOR_BRAND)));
+    }
+    lines
 }
 
 fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
@@ -3169,6 +3242,54 @@ mod tests {
     }
 
     #[test]
+    fn chat_streams_thinking_separately_from_visible_text() {
+        let mut view = ChatView {
+            session_id: Some("session-a".to_owned()),
+            ..ChatView::default()
+        };
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
+            "kind": "live",
+            "event": { "type": "thinking_delta", "text": "plan" }
+        }));
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
+            "kind": "live",
+            "event": { "type": "text_delta", "text": "answer" }
+        }));
+        assert_eq!(
+            view.transcript,
+            vec![
+                TranscriptEntry::Thinking("plan".to_owned()),
+                TranscriptEntry::Assistant("answer".to_owned()),
+            ]
+        );
+
+        view.handle_session_event(&serde_json::json!({
+            "sessionId": "session-a",
+            "kind": "durable",
+            "event": {
+                "payload": {
+                    "type": "assistant_message",
+                    "blocks": [
+                        { "type": "thinking", "text": "plan", "signature": "sig" },
+                        { "type": "text", "text": "answer" }
+                    ]
+                }
+            }
+        }));
+        assert_eq!(
+            view.transcript,
+            vec![
+                TranscriptEntry::Thinking("plan".to_owned()),
+                TranscriptEntry::Assistant("answer".to_owned()),
+            ]
+        );
+        assert!(view.streaming_thinking.is_none());
+        assert!(view.streaming_assistant.is_none());
+    }
+
+    #[test]
     fn chat_ignores_events_from_other_sessions() {
         let mut view = ChatView {
             session_id: Some("session-a".to_owned()),
@@ -3298,14 +3419,22 @@ mod tests {
     }
 
     #[test]
-    fn assistant_payload_separates_text_blocks() {
+    fn assistant_payload_preserves_block_order() {
         let payload = serde_json::json!({
             "blocks": [
+                { "type": "thinking", "text": "reasoning" },
                 { "type": "text", "text": "first" },
                 { "type": "text", "text": "second" }
             ]
         });
-        assert_eq!(assistant_payload_text(&payload), "first\n\nsecond");
+        assert_eq!(
+            assistant_payload_entries(&payload),
+            vec![
+                TranscriptEntry::Thinking("reasoning".to_owned()),
+                TranscriptEntry::Assistant("first".to_owned()),
+                TranscriptEntry::Assistant("second".to_owned()),
+            ]
+        );
     }
 
     #[test]
