@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod contract;
+mod execution;
 pub mod file_tools;
 pub mod grep_tool;
 pub mod registry;
@@ -11,7 +12,7 @@ pub mod shell_tool;
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
-use alpha_module_fs::FileSystem;
+use alpha_module_fs::{FileSystem, FileSystemSet};
 use alpha_module_permission::PermissionService;
 use alpha_module_process::ProcessRunnerSet;
 use serde::Deserialize;
@@ -45,8 +46,8 @@ impl Module for ToolsModule {
         &[CapabilitySpec::registry("tool", CapabilityScope::Location)];
 
     fn activate(&self, ctx: &Ctx, config: &Self::Config) -> Result<(), ActivateError> {
-        let filesystem = ctx
-            .require::<dyn FileSystem>()
+        let filesystems = ctx
+            .require::<FileSystemSet>()
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         let processes = ctx
             .require::<ProcessRunnerSet>()
@@ -54,6 +55,10 @@ impl Module for ToolsModule {
         let permission = ctx
             .require::<dyn PermissionService>()
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        let filesystem: Arc<dyn FileSystem> = Arc::new(execution::ModeAwareFileSystem::new(
+            filesystems,
+            permission.clone(),
+        ));
 
         let registry = Arc::new(ToolRegistry::new());
         let tools: Vec<Arc<dyn Tool>> = vec![

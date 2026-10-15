@@ -9,38 +9,50 @@ use crate::seam::{DirEntry, FileKind, FileStat, FileSystem, FsError};
 /// Filesystem seam backed by the local disk.
 #[derive(Clone, Debug)]
 pub struct LocalFileSystem {
-    root: PathBuf,
+    root: Option<PathBuf>,
+    cwd: PathBuf,
 }
 
 impl LocalFileSystem {
     /// Create a driver rooted at a workspace path.
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = normalize(&root.into());
         Self {
-            root: normalize(&root.into()),
+            cwd: root.clone(),
+            root: Some(root),
+        }
+    }
+
+    /// Create a driver with full local filesystem access.
+    pub fn new_full_access(cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            root: None,
+            cwd: normalize(&cwd.into()),
         }
     }
 
     /// The workspace root.
-    pub fn root(&self) -> &Path {
-        &self.root
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
 
-    /// Resolve a path inside the workspace root.
+    /// Resolve a path for this driver.
     ///
-    /// Resolution is lexical. Symlink escapes are outside this driver's
-    /// contract and are handled by the sandbox and permission layers.
+    /// Rooted drivers reject paths outside their workspace. Full-access drivers
+    /// resolve relative paths from the configured working directory.
     pub fn resolve(&self, path: &Path) -> Result<PathBuf, FsError> {
         let joined = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.root.join(path)
+            self.cwd.join(path)
         };
         let normalized = normalize(&joined);
-        if normalized.starts_with(&self.root) {
-            Ok(normalized)
-        } else {
-            Err(FsError::OutsideWorkspace(path.to_path_buf()))
+        if let Some(root) = &self.root
+            && !normalized.starts_with(root)
+        {
+            return Err(FsError::OutsideWorkspace(path.to_path_buf()));
         }
+        Ok(normalized)
     }
 }
 
@@ -74,8 +86,10 @@ impl FileSystem for LocalFileSystem {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let entry_path = entry.path();
-            let relative = entry_path
-                .strip_prefix(&self.root)
+            let relative = self
+                .root
+                .as_ref()
+                .and_then(|root| entry_path.strip_prefix(root).ok())
                 .unwrap_or(&entry_path)
                 .to_path_buf();
             let kind = entry.file_type()?.into();

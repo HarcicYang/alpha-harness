@@ -18,6 +18,7 @@ fn setup(mode: PermissionMode, root: &Path) -> (Ctx, Arc<ToolRegistry>) {
             &ctx,
             &FsConfig {
                 root: root.to_path_buf(),
+                cwd: root.to_path_buf(),
             },
         )
         .expect("fs");
@@ -97,7 +98,7 @@ async fn write_read_and_edit_round_trip() {
 }
 
 #[tokio::test]
-async fn read_reports_empty_files_and_escapes() {
+async fn read_reports_empty_files() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("empty.txt"), b"").expect("write empty");
     let (_ctx, registry) = setup(PermissionMode::Free, dir.path());
@@ -106,12 +107,38 @@ async fn read_reports_empty_files_and_escapes() {
         .await
         .expect("read empty");
     assert_eq!(empty.content, "(empty file)");
+}
+
+#[tokio::test]
+async fn auto_mode_rejects_files_outside_the_workspace() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_ctx, registry) = setup(PermissionMode::Auto, dir.path());
 
     let error = run(&registry, "read", json!({ "path": "../outside.txt" }))
         .await
         .expect_err("escape");
     assert!(matches!(error, ToolError::Failure(_)));
     assert!(error.to_string().contains("escapes the workspace root"));
+}
+
+#[tokio::test]
+async fn free_mode_writes_outside_the_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let (_ctx, registry) = setup(PermissionMode::Free, workspace.path());
+    let path = outside.path().join("outside.txt");
+
+    run(
+        &registry,
+        "write",
+        json!({ "path": path, "content": "full access" }),
+    )
+    .await
+    .expect("write outside workspace");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("outside file"),
+        "full access"
+    );
 }
 
 #[tokio::test]
@@ -262,4 +289,27 @@ async fn shell_runs_commands_and_reports_failures() {
     .await
     .expect_err("unknown shell");
     assert!(error.to_string().contains("not available"));
+}
+
+#[tokio::test]
+async fn free_mode_shell_runs_outside_the_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let (_ctx, registry) = setup(PermissionMode::Free, workspace.path());
+    let path = outside.path().join("shell.txt");
+
+    run(
+        &registry,
+        "shell",
+        json!({
+            "shell": "sh",
+            "command": format!("printf full > '{}'", path.display()),
+        }),
+    )
+    .await
+    .expect("shell outside workspace");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("outside file"),
+        "full"
+    );
 }

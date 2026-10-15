@@ -82,6 +82,7 @@ fn activate_with_fs(root: &std::path::Path) -> Ctx {
             &ctx,
             &FsConfig {
                 root: root.to_path_buf(),
+                cwd: root.to_path_buf(),
             },
         )
         .expect("activate fs");
@@ -136,6 +137,7 @@ fn project_instruction_limit_is_enforced() {
             &ctx,
             &FsConfig {
                 root: dir.path().to_path_buf(),
+                cwd: dir.path().to_path_buf(),
             },
         )
         .expect("activate fs");

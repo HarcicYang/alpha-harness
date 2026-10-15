@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use alpha_module_fs::{FileSystem, FsError};
 use alpha_module_permission::{PermissionOutcome, PermissionRequest, PermissionService};
+use alpha_schema::PermissionMode;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -271,7 +272,8 @@ async fn assert_permission(
     action: &str,
     resource: &str,
 ) -> Result<(), ToolError> {
-    let request = PermissionRequest::new(action, [resource.to_owned()]).with_sandboxed(true);
+    let sandboxed = permission.mode() != PermissionMode::Free;
+    let request = PermissionRequest::new(action, [resource.to_owned()]).with_sandboxed(sandboxed);
     match permission.check(request).await {
         PermissionOutcome::Allowed { .. } => Ok(()),
         PermissionOutcome::Denied { reason } => {

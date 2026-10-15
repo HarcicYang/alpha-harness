@@ -295,6 +295,7 @@ impl AppSessionRuntimeFactory {
                 &location,
                 &FsConfig {
                     root: workspace.root.clone().into(),
+                    cwd: workspace.cwd.clone().into(),
                 },
             )
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
@@ -617,6 +618,7 @@ fn activate_core_modules(
         ctx,
         &FsConfig {
             root: workspace.to_path_buf(),
+            cwd: workspace.to_path_buf(),
         },
     )?;
     PromptModule.activate(ctx, &PromptConfig::default())?;

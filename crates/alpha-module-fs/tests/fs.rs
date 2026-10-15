@@ -55,6 +55,24 @@ fn escaping_paths_are_rejected() {
 }
 
 #[test]
+fn full_access_allows_paths_outside_the_working_directory() {
+    let cwd = tempfile::tempdir().expect("cwd");
+    let outside = tempfile::tempdir().expect("outside");
+    let fs = LocalFileSystem::new_full_access(cwd.path());
+    let outside_file = outside.path().join("outside.txt");
+
+    fs.write(Path::new("relative.txt"), b"relative")
+        .expect("relative write");
+    fs.write(&outside_file, b"outside").expect("outside write");
+    assert_eq!(
+        fs.read(Path::new("relative.txt")).expect("relative read"),
+        b"relative"
+    );
+    assert_eq!(fs.read(&outside_file).expect("outside read"), b"outside");
+    assert!(fs.root().is_none());
+}
+
+#[test]
 fn module_provides_the_seam() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = Ctx::root();
@@ -63,11 +81,16 @@ fn module_provides_the_seam() {
             &ctx,
             &FsConfig {
                 root: dir.path().to_path_buf(),
+                cwd: dir.path().to_path_buf(),
             },
         )
         .expect("activate");
 
     let fs = ctx.require::<dyn FileSystem>().expect("seam");
+    assert!(
+        ctx.get::<alpha_module_fs::FileSystemSet>().is_some(),
+        "filesystem set"
+    );
     fs.write(Path::new("file.txt"), b"content").expect("write");
     assert_eq!(fs.read(Path::new("file.txt")).expect("read"), b"content");
 

@@ -13,10 +13,10 @@ pub enum FileKind {
     Other,
 }
 
-/// One directory entry, with a path relative to the workspace root.
+/// One directory entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
-    /// Path relative to the workspace root.
+    /// Workspace-relative path, or an absolute path in full-access mode.
     pub path: PathBuf,
     /// Entry kind.
     pub kind: FileKind,

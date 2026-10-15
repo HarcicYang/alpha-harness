@@ -20,11 +20,48 @@ use serde::Deserialize;
 pub use local::LocalFileSystem;
 pub use seam::{DirEntry, FileKind, FileStat, FileSystem, FsError};
 
+/// One filesystem execution boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileSystemAccess {
+    /// Access is rooted at the session workspace.
+    Workspace,
+    /// Access uses the local user's full filesystem permissions.
+    FullAccess,
+}
+
+/// Filesystem drivers available to a Location.
+#[derive(Clone)]
+pub struct FileSystemSet {
+    workspace: Arc<dyn FileSystem>,
+    full_access: Arc<dyn FileSystem>,
+}
+
+impl FileSystemSet {
+    /// Build a filesystem set.
+    pub fn new(workspace: Arc<dyn FileSystem>, full_access: Arc<dyn FileSystem>) -> Self {
+        Self {
+            workspace,
+            full_access,
+        }
+    }
+
+    /// Resolve one filesystem boundary.
+    pub fn get(&self, access: FileSystemAccess) -> Arc<dyn FileSystem> {
+        match access {
+            FileSystemAccess::Workspace => self.workspace.clone(),
+            FileSystemAccess::FullAccess => self.full_access.clone(),
+        }
+    }
+}
+
 /// Configuration for the local filesystem driver.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct FsConfig {
     /// Workspace root. Must be an absolute path at activation time.
     pub root: PathBuf,
+    /// Working directory used by full-access relative paths.
+    #[serde(default)]
+    pub cwd: PathBuf,
 }
 
 /// Provides the filesystem seam backed by the local disk.
@@ -45,8 +82,16 @@ impl Module for FsLocalModule {
                 "fs root is not configured",
             ));
         }
-        let filesystem: Arc<dyn FileSystem> = Arc::new(LocalFileSystem::new(config.root.clone()));
-        ctx.provide::<dyn FileSystem>(filesystem)
+        let cwd = if config.cwd.as_os_str().is_empty() {
+            config.root.clone()
+        } else {
+            config.cwd.clone()
+        };
+        let workspace: Arc<dyn FileSystem> = Arc::new(LocalFileSystem::new(config.root.clone()));
+        let full_access: Arc<dyn FileSystem> = Arc::new(LocalFileSystem::new_full_access(cwd));
+        ctx.provide::<FileSystemSet>(Arc::new(FileSystemSet::new(workspace.clone(), full_access)))
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        ctx.provide::<dyn FileSystem>(workspace)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())
     }

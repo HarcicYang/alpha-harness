@@ -274,6 +274,11 @@ Four user-facing modes:
 | `reviewed` | same as `auto` | two-stage review chain, high risk prompts the user |
 | `free` | full access, network on | no prompts |
 
+Filesystem and process tools select their execution boundary from the effective
+mode on every call. `auto` and `reviewed` use workspace-rooted filesystem and
+sandboxed process runners; `free` uses full-access local filesystem and process
+runners. Mode changes therefore apply without rebuilding the session runtime.
+
 M1 ships `read`, `auto`, and `free`. `reviewed` lands in M1.5.
 
 Approval prompts offer three choices: deny, allow once, allow for this session.
