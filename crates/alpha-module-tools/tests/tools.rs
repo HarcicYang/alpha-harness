@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
-use alpha_module_permission::{PermissionConfig, PermissionModule};
+use alpha_module_permission::{PermissionConfig, PermissionModule, PermissionService};
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_tools::{
     RegistryError, ToolContext, ToolError, ToolRegistry, ToolsConfig, ToolsModule,
@@ -138,6 +138,38 @@ async fn free_mode_writes_outside_the_workspace() {
     assert_eq!(
         std::fs::read_to_string(&path).expect("outside file"),
         "full access"
+    );
+}
+
+#[tokio::test]
+async fn switching_to_free_updates_the_execution_boundary_immediately() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let (ctx, registry) = setup(PermissionMode::Auto, workspace.path());
+    let path = outside.path().join("switched.txt");
+
+    let error = run(
+        &registry,
+        "write",
+        json!({ "path": path, "content": "blocked" }),
+    )
+    .await
+    .expect_err("auto boundary");
+    assert!(error.to_string().contains("escapes the workspace root"));
+
+    ctx.require::<dyn PermissionService>()
+        .expect("permission")
+        .set_mode(PermissionMode::Free);
+    run(
+        &registry,
+        "write",
+        json!({ "path": path, "content": "allowed" }),
+    )
+    .await
+    .expect("free boundary");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("outside file"),
+        "allowed"
     );
 }
 
