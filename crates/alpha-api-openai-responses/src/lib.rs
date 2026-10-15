@@ -166,6 +166,7 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     payload.insert("input".to_owned(), Value::Array(input));
     payload.insert("stream".to_owned(), json!(true));
     payload.insert("store".to_owned(), json!(false));
+    payload.insert("include".to_owned(), json!(["reasoning.encrypted_content"]));
     if !tools.is_empty() {
         payload.insert("tools".to_owned(), Value::Array(tools));
     }
@@ -216,12 +217,53 @@ fn wire_message(message: &ChatMessage) -> Vec<Value> {
             }
             items
         }
+        ChatMessage::AssistantContent(blocks) => assistant_content_items(blocks),
         ChatMessage::ToolResult { call_id, content } => vec![json!({
             "type": "function_call_output",
             "call_id": call_id,
             "output": content,
         })],
     }
+}
+
+fn assistant_content_items(blocks: &[alpha_schema::AssistantContentBlock]) -> Vec<Value> {
+    let mut items = Vec::new();
+    for block in blocks {
+        match block {
+            alpha_schema::AssistantContentBlock::Text { text } => items.push(json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": text, "annotations": [] }],
+            })),
+            alpha_schema::AssistantContentBlock::Thinking { text, signature } => {
+                let mut item = serde_json::Map::new();
+                item.insert("type".to_owned(), json!("reasoning"));
+                if !text.is_empty() {
+                    item.insert(
+                        "summary".to_owned(),
+                        json!([{ "type": "summary_text", "text": text }]),
+                    );
+                }
+                if let Some(signature) = signature {
+                    item.insert("encrypted_content".to_owned(), json!(signature));
+                }
+                items.push(Value::Object(item));
+            }
+            alpha_schema::AssistantContentBlock::LocalToolCall {
+                id,
+                name,
+                arguments,
+            } => items.push(json!({
+                "type": "function_call",
+                "call_id": id,
+                "name": name,
+                "arguments": serde_json::to_string(arguments)
+                    .unwrap_or_else(|_| "null".to_owned()),
+            })),
+            _ => {}
+        }
+    }
+    items
 }
 
 fn wire_tool(tool: &ToolDefinition) -> Value {
@@ -285,6 +327,16 @@ fn process_event_line(
                 }
             }
         }
+        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+            if let Some(delta) = event.delta
+                && !delta.is_empty()
+            {
+                pending.push_back(Ok(CompletionChunk::Thinking {
+                    text: delta,
+                    signature: None,
+                }));
+            }
+        }
         "response.output_item.added" => {
             if let Some(item) = event.item {
                 if item.kind.as_deref() == Some("function_call") {
@@ -305,6 +357,18 @@ fn process_event_line(
                     name: None,
                     arguments: delta,
                 })));
+            }
+        }
+        "response.output_item.done" => {
+            if let Some(item) = event.item
+                && item.kind.as_deref() == Some("reasoning")
+                && let Some(signature) = item.encrypted_content
+                && !signature.is_empty()
+            {
+                pending.push_back(Ok(CompletionChunk::Thinking {
+                    text: String::new(),
+                    signature: Some(signature),
+                }));
             }
         }
         "response.completed" => {
@@ -359,6 +423,8 @@ struct StreamItem {
     name: Option<String>,
     #[serde(default)]
     arguments: Option<String>,
+    #[serde(default)]
+    encrypted_content: Option<String>,
 }
 
 fn snippet(body: &[u8]) -> String {

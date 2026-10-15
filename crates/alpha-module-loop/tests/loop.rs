@@ -3,17 +3,19 @@ use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{
-    AgentLoop, AgentStepStarted, AgentToolFinished, AgentToolStarted, ChatMessage, CompletionChunk,
-    CompletionRequest, CompletionResponse, ContextError, ContextPreparer, LoopConfig, LoopModule,
-    ModelProvider, ModelRoute, ModelRouteOverride, ProviderError, ProviderRegistry,
-    ProviderToolsOverride, ToolCall, ToolCallDelta, TurnOutcome,
+    AgentLoop, AgentStepStarted, AgentThinkingDelta, AgentToolFinished, AgentToolStarted,
+    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ContextError,
+    ContextPreparer, LoopConfig, LoopModule, ModelProvider, ModelRoute, ModelRouteOverride,
+    ProviderError, ProviderRegistry, ProviderToolsOverride, ToolCall, ToolCallDelta, TurnOutcome,
 };
 use alpha_module_session::{
     SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
     TurnEndReason, WorkspaceRef,
 };
 use alpha_module_tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResponse};
-use alpha_schema::{MessageId, PermissionMode, ReasoningLevel, Seq, SessionId};
+use alpha_schema::{
+    AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, Seq, SessionId,
+};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -38,6 +40,7 @@ impl ModelProvider for EchoProvider {
                 ChatMessage::System(_)
                 | ChatMessage::Assistant(_)
                 | ChatMessage::AssistantToolCalls { .. }
+                | ChatMessage::AssistantContent(_)
                 | ChatMessage::ToolResult { .. } => None,
             })
             .unwrap_or_default();
@@ -256,8 +259,152 @@ async fn loop_records_completed_turns_and_replays_history() {
         requests[1].messages,
         vec![
             ChatMessage::User("hello".to_owned()),
-            ChatMessage::Assistant("echo: hello".to_owned()),
+            ChatMessage::AssistantContent(vec![AssistantContentBlock::Text {
+                text: "echo: hello".to_owned()
+            }]),
             ChatMessage::User("again".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn thinking_blocks_are_persisted_and_replayed_structurally() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        CompletionResponse {
+            text: "visible".to_owned(),
+            tool_calls: Vec::new(),
+            blocks: vec![
+                AssistantContentBlock::Thinking {
+                    text: "reasoning".to_owned(),
+                    signature: Some("signature".to_owned()),
+                },
+                AssistantContentBlock::Text {
+                    text: "visible".to_owned(),
+                },
+            ],
+        },
+        CompletionResponse {
+            text: "done".to_owned(),
+            tool_calls: Vec::new(),
+            blocks: Vec::new(),
+        },
+    ]));
+    let agent = AgentLoop::new(provider.clone(), "scripted");
+
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    run_turn(&agent, &writer, &state, "first")
+        .await
+        .expect("first turn");
+    let first_events = store.open_read(header.id).expect("read").events().to_vec();
+    assert!(first_events.iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::AssistantMessage { blocks, .. }
+            if blocks.iter().any(|block| matches!(
+                block,
+                AssistantContentBlock::Thinking { text, signature }
+                    if text == "reasoning" && signature.as_deref() == Some("signature")
+            ))
+    )));
+    assert_eq!(
+        first_events
+            .iter()
+            .find_map(|event| event.payload.assistant_text())
+            .as_deref(),
+        Some("visible")
+    );
+    drop(writer);
+
+    let reader = store.open_read(header.id).expect("read");
+    let state = reader.state();
+    drop(reader);
+    let writer = store.open_write(header.id).expect("write");
+    run_turn(&agent, &writer, &state, "second")
+        .await
+        .expect("second turn");
+    let requests = provider.requests.lock().expect("request lock");
+    assert!(requests[1].messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::AssistantContent(blocks)
+            if blocks.iter().any(|block| matches!(
+                block,
+                AssistantContentBlock::Thinking { text, signature }
+                    if text == "reasoning" && signature.as_deref() == Some("signature")
+            ))
+    )));
+}
+
+#[tokio::test]
+async fn streamed_thinking_is_emitted_incrementally_and_keeps_content_order() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(StreamingProvider::new(vec![vec![
+        Ok(CompletionChunk::Thinking {
+            text: "plan ".to_owned(),
+            signature: None,
+        }),
+        Ok(CompletionChunk::Thinking {
+            text: "more".to_owned(),
+            signature: Some("signature".to_owned()),
+        }),
+        Ok(CompletionChunk::Text("answer".to_owned())),
+        Ok(CompletionChunk::Thinking {
+            text: "after".to_owned(),
+            signature: None,
+        }),
+        Ok(CompletionChunk::Text(" again".to_owned())),
+    ]]));
+    let agent = AgentLoop::new(provider, "streamed");
+    let ctx = Ctx::root();
+    let deltas = Arc::new(Mutex::new(Vec::new()));
+    let collected = deltas.clone();
+    ctx.on_parallel::<AgentThinkingDelta, _>(move |event| {
+        collected
+            .lock()
+            .expect("delta lock")
+            .push(event.text.clone());
+        Box::pin(async {})
+    })
+    .expect("thinking listener");
+
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    agent
+        .run_turn(&ctx, &writer, &state, "hi")
+        .await
+        .expect("turn");
+    assert_eq!(
+        *deltas.lock().expect("delta lock"),
+        vec!["plan ".to_owned(), "more".to_owned(), "after".to_owned()]
+    );
+    drop(writer);
+
+    let reader = store.open_read(header.id).expect("read");
+    let blocks = reader
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            SessionEvent::AssistantMessage { blocks, .. } => Some(blocks.clone()),
+            _ => None,
+        })
+        .expect("assistant blocks");
+    assert_eq!(
+        blocks,
+        vec![
+            AssistantContentBlock::Thinking {
+                text: "plan more".to_owned(),
+                signature: Some("signature".to_owned()),
+            },
+            AssistantContentBlock::Text {
+                text: "answer".to_owned(),
+            },
+            AssistantContentBlock::Thinking {
+                text: "after".to_owned(),
+                signature: None,
+            },
+            AssistantContentBlock::Text {
+                text: " again".to_owned(),
+            },
         ]
     );
 }
@@ -287,9 +434,13 @@ async fn stream_deltas_are_merged_into_one_durable_message() {
 }
 
 #[tokio::test]
-async fn stream_failure_preserves_the_received_text_prefix() {
+async fn stream_failure_preserves_received_content_blocks() {
     let (_dir, store, header) = store_and_header();
     let provider = Arc::new(StreamingProvider::new(vec![vec![
+        Ok(CompletionChunk::Thinking {
+            text: "partial thought".to_owned(),
+            signature: None,
+        }),
         Ok(CompletionChunk::Text("partial".to_owned())),
         Err(ProviderError::Request("stream broke".to_owned())),
     ]]));
@@ -304,11 +455,25 @@ async fn stream_failure_preserves_the_received_text_prefix() {
     drop(writer);
 
     let reader = store.open_read(header.id).expect("read");
-    assert!(
-        reader
-            .events()
-            .iter()
-            .any(|event| event.payload.assistant_text().as_deref() == Some("partial"))
+    let blocks = reader
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            SessionEvent::AssistantMessage { blocks, .. } => Some(blocks.clone()),
+            _ => None,
+        })
+        .expect("partial assistant blocks");
+    assert_eq!(
+        blocks,
+        vec![
+            AssistantContentBlock::Thinking {
+                text: "partial thought".to_owned(),
+                signature: None,
+            },
+            AssistantContentBlock::Text {
+                text: "partial".to_owned(),
+            },
+        ]
     );
     assert!(reader.events().iter().any(|event| matches!(
         &event.payload,
@@ -491,11 +656,13 @@ async fn context_preparer_updates_the_request_history() {
         requests[0].messages[0],
         ChatMessage::System("# Compacted History Summary\n\nolder history".to_owned())
     );
-    assert!(
-        requests[0].messages.iter().any(
-            |message| matches!(message, ChatMessage::Assistant(text) if text == "old assistant")
-        )
-    );
+    assert!(requests[0].messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::AssistantContent(blocks)
+            if blocks == &vec![AssistantContentBlock::Text {
+                text: "old assistant".to_owned()
+            }]
+    )));
     assert!(
         !requests[0]
             .messages
@@ -594,6 +761,7 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
             "turn_started",
             "user",
             "request_header",
+            "assistant",
             "tool_call",
             "tool_result",
             "request_header",

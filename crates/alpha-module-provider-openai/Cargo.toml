@@ -12,6 +12,7 @@ categories = ["development-tools"]
 alpha-kernel.workspace = true
 alpha-module-http.workspace = true
 alpha-module-loop.workspace = true
+alpha-schema.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

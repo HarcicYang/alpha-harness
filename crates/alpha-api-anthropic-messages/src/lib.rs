@@ -213,6 +213,13 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
                 }
                 messages.push(json!({ "role": "assistant", "content": content }));
             }
+            ChatMessage::AssistantContent(blocks) => {
+                flush_tool_results(&mut messages, &mut tool_results);
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": wire_assistant_blocks(blocks),
+                }));
+            }
             ChatMessage::ToolResult { call_id, content } => {
                 tool_results.push(json!({
                     "type": "tool_result",
@@ -272,6 +279,60 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     }
     serde_json::to_vec(&Value::Object(payload))
         .map_err(|error| ProviderError::Request(error.to_string()))
+}
+
+fn wire_assistant_blocks(blocks: &[alpha_schema::AssistantContentBlock]) -> Vec<Value> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            alpha_schema::AssistantContentBlock::Text { text } => {
+                Some(json!({ "type": "text", "text": text }))
+            }
+            alpha_schema::AssistantContentBlock::Thinking { text, signature } => {
+                match signature
+                    .as_deref()
+                    .filter(|signature| !signature.is_empty())
+                {
+                    Some(signature) => Some(json!({
+                        "type": "thinking",
+                        "thinking": text,
+                        "signature": signature,
+                    })),
+                    None => Some(json!({ "type": "text", "text": text })),
+                }
+            }
+            alpha_schema::AssistantContentBlock::LocalToolCall {
+                id,
+                name,
+                arguments,
+            } => Some(json!({
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": arguments,
+            })),
+            alpha_schema::AssistantContentBlock::ProviderToolCall { id, name, input } => {
+                Some(json!({
+                    "type": "server_tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": input,
+                }))
+            }
+            alpha_schema::AssistantContentBlock::ProviderToolResult { id, name, content } => {
+                Some(json!({
+                    "type": if name == "web_search" {
+                        "web_search_tool_result"
+                    } else {
+                        "tool_result"
+                    },
+                    "tool_use_id": id,
+                    "content": content,
+                }))
+            }
+            alpha_schema::AssistantContentBlock::Citation { .. } => None,
+        })
+        .collect()
 }
 
 fn flush_tool_results(messages: &mut Vec<Value>, tool_results: &mut Vec<Value>) {
@@ -419,6 +480,14 @@ fn process_event_line(
                             }));
                         }
                     }
+                    "signature_delta" => {
+                        if let Some(signature) = delta.signature {
+                            pending.push_back(Ok(CompletionChunk::Thinking {
+                                text: String::new(),
+                                signature: Some(signature),
+                            }));
+                        }
+                    }
                     "citation_delta" => {
                         if let Some(citation) = delta.citation {
                             pending.push_back(Ok(CompletionChunk::Citation {
@@ -510,6 +579,8 @@ struct StreamDelta {
     partial_json: Option<String>,
     #[serde(default)]
     thinking: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
     #[serde(default)]
     citation: Option<Value>,
 }

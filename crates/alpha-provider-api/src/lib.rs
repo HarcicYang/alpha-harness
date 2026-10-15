@@ -896,20 +896,15 @@ async fn collect_stream(
     let mut text = String::new();
     let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
     let mut blocks: Vec<alpha_schema::AssistantContentBlock> = Vec::new();
-    let mut text_block: Option<usize> = None;
     while let Some(chunk) = stream.next().await {
         match chunk? {
             CompletionChunk::Text(delta) => {
                 text.push_str(&delta);
-                if let Some(index) = text_block {
-                    if let Some(alpha_schema::AssistantContentBlock::Text { text }) =
-                        blocks.get_mut(index)
-                    {
-                        text.push_str(&delta);
-                    }
+                if let Some(alpha_schema::AssistantContentBlock::Text { text }) = blocks.last_mut()
+                {
+                    text.push_str(&delta);
                 } else {
                     blocks.push(alpha_schema::AssistantContentBlock::Text { text: delta });
-                    text_block = Some(blocks.len() - 1);
                 }
             }
             CompletionChunk::ToolCall(delta) => {
@@ -923,7 +918,18 @@ async fn collect_stream(
                 call.arguments.push_str(&delta.arguments);
             }
             CompletionChunk::Thinking { text, signature } => {
-                blocks.push(alpha_schema::AssistantContentBlock::Thinking { text, signature });
+                if let Some(alpha_schema::AssistantContentBlock::Thinking {
+                    text: current,
+                    signature: current_signature,
+                }) = blocks.last_mut()
+                {
+                    current.push_str(&text);
+                    if signature.is_some() {
+                        *current_signature = signature;
+                    }
+                } else {
+                    blocks.push(alpha_schema::AssistantContentBlock::Thinking { text, signature });
+                }
             }
             CompletionChunk::ProviderToolCall { id, name, input } => {
                 blocks.push(alpha_schema::AssistantContentBlock::ProviderToolCall {

@@ -805,6 +805,31 @@ fn install_live_observers(
     })
     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
+    let thinking_sink = sink.clone();
+    let thinking_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentThinkingDelta, _>(move |event| {
+        let sink = thinking_sink.clone();
+        let turn = thinking_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = sink.publish(
+                session_id,
+                json!({
+                    "sessionId": session_id,
+                    "kind": "live",
+                    "turnId": turn_id,
+                    "streamId": format!("{turn_id}:thinking"),
+                    "event": { "type": "thinking_delta", "text": event.text },
+                }),
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
     let step_sink = sink.clone();
     let step_turn = current_turn.clone();
     ctx.on_parallel::<alpha_module_loop::AgentStepStarted, _>(move |event| {

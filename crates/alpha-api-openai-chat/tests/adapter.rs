@@ -8,6 +8,7 @@ use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
 };
+use alpha_schema::AssistantContentBlock;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -137,6 +138,91 @@ async fn maps_reasoning_effort_into_chat_requests() {
         .expect("request");
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["reasoning_effort"], json!("high"));
+}
+
+#[tokio::test]
+async fn streams_and_replays_reasoning_content() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![
+            b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think \"}}]}\n\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{\"reasoning\":\"more\"}}]}\n\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n".to_vec(),
+            b"data: [DONE]\n\n".to_vec(),
+        ],
+    });
+    let chunks: Vec<CompletionChunk> = alpha_api_openai_chat::OpenAiChatAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "reasoning-model".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        chunks,
+        vec![
+            CompletionChunk::Thinking {
+                text: "think ".to_owned(),
+                signature: None,
+            },
+            CompletionChunk::Thinking {
+                text: "more".to_owned(),
+                signature: None,
+            },
+            CompletionChunk::Text("answer".to_owned()),
+        ]
+    );
+
+    alpha_api_openai_chat::OpenAiChatAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "reasoning-model".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![
+                    ChatMessage::User("hi".to_owned()),
+                    ChatMessage::AssistantContent(vec![
+                        AssistantContentBlock::Thinking {
+                            text: "remembered".to_owned(),
+                            signature: None,
+                        },
+                        AssistantContentBlock::Text {
+                            text: "visible".to_owned(),
+                        },
+                    ]),
+                ],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["messages"][1]["reasoning_content"], "remembered");
+    assert_eq!(payload["messages"][1]["content"], "visible");
 }
 
 #[test]

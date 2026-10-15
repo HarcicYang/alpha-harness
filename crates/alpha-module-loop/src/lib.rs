@@ -14,9 +14,9 @@ use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
 pub use agent::{
-    AgentDriver, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentToolFinished,
-    AgentToolStarted, AgentTurnFinished, ContextError, ContextPreparer, LoopError, SteerMessage,
-    SteerQueue, TurnOutcome,
+    AgentDriver, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta,
+    AgentToolFinished, AgentToolStarted, AgentTurnFinished, ContextError, ContextPreparer,
+    LoopError, SteerMessage, SteerQueue, TurnOutcome,
 };
 pub use provider::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,

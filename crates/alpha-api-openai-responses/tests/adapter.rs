@@ -8,6 +8,7 @@ use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
 };
+use alpha_schema::AssistantContentBlock;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -141,6 +142,97 @@ async fn maps_reasoning_effort_into_response_requests() {
         .expect("request");
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["reasoning"]["effort"], json!("none"));
+    assert_eq!(payload["include"], json!(["reasoning.encrypted_content"]));
+}
+
+#[tokio::test]
+async fn streams_and_replays_reasoning_items() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![
+            b"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think \"}\n\n"
+                .to_vec(),
+            b"data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"more\"}\n\n".to_vec(),
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n".to_vec(),
+            b"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"sig\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"response.completed\"}\n\n".to_vec(),
+        ],
+    });
+    let chunks: Vec<CompletionChunk> = alpha_api_openai_responses::OpenAiResponsesAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "reasoning-model".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        chunks,
+        vec![
+            CompletionChunk::Thinking {
+                text: "think ".to_owned(),
+                signature: None,
+            },
+            CompletionChunk::Thinking {
+                text: "more".to_owned(),
+                signature: None,
+            },
+            CompletionChunk::Text("answer".to_owned()),
+            CompletionChunk::Thinking {
+                text: String::new(),
+                signature: Some("sig".to_owned()),
+            },
+        ]
+    );
+
+    alpha_api_openai_responses::OpenAiResponsesAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "reasoning-model".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![ChatMessage::AssistantContent(vec![
+                    AssistantContentBlock::Thinking {
+                        text: "remembered".to_owned(),
+                        signature: Some("sig".to_owned()),
+                    },
+                    AssistantContentBlock::Text {
+                        text: "visible".to_owned(),
+                    },
+                ])],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["input"][0]["type"], "reasoning");
+    assert_eq!(payload["input"][0]["encrypted_content"], "sig");
+    assert_eq!(payload["input"][0]["summary"][0]["text"], "remembered");
+    assert_eq!(payload["input"][1]["content"][0]["text"], "visible");
 }
 
 #[test]

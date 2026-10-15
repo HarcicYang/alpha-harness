@@ -8,6 +8,7 @@ use alpha_provider_api::{
     ModelDescriptor, ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind,
     ProviderKindError, ReasoningLevel, default_model_id, discover_models, effective_model_catalog,
 };
+use alpha_schema::AssistantContentBlock;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde_json::json;
@@ -20,6 +21,10 @@ struct CatalogHttp {
 
 struct CaptureAdapter {
     request: Mutex<Option<AdapterRequest>>,
+}
+
+struct StreamingAdapter {
+    chunks: Mutex<Option<Vec<Result<CompletionChunk, alpha_module_loop::ProviderError>>>>,
 }
 
 impl ApiAdapter for CaptureAdapter {
@@ -42,6 +47,34 @@ impl ApiAdapter for CaptureAdapter {
     ) -> BoxStream<'static, Result<CompletionChunk, alpha_module_loop::ProviderError>> {
         *self.request.lock().expect("request lock") = Some(request);
         Box::pin(futures::stream::empty())
+    }
+}
+
+impl ApiAdapter for StreamingAdapter {
+    fn key(&self) -> &'static str {
+        "streaming"
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities {
+            streaming: true,
+            tool_calls: false,
+            provider_tools: false,
+        }
+    }
+
+    fn stream(
+        &self,
+        _client: Arc<dyn HttpClient>,
+        _request: AdapterRequest,
+    ) -> BoxStream<'static, Result<CompletionChunk, alpha_module_loop::ProviderError>> {
+        let chunks = self
+            .chunks
+            .lock()
+            .expect("chunks lock")
+            .take()
+            .unwrap_or_default();
+        Box::pin(futures::stream::iter(chunks))
     }
 }
 
@@ -234,5 +267,68 @@ fn session_header_is_added_to_provider_requests() {
             .get("x-opencode-session")
             .map(String::as_str),
         Some("session-123")
+    );
+}
+
+#[test]
+fn complete_preserves_streamed_content_order() {
+    let adapter = Arc::new(StreamingAdapter {
+        chunks: Mutex::new(Some(vec![
+            Ok(CompletionChunk::Thinking {
+                text: "plan ".to_owned(),
+                signature: None,
+            }),
+            Ok(CompletionChunk::Thinking {
+                text: "more".to_owned(),
+                signature: None,
+            }),
+            Ok(CompletionChunk::Text("answer".to_owned())),
+            Ok(CompletionChunk::Thinking {
+                text: "after".to_owned(),
+                signature: None,
+            }),
+            Ok(CompletionChunk::Text(" again".to_owned())),
+        ])),
+    });
+    let provider = AdapterProvider::new(
+        adapter,
+        Arc::new(CatalogHttp {
+            request: Mutex::new(None),
+        }),
+        "https://api.test/v1",
+        None,
+        Default::default(),
+        Vec::new(),
+        json!({}),
+    );
+    let response = futures::executor::block_on(provider.complete(CompletionRequest {
+        session_id: "session-123".to_owned(),
+        model: "streaming-model".to_owned(),
+        reasoning: ReasoningLevel::Auto,
+        messages: vec![ChatMessage::User("hello".to_owned())],
+        tools: Vec::new(),
+        provider_tools: Vec::new(),
+    }))
+    .expect("completion");
+
+    assert_eq!(response.text, "answer again");
+    assert_eq!(
+        response.blocks,
+        vec![
+            AssistantContentBlock::Thinking {
+                text: "plan more".to_owned(),
+                signature: None,
+            },
+            AssistantContentBlock::Text {
+                text: "answer".to_owned(),
+            },
+            AssistantContentBlock::Thinking {
+                text: "after".to_owned(),
+                signature: None,
+            },
+            AssistantContentBlock::Text {
+                text: " again".to_owned(),
+            },
+        ]
     );
 }

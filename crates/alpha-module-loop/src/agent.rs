@@ -190,23 +190,16 @@ impl AgentLoop {
             let response = match self.stream_response(ctx, request).await {
                 Ok(response) => response,
                 Err(failure) => {
-                    if !failure.text.is_empty() {
-                        writer.append(SessionEvent::AssistantMessage {
-                            id: MessageId::new(),
-                            blocks: vec![AssistantContentBlock::Text {
-                                text: failure.text.clone(),
-                            }],
-                            text: String::new(),
-                        })?;
-                    }
+                    let StreamFailure { error, blocks } = failure;
+                    record_partial_blocks(writer, blocks)?;
                     ctx.parallel(AgentError {
-                        message: failure.error.to_string(),
+                        message: error.to_string(),
                     })
                     .await;
                     writer.append(SessionEvent::TurnEnded {
                         reason: TurnEndReason::Failed,
                     })?;
-                    return Err(LoopError::Provider(failure.error));
+                    return Err(LoopError::Provider(error));
                 }
             };
 
@@ -214,7 +207,7 @@ impl AgentLoop {
             let text = response.text;
             let calls = response.tool_calls;
             let blocks = normalized_blocks(response.blocks, &text, &calls);
-            if !text.is_empty() {
+            if !blocks.is_empty() {
                 writer.append(SessionEvent::AssistantMessage {
                     id: message_id,
                     blocks: blocks.clone(),
@@ -225,8 +218,8 @@ impl AgentLoop {
             }
 
             if calls.is_empty() {
-                if !text.is_empty() {
-                    messages.push(ChatMessage::Assistant(text));
+                if !blocks.is_empty() {
+                    messages.push(ChatMessage::AssistantContent(blocks));
                 }
                 let assistant_id = match last_message_id {
                     Some(id) => id,
@@ -256,10 +249,7 @@ impl AgentLoop {
                 });
             }
 
-            messages.push(ChatMessage::AssistantToolCalls {
-                text,
-                calls: calls.clone(),
-            });
+            messages.push(ChatMessage::AssistantContent(blocks));
             for call in calls {
                 self.execute_tool(ctx, writer, session_id, message_id, &mut messages, call)
                     .await?;
@@ -307,21 +297,16 @@ impl AgentLoop {
                 })
             }
             Err(failure) => {
-                if !failure.text.is_empty() {
-                    writer.append(SessionEvent::AssistantMessage {
-                        id: MessageId::new(),
-                        blocks: vec![AssistantContentBlock::Text { text: failure.text }],
-                        text: String::new(),
-                    })?;
-                }
+                let StreamFailure { error, blocks } = failure;
+                record_partial_blocks(writer, blocks)?;
                 ctx.parallel(AgentError {
-                    message: failure.error.to_string(),
+                    message: error.to_string(),
                 })
                 .await;
                 writer.append(SessionEvent::TurnEnded {
                     reason: TurnEndReason::Failed,
                 })?;
-                Err(LoopError::Provider(failure.error))
+                Err(LoopError::Provider(error))
             }
             Ok(_) => {
                 ctx.parallel(AgentError {
@@ -345,28 +330,22 @@ impl AgentLoop {
         let mut text = String::new();
         let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
         let mut blocks: Vec<AssistantContentBlock> = Vec::new();
-        let mut text_block: Option<usize> = None;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| StreamFailure {
                 error,
-                text: text.clone(),
+                blocks: blocks.clone(),
             })?;
             match chunk {
                 crate::provider::CompletionChunk::Text(delta) => {
                     if !delta.is_empty() {
                         text.push_str(&delta);
-                        if let Some(index) = text_block {
-                            if let Some(AssistantContentBlock::Text { text }) =
-                                blocks.get_mut(index)
-                            {
-                                text.push_str(&delta);
-                            }
+                        if let Some(AssistantContentBlock::Text { text }) = blocks.last_mut() {
+                            text.push_str(&delta);
                         } else {
                             blocks.push(AssistantContentBlock::Text {
                                 text: delta.clone(),
                             });
-                            text_block = Some(blocks.len() - 1);
                         }
                         ctx.parallel(AgentTextDelta { text: delta }).await;
                     }
@@ -381,8 +360,28 @@ impl AgentLoop {
                     }
                     call.arguments.push_str(&delta.arguments);
                 }
-                crate::provider::CompletionChunk::Thinking { text, signature } => {
-                    blocks.push(AssistantContentBlock::Thinking { text, signature });
+                crate::provider::CompletionChunk::Thinking {
+                    text: delta,
+                    signature,
+                } => {
+                    if let Some(AssistantContentBlock::Thinking {
+                        text: current,
+                        signature: current_signature,
+                    }) = blocks.last_mut()
+                    {
+                        current.push_str(&delta);
+                        if signature.is_some() {
+                            *current_signature = signature;
+                        }
+                    } else {
+                        blocks.push(AssistantContentBlock::Thinking {
+                            text: delta.clone(),
+                            signature,
+                        });
+                    }
+                    if !delta.is_empty() {
+                        ctx.parallel(AgentThinkingDelta { text: delta }).await;
+                    }
                 }
                 crate::provider::CompletionChunk::ProviderToolCall { id, name, input } => {
                     blocks.push(AssistantContentBlock::ProviderToolCall { id, name, input });
@@ -409,7 +408,7 @@ impl AgentLoop {
             let id = call.id.unwrap_or_else(|| format!("call_{index}"));
             let name = call.name.ok_or_else(|| StreamFailure {
                 error: ProviderError::Request(format!("stream tool call {index} has no name")),
-                text: text.clone(),
+                blocks: blocks.clone(),
             })?;
             let arguments = if call.arguments.trim().is_empty() {
                 Value::Null
@@ -418,7 +417,7 @@ impl AgentLoop {
                     error: ProviderError::Request(format!(
                         "invalid tool arguments for `{name}`: {error}"
                     )),
-                    text: text.clone(),
+                    blocks: blocks.clone(),
                 })?
             };
             let call = ToolCall {
@@ -571,7 +570,22 @@ struct ToolCallBuilder {
 
 struct StreamFailure {
     error: ProviderError,
-    text: String,
+    blocks: Vec<AssistantContentBlock>,
+}
+
+fn record_partial_blocks(
+    writer: &SessionWriter,
+    blocks: Vec<AssistantContentBlock>,
+) -> Result<(), SessionError> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    writer.append(SessionEvent::AssistantMessage {
+        id: MessageId::new(),
+        blocks,
+        text: String::new(),
+    })?;
+    Ok(())
 }
 
 /// A model step is about to start.
@@ -593,6 +607,16 @@ pub struct AgentTextDelta {
 
 impl ParallelEvent for AgentTextDelta {}
 impl Event for AgentTextDelta {}
+
+/// Assistant thinking content was received.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentThinkingDelta {
+    /// Thinking fragment.
+    pub text: String,
+}
+
+impl ParallelEvent for AgentThinkingDelta {}
+impl Event for AgentThinkingDelta {}
 
 /// A completed tool call is about to execute.
 #[derive(Clone, Debug, PartialEq)]
@@ -724,6 +748,7 @@ fn normalized_blocks(
 struct HistoryBuilder {
     messages: Vec<ChatMessage>,
     pending_text: Option<(MessageId, String)>,
+    pending_blocks: Option<(MessageId, Vec<AssistantContentBlock>)>,
     pending_calls: Vec<ToolCall>,
     calls_for: Option<MessageId>,
 }
@@ -759,9 +784,12 @@ impl HistoryBuilder {
                 self.flush();
                 self.messages.push(ChatMessage::User(text.clone()));
             }
-            MessageRecord::Assistant { id, text, .. } => {
+            MessageRecord::Assistant {
+                id, blocks, text, ..
+            } => {
                 self.flush();
                 self.pending_text = Some((*id, text.clone()));
+                self.pending_blocks = Some((*id, blocks.clone()));
             }
             MessageRecord::ToolCall {
                 message_id,
@@ -792,27 +820,62 @@ impl HistoryBuilder {
 
     fn flush(&mut self) {
         if self.pending_calls.is_empty() {
-            if let Some((_, text)) = self.pending_text.take() {
-                self.messages.push(ChatMessage::Assistant(text));
+            match (self.pending_blocks.take(), self.pending_text.take()) {
+                (Some((_, blocks)), _) if !blocks.is_empty() => {
+                    self.messages.push(ChatMessage::AssistantContent(blocks));
+                }
+                (_, Some((_, text))) => {
+                    self.messages.push(ChatMessage::Assistant(text));
+                }
+                _ => {}
             }
             return;
         }
 
-        let text = match (self.pending_text.take(), self.calls_for.take()) {
-            (Some((id, text)), Some(caller)) if id == caller => text,
-            (Some((_, text)), _) => {
-                self.messages.push(ChatMessage::Assistant(text));
-                String::new()
-            }
-            _ => String::new(),
-        };
         let calls = std::mem::take(&mut self.pending_calls);
-        self.messages
-            .push(ChatMessage::AssistantToolCalls { text, calls });
+        let caller = self.calls_for.take();
+        let pending_blocks = self.pending_blocks.take();
+        let pending_text = self.pending_text.take();
+        let (content_id, mut blocks) = match pending_blocks {
+            Some((id, blocks)) if !blocks.is_empty() => (Some(id), blocks),
+            _ => {
+                let text = pending_text.map(|(_, text)| text).unwrap_or_default();
+                (None, text_to_blocks(text))
+            }
+        };
+        if let (Some(content_id), Some(caller)) = (content_id, caller)
+            && content_id != caller
+        {
+            self.messages.push(ChatMessage::AssistantContent(blocks));
+            blocks = Vec::new();
+        }
+        for call in calls {
+            if !blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    AssistantContentBlock::LocalToolCall { id, .. } if id == &call.id
+                )
+            }) {
+                blocks.push(AssistantContentBlock::LocalToolCall {
+                    id: call.id,
+                    name: call.name,
+                    arguments: call.arguments,
+                });
+            }
+        }
+        self.messages.push(ChatMessage::AssistantContent(blocks));
     }
 
     fn finish(mut self) -> Vec<ChatMessage> {
         self.flush();
         self.messages
+    }
+}
+
+fn text_to_blocks(text: String) -> Vec<AssistantContentBlock> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![AssistantContentBlock::Text { text }]
     }
 }

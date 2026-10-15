@@ -8,6 +8,7 @@ use alpha_module_loop::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider,
     ProviderError, ToolCall, ToolCallDelta,
 };
+use alpha_schema::AssistantContentBlock;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -108,10 +109,23 @@ impl ModelProvider for OpenAiProvider {
                     arguments,
                 });
             }
+            let mut blocks = Vec::new();
+            if let Some(reasoning) = message.reasoning_content.clone()
+                && !reasoning.is_empty()
+            {
+                blocks.push(AssistantContentBlock::Thinking {
+                    text: reasoning,
+                    signature: None,
+                });
+            }
+            let text = message.content.unwrap_or_default();
+            if !text.is_empty() {
+                blocks.push(AssistantContentBlock::Text { text: text.clone() });
+            }
             Ok(CompletionResponse {
-                text: message.content.unwrap_or_default(),
+                text,
                 tool_calls,
-                blocks: Vec::new(),
+                blocks,
             })
         })
     }
@@ -364,6 +378,20 @@ fn process_event_line(
                 pending.push_back(Ok(CompletionChunk::Text(text)));
             }
         }
+        if let Some(reasoning) = [
+            choice.delta.reasoning_content,
+            choice.delta.reasoning,
+            choice.delta.reasoning_text,
+        ]
+        .into_iter()
+        .flatten()
+        .find(|reasoning| !reasoning.is_empty())
+        {
+            pending.push_back(Ok(CompletionChunk::Thinking {
+                text: reasoning,
+                signature: None,
+            }));
+        }
         for call in choice.delta.tool_calls.unwrap_or_default() {
             pending.push_back(Ok(CompletionChunk::ToolCall(ToolCallDelta {
                 index: call.index,
@@ -413,12 +441,68 @@ fn wire_message(message: &ChatMessage) -> Value {
                 }))
                 .collect::<Vec<_>>(),
         }),
+        ChatMessage::AssistantContent(blocks) => assistant_content_message(blocks),
         ChatMessage::ToolResult { call_id, content } => json!({
             "role": "tool",
             "tool_call_id": call_id,
             "content": content,
         }),
     }
+}
+
+fn assistant_content_message(blocks: &[AssistantContentBlock]) -> Value {
+    let text = blocks
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let reasoning = blocks
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContentBlock::Thinking { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let calls = blocks
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContentBlock::LocalToolCall {
+                id,
+                name,
+                arguments,
+            } => Some(json!({
+                "id": id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": serde_json::to_string(arguments)
+                        .unwrap_or_else(|_| "null".to_owned()),
+                }
+            })),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut message = serde_json::Map::new();
+    message.insert("role".to_owned(), json!("assistant"));
+    message.insert(
+        "content".to_owned(),
+        if text.is_empty() {
+            Value::Null
+        } else {
+            json!(text)
+        },
+    );
+    if !reasoning.is_empty() {
+        message.insert("reasoning_content".to_owned(), json!(reasoning));
+    }
+    if !calls.is_empty() {
+        message.insert("tool_calls".to_owned(), Value::Array(calls));
+    }
+    Value::Object(message)
 }
 
 fn wire_tool(tool: &alpha_module_loop::ToolDefinition) -> Value {
@@ -457,6 +541,12 @@ struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_text: Option<String>,
+    #[serde(default)]
     tool_calls: Option<Vec<StreamToolCall>>,
 }
 
@@ -487,6 +577,8 @@ struct Choice {
 struct ResponseMessage {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<WireToolCall>>,
 }

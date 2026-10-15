@@ -11,7 +11,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// One chat message in provider-facing history.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ChatMessage {
     /// System instructions.
     System(String),
@@ -26,6 +26,8 @@ pub enum ChatMessage {
         /// Requested calls.
         calls: Vec<ToolCall>,
     },
+    /// Assistant message with ordered structured content.
+    AssistantContent(Vec<AssistantContentBlock>),
     /// Tool result returned to the model.
     ToolResult {
         /// Provider call identity.
@@ -41,7 +43,9 @@ impl ChatMessage {
         match self {
             Self::System(_) => "system",
             Self::User(_) => "user",
-            Self::Assistant(_) | Self::AssistantToolCalls { .. } => "assistant",
+            Self::Assistant(_) | Self::AssistantToolCalls { .. } | Self::AssistantContent(_) => {
+                "assistant"
+            }
             Self::ToolResult { .. } => "tool",
         }
     }
@@ -51,9 +55,20 @@ impl ChatMessage {
         match self {
             Self::System(text) | Self::User(text) | Self::Assistant(text) => text,
             Self::AssistantToolCalls { text, .. } => text,
+            Self::AssistantContent(blocks) => visible_block_text(blocks),
             Self::ToolResult { content, .. } => content,
         }
     }
+}
+
+fn visible_block_text(blocks: &[AssistantContentBlock]) -> &str {
+    blocks
+        .iter()
+        .find_map(|block| match block {
+            AssistantContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// One tool definition advertised to the model.
@@ -86,7 +101,7 @@ pub struct ToolCall {
 }
 
 /// One completion request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CompletionRequest {
     /// Session identity used for provider routing.
     pub session_id: String,
@@ -281,17 +296,70 @@ pub trait ModelProvider: Send + Sync + 'static {
             futures::stream::once(completion).flat_map(|result| match result {
                 Ok(response) => {
                     let mut chunks = Vec::new();
-                    if !response.text.is_empty() {
-                        chunks.push(Ok(CompletionChunk::Text(response.text)));
-                    }
-                    for (index, call) in response.tool_calls.into_iter().enumerate() {
-                        chunks.push(Ok(CompletionChunk::ToolCall(ToolCallDelta {
-                            index,
-                            id: Some(call.id),
-                            name: Some(call.name),
-                            arguments: serde_json::to_string(&call.arguments)
-                                .unwrap_or_else(|_| "null".to_owned()),
-                        })));
+                    if response.blocks.is_empty() {
+                        if !response.text.is_empty() {
+                            chunks.push(Ok(CompletionChunk::Text(response.text)));
+                        }
+                        for (index, call) in response.tool_calls.into_iter().enumerate() {
+                            chunks.push(Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                                index,
+                                id: Some(call.id),
+                                name: Some(call.name),
+                                arguments: serde_json::to_string(&call.arguments)
+                                    .unwrap_or_else(|_| "null".to_owned()),
+                            })));
+                        }
+                    } else {
+                        for (index, block) in response.blocks.into_iter().enumerate() {
+                            match block {
+                                AssistantContentBlock::Text { text } => {
+                                    if !text.is_empty() {
+                                        chunks.push(Ok(CompletionChunk::Text(text)));
+                                    }
+                                }
+                                AssistantContentBlock::Thinking { text, signature } => {
+                                    chunks.push(Ok(CompletionChunk::Thinking { text, signature }));
+                                }
+                                AssistantContentBlock::LocalToolCall {
+                                    id,
+                                    name,
+                                    arguments,
+                                } => {
+                                    chunks.push(Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                                        index,
+                                        id: Some(id),
+                                        name: Some(name),
+                                        arguments: serde_json::to_string(&arguments)
+                                            .unwrap_or_else(|_| "null".to_owned()),
+                                    })));
+                                }
+                                AssistantContentBlock::ProviderToolCall { id, name, input } => {
+                                    chunks.push(Ok(CompletionChunk::ProviderToolCall {
+                                        id,
+                                        name,
+                                        input,
+                                    }));
+                                }
+                                AssistantContentBlock::ProviderToolResult { id, name, content } => {
+                                    chunks.push(Ok(CompletionChunk::ProviderToolResult {
+                                        id,
+                                        name,
+                                        content,
+                                    }));
+                                }
+                                AssistantContentBlock::Citation {
+                                    url,
+                                    title,
+                                    snippet,
+                                } => {
+                                    chunks.push(Ok(CompletionChunk::Citation {
+                                        url,
+                                        title,
+                                        snippet,
+                                    }));
+                                }
+                            }
+                        }
                     }
                     futures::stream::iter(chunks)
                 }

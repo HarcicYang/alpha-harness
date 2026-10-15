@@ -8,6 +8,7 @@ use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
 };
+use alpha_schema::AssistantContentBlock;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -273,6 +274,92 @@ async fn maps_reasoning_level_into_thinking_budget() {
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["thinking"]["type"], json!("enabled"));
     assert_eq!(payload["thinking"]["budget_tokens"], json!(2048));
+}
+
+#[tokio::test]
+async fn streams_and_replays_signed_thinking_blocks() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![
+            b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"message_stop\"}\n\n".to_vec(),
+        ],
+    });
+    let chunks: Vec<CompletionChunk> = alpha_api_anthropic_messages::AnthropicMessagesAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.anthropic.test".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "claude-test".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![ChatMessage::User("hi".to_owned())],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        chunks,
+        vec![
+            CompletionChunk::Thinking {
+                text: String::new(),
+                signature: None,
+            },
+            CompletionChunk::Thinking {
+                text: "plan".to_owned(),
+                signature: None,
+            },
+            CompletionChunk::Thinking {
+                text: String::new(),
+                signature: Some("sig".to_owned()),
+            },
+        ]
+    );
+
+    alpha_api_anthropic_messages::AnthropicMessagesAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.anthropic.test".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "claude-test".to_owned(),
+                reasoning: ReasoningLevel::High,
+                messages: vec![ChatMessage::AssistantContent(vec![
+                    AssistantContentBlock::Thinking {
+                        text: "remembered".to_owned(),
+                        signature: Some("sig".to_owned()),
+                    },
+                    AssistantContentBlock::Text {
+                        text: "visible".to_owned(),
+                    },
+                ])],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["messages"][0]["content"][0]["type"], "thinking");
+    assert_eq!(payload["messages"][0]["content"][0]["signature"], "sig");
+    assert_eq!(payload["messages"][0]["content"][1]["text"], "visible");
 }
 
 #[test]

@@ -65,7 +65,15 @@ impl AssistantContentBlock {
     /// Visible text carried by this block.
     pub fn text(&self) -> Option<&str> {
         match self {
-            Self::Text { text } | Self::Thinking { text, .. } => Some(text),
+            Self::Text { text } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Reasoning text carried by this block.
+    pub fn thinking(&self) -> Option<(&str, Option<&str>)> {
+        match self {
+            Self::Thinking { text, signature } => Some((text, signature.as_deref())),
             _ => None,
         }
     }
