@@ -2972,7 +2972,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("/model [MODEL] [LEVEL]  open the picker or switch the route"),
         Line::from("/thinking LEVEL  set auto, off, minimal, low, medium, high, xhigh, or max"),
         Line::from("/effort LEVEL    alias for /thinking"),
-        Line::from("/mode MODE       set read, auto, or free"),
+        Line::from("/mode MODE       set read, auto, reviewed, or free"),
         Line::from("/confirm         run pending steers"),
         Line::from("/discard         discard pending steers"),
         Line::from("/capabilities T  set provider tools, for example web_search"),

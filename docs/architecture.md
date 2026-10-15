@@ -647,12 +647,12 @@ In scope:
 - Session log with resume, lease, repair, and projections.
 - Default loop, OpenAI-compatible provider, fs/process/http local drivers.
 - Tools: `read`, `grep`, `write`, `edit`, `shell`.
-- Permission modes `read`, `auto`, `free`; policy file; protected paths;
-  durable audit events; Linux sandbox driver (bubblewrap plus seccomp).
+- Permission modes `read`, `auto`, `reviewed`, `free`; policy file; protected
+  paths; durable audit events; Linux sandbox driver (bubblewrap plus seccomp).
 - `alpha run` and `alpha serve --stdio` sharing one JSON-RPC/NDJSON schema.
 
-Out of scope for M1: `reviewed` mode, macOS and Windows sandbox drivers, MCP,
-subagents, TUI, multi-Location concurrency, remote drivers, managed policy.
+Out of scope for M1: macOS and Windows sandbox drivers, MCP, subagents, TUI,
+multi-Location concurrency, remote drivers, managed policy.
 
 Acceptance criteria:
 

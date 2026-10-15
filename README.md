@@ -22,7 +22,8 @@ The workspace requires Rust 1.88 or newer.
 alpha run --mode free "add a README section"
 ```
 
-- `--mode read|auto|free` selects the permission mode (`auto` is the default).
+- `--mode read|auto|reviewed|free` selects the permission mode (`auto` is the
+  default).
 - `--workspace <path>` selects the workspace root; it defaults to the current
   directory.
 - `--provider <ID>` selects a configured provider instance; otherwise the

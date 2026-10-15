@@ -45,7 +45,7 @@ struct CoreArgs {
 
 #[derive(Debug, Args)]
 struct RunArgs {
-    /// Permission mode: read, auto, or free.
+    /// Permission mode: read, auto, reviewed, or free.
     #[arg(long, default_value = "auto", value_parser = parse_mode)]
     mode: PermissionMode,
     /// Workspace root. Defaults to the current directory.
