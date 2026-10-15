@@ -11,7 +11,7 @@ use alpha_module_loop::{
     AgentDriver, AgentTextDelta, ChatMessage, CompletionChunk, CompletionRequest,
     CompletionResponse, LoopError, ModelProvider, ProviderError, ToolCall, TurnOutcome,
 };
-use alpha_module_permission::{ApprovalChannel, ApprovalDecision, ApprovalPrompt};
+use alpha_module_permission::ApprovalChannel;
 use alpha_module_session::{
     MessageRecord, SessionEvent, SessionState, SessionStore, SessionWriter, ToolStatus,
     TurnEndReason,
@@ -75,14 +75,6 @@ impl ModelProvider for DeltaProvider {
             Ok(CompletionChunk::Text("hel".to_owned())),
             Ok(CompletionChunk::Text("lo".to_owned())),
         ]))
-    }
-}
-
-struct AllowOnce;
-
-impl ApprovalChannel for AllowOnce {
-    fn decide(&self, _prompt: ApprovalPrompt) -> BoxFuture<'_, ApprovalDecision> {
-        Box::pin(async move { ApprovalDecision::AllowOnce })
     }
 }
 
@@ -250,9 +242,8 @@ async fn read_mode_blocks_writes_end_to_end() {
 }
 
 #[tokio::test]
-async fn auto_mode_uses_the_approval_channel() {
-    let (workspace, state, report, _provider) =
-        run_script(PermissionMode::Auto, Some(Arc::new(AllowOnce))).await;
+async fn auto_mode_allows_workspace_writes_without_approval() {
+    let (workspace, state, report, _provider) = run_script(PermissionMode::Auto, None).await;
     assert_eq!(report.assistant_text, "done");
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("hello.txt")).expect("file"),
@@ -261,26 +252,8 @@ async fn auto_mode_uses_the_approval_channel() {
 
     let store = SessionStore::new(state.path());
     let reader = store.open_read(report.session_id).expect("read");
-    assert!(decided_sources(reader.events(), true).contains(&"approval".to_owned()));
-}
-
-#[tokio::test]
-async fn auto_mode_without_a_channel_fails_closed() {
-    let (workspace, state, report, _provider) = run_script(PermissionMode::Auto, None).await;
-    assert_eq!(report.assistant_text, "done");
-    assert!(!workspace.path().join("hello.txt").exists());
-
-    let store = SessionStore::new(state.path());
-    let reader = store.open_read(report.session_id).expect("read");
-    assert!(reader.events().iter().any(|envelope| matches!(
-        &envelope.payload,
-        SessionEvent::ToolResult {
-            status: ToolStatus::Failed,
-            content,
-            ..
-        } if content.contains("no approval channel")
-    )));
-    assert!(decided_sources(reader.events(), false).contains(&"no_channel".to_owned()));
+    assert!(!decided_sources(reader.events(), true).contains(&"approval".to_owned()));
+    assert!(decided_sources(reader.events(), true).contains(&"default".to_owned()));
 }
 
 #[tokio::test]

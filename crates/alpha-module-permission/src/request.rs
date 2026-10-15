@@ -12,6 +12,9 @@ pub struct PermissionRequest {
     /// Model-provided justification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Whether execution remains inside the active sandbox.
+    #[serde(default)]
+    pub sandboxed: bool,
 }
 
 impl PermissionRequest {
@@ -21,12 +24,19 @@ impl PermissionRequest {
             action: action.into(),
             resources: resources.into_iter().collect(),
             reason: None,
+            sandboxed: false,
         }
     }
 
     /// Attach a justification.
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
+        self
+    }
+
+    /// Mark whether execution remains inside the active sandbox.
+    pub fn with_sandboxed(mut self, sandboxed: bool) -> Self {
+        self.sandboxed = sandboxed;
         self
     }
 }

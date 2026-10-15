@@ -202,7 +202,7 @@ async fn assert_permission(
     permission: &Arc<dyn PermissionService>,
     resource: &str,
 ) -> Result<(), ToolError> {
-    let request = PermissionRequest::new("fs.read", [resource.to_owned()]);
+    let request = PermissionRequest::new("fs.read", [resource.to_owned()]).with_sandboxed(true);
     match permission.check(request).await {
         PermissionOutcome::Allowed { .. } => Ok(()),
         PermissionOutcome::Denied { reason } => {

@@ -270,7 +270,7 @@ Four user-facing modes:
 | Mode | Sandbox | Boundary behavior |
 | --- | --- | --- |
 | `read` | read-only, network off, no execution | mutate requests denied, no prompts |
-| `auto` (default) | workspace-write plus temp dirs, network off, protected paths read-only | on-request synchronous approval |
+| `auto` (default) | workspace-write plus temp dirs, network off, protected paths read-only | sandbox-contained actions run automatically; requests outside the sandbox ask for synchronous approval |
 | `reviewed` | same as `auto` | two-stage review chain, high risk prompts the user |
 | `free` | full access, network on | no prompts |
 

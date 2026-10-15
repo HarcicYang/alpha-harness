@@ -230,7 +230,19 @@ impl LocalPermissionService {
                         )
                     }
                 }
-                PermissionMode::Auto | PermissionMode::Reviewed => self.ask(request, false).await,
+                PermissionMode::Auto => {
+                    if request.sandboxed {
+                        (
+                            PermissionOutcome::Allowed {
+                                scope: GrantScope::Once,
+                            },
+                            DecisionSource::Default,
+                        )
+                    } else {
+                        self.ask(request, false).await
+                    }
+                }
+                PermissionMode::Reviewed => self.ask(request, false).await,
             },
         }
     }

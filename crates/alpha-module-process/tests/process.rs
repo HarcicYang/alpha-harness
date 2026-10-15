@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_process::{
-    LocalProcessRunner, ProcessConfig, ProcessError, ProcessLocalModule, ProcessRequest,
-    ProcessRunner, SandboxConfig, SandboxedProcessRunner, available_bwrap, bwrap_args,
+    LocalProcessRunner, ProcessAccess, ProcessConfig, ProcessError, ProcessLocalModule,
+    ProcessRequest, ProcessRunner, ProcessRunnerSet, SandboxConfig, SandboxedProcessRunner,
+    available_bwrap, bwrap_args,
 };
 
 #[cfg(unix)]
@@ -74,6 +75,9 @@ async fn module_provides_the_seam() {
         .expect("activate");
 
     let runner = ctx.require::<dyn ProcessRunner>().expect("seam");
+    let runners = ctx.require::<ProcessRunnerSet>().expect("runner set");
+    assert_eq!(runners.sandbox_available(), available_bwrap().is_some());
+    assert!(runners.get(ProcessAccess::FullAccess).is_ok());
     let outcome = runner
         .run(ProcessRequest::new("rustc", ["--version".to_owned()]))
         .await
@@ -92,6 +96,10 @@ fn bwrap_args_include_isolation_and_request() {
     assert!(args.contains(&"--unshare-net".to_owned()));
     assert!(args.contains(&"--unshare-pid".to_owned()));
     assert!(args.contains(&"/workspace".to_owned()));
+    assert!(
+        args.windows(3)
+            .any(|window| { window == ["--ro-bind-try", "/workspace/.git", "/workspace/.git",] })
+    );
     assert!(args.contains(&"echo".to_owned()));
     assert_eq!(args.last().map(String::as_str), Some("hi"));
 
@@ -140,6 +148,20 @@ async fn sandbox_confines_writes_and_network() {
         std::fs::read_to_string(dir.path().join("inside.txt")).expect("file"),
         "data"
     );
+
+    std::fs::create_dir(dir.path().join(".git")).expect(".git");
+    let protected = runner
+        .run(ProcessRequest::new(
+            "sh",
+            ["-c".to_owned(), "touch .git/sandbox-probe".to_owned()],
+        ))
+        .await
+        .expect("protected write");
+    assert!(
+        !protected.success,
+        "protected workspace paths must remain read-only"
+    );
+    assert!(!dir.path().join(".git/sandbox-probe").exists());
 
     let denied = runner
         .run(ProcessRequest::new(

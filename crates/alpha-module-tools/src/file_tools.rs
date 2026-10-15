@@ -271,7 +271,7 @@ async fn assert_permission(
     action: &str,
     resource: &str,
 ) -> Result<(), ToolError> {
-    let request = PermissionRequest::new(action, [resource.to_owned()]);
+    let request = PermissionRequest::new(action, [resource.to_owned()]).with_sandboxed(true);
     match permission.check(request).await {
         PermissionOutcome::Allowed { .. } => Ok(()),
         PermissionOutcome::Denied { reason } => {

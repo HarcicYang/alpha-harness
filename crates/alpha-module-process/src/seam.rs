@@ -70,6 +70,9 @@ pub enum ProcessError {
     /// The process exceeded its timeout and was killed.
     #[error("process timed out after {0:?}")]
     Timeout(Duration),
+    /// The requested sandbox is unavailable.
+    #[error("sandboxed process execution is unavailable")]
+    SandboxUnavailable,
 }
 
 /// Process execution contract.

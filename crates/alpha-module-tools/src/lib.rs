@@ -13,7 +13,7 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_module_fs::FileSystem;
 use alpha_module_permission::PermissionService;
-use alpha_module_process::ProcessRunner;
+use alpha_module_process::ProcessRunnerSet;
 use serde::Deserialize;
 
 /// Stable module key used by the generated composition table.
@@ -48,8 +48,8 @@ impl Module for ToolsModule {
         let filesystem = ctx
             .require::<dyn FileSystem>()
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
-        let process = ctx
-            .require::<dyn ProcessRunner>()
+        let processes = ctx
+            .require::<ProcessRunnerSet>()
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         let permission = ctx
             .require::<dyn PermissionService>()
@@ -62,7 +62,7 @@ impl Module for ToolsModule {
             Arc::new(EditTool::new(filesystem.clone(), permission.clone())),
             Arc::new(GrepTool::new(filesystem, permission.clone())),
             Arc::new(ShellTool::new(
-                process,
+                processes,
                 permission,
                 config.default_shell.clone(),
             )),

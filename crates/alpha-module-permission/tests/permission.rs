@@ -55,6 +55,10 @@ impl AuditSink for Audit {
 }
 
 fn request(action: &str, resource: &str) -> PermissionRequest {
+    PermissionRequest::new(action, [resource.to_owned()]).with_sandboxed(true)
+}
+
+fn unsandboxed_request(action: &str, resource: &str) -> PermissionRequest {
     PermissionRequest::new(action, [resource.to_owned()])
 }
 
@@ -107,7 +111,7 @@ async fn session_grants_skip_later_prompts() {
         .with_channel(channel.clone());
 
     let first = service
-        .check(request("fs.write", "workspace/main.rs"))
+        .check(unsandboxed_request("network.fetch", "api.example.com"))
         .await;
     assert!(matches!(
         first,
@@ -116,7 +120,7 @@ async fn session_grants_skip_later_prompts() {
         }
     ));
     let second = service
-        .check(request("fs.write", "workspace/main.rs"))
+        .check(unsandboxed_request("network.fetch", "api.example.com"))
         .await;
     assert!(second.is_allowed());
     assert_eq!(channel.prompt_count(), 1);
@@ -132,7 +136,26 @@ async fn once_grants_do_not_persist() {
 
     assert!(
         service
-            .check(request("fs.write", "workspace/main.rs"))
+            .check(unsandboxed_request("network.fetch", "api.example.com"))
+            .await
+            .is_allowed()
+    );
+    assert!(
+        service
+            .check(unsandboxed_request("network.fetch", "api.example.com"))
+            .await
+            .is_allowed()
+    );
+    assert_eq!(channel.prompt_count(), 2);
+    assert!(service.session_grants().is_empty());
+}
+
+#[tokio::test]
+async fn auto_mode_allows_sandboxed_requests_without_a_channel() {
+    let service = LocalPermissionService::new(PermissionMode::Auto, Policy::default());
+    assert!(
+        service
+            .check(request("fs.read", "workspace/main.rs"))
             .await
             .is_allowed()
     );
@@ -142,15 +165,19 @@ async fn once_grants_do_not_persist() {
             .await
             .is_allowed()
     );
-    assert_eq!(channel.prompt_count(), 2);
-    assert!(service.session_grants().is_empty());
+    assert!(
+        service
+            .check(request("shell.exec", "cargo test"))
+            .await
+            .is_allowed()
+    );
 }
 
 #[tokio::test]
-async fn auto_mode_fails_closed_without_a_channel() {
+async fn auto_mode_fails_closed_for_unsandboxed_requests_without_a_channel() {
     let service = LocalPermissionService::new(PermissionMode::Auto, Policy::default());
     let outcome = service
-        .check(request("fs.write", "workspace/main.rs"))
+        .check(unsandboxed_request("network.fetch", "api.example.com"))
         .await;
     assert!(matches!(
         outcome,
@@ -195,7 +222,7 @@ async fn allow_rules_skip_approval_and_protected_actions_always_prompt() {
     let policy = Policy::new(
         vec![Rule {
             decision: RuleDecision::Allow,
-            action: "fs.write".to_owned(),
+            action: "tool.mutate".to_owned(),
             resource: None,
         }],
         default_protected(),
@@ -203,7 +230,7 @@ async fn allow_rules_skip_approval_and_protected_actions_always_prompt() {
     let plain = LocalPermissionService::new(PermissionMode::Auto, policy.clone());
     assert!(
         plain
-            .check(request("fs.write", "workspace/main.rs"))
+            .check(unsandboxed_request("tool.mutate", "workspace/main.rs"))
             .await
             .is_allowed()
     );
@@ -245,7 +272,7 @@ async fn project_policies_only_tighten_unless_trusted() {
     let project = Policy::new(
         vec![Rule {
             decision: RuleDecision::Allow,
-            action: "shell.exec".to_owned(),
+            action: "network.fetch".to_owned(),
             resource: None,
         }],
         Vec::new(),
@@ -255,7 +282,7 @@ async fn project_policies_only_tighten_unless_trusted() {
     let service = LocalPermissionService::new(PermissionMode::Auto, untrusted);
     assert!(
         !service
-            .check(request("shell.exec", "cargo test"))
+            .check(unsandboxed_request("network.fetch", "api.example.com"))
             .await
             .is_allowed()
     );
@@ -264,7 +291,7 @@ async fn project_policies_only_tighten_unless_trusted() {
     let service = LocalPermissionService::new(PermissionMode::Auto, trusted);
     assert!(
         service
-            .check(request("shell.exec", "cargo test"))
+            .check(unsandboxed_request("network.fetch", "api.example.com"))
             .await
             .is_allowed()
     );

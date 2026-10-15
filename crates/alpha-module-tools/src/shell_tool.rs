@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alpha_module_permission::{PermissionOutcome, PermissionRequest, PermissionService};
-use alpha_module_process::{ProcessError, ProcessRequest, ProcessRunner};
+use alpha_module_process::{
+    ProcessAccess, ProcessError, ProcessRequest, ProcessRunner, ProcessRunnerSet,
+};
+use alpha_schema::PermissionMode;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -110,7 +113,7 @@ pub async fn discover_shells(runner: &Arc<dyn ProcessRunner>) -> Vec<ShellKind> 
 
 /// Runs commands through a selected shell.
 pub struct ShellTool {
-    runner: Arc<dyn ProcessRunner>,
+    runners: Arc<ProcessRunnerSet>,
     permission: Arc<dyn PermissionService>,
     default_shell: Option<String>,
     available: Mutex<Option<Vec<ShellKind>>>,
@@ -119,23 +122,35 @@ pub struct ShellTool {
 impl ShellTool {
     /// Create a shell tool. Shells are probed on first use.
     pub fn new(
-        runner: Arc<dyn ProcessRunner>,
+        runners: Arc<ProcessRunnerSet>,
         permission: Arc<dyn PermissionService>,
         default_shell: Option<String>,
     ) -> Self {
         Self {
-            runner,
+            runners,
             permission,
             default_shell,
             available: Mutex::new(None),
         }
     }
 
+    fn runner(&self) -> Result<Arc<dyn ProcessRunner>, ToolError> {
+        let access = if self.permission.mode() == PermissionMode::Free {
+            ProcessAccess::FullAccess
+        } else {
+            ProcessAccess::Sandboxed
+        };
+        self.runners
+            .get(access)
+            .map_err(|error| ToolError::operational(error.to_string()))
+    }
+
     async fn available_shells(&self) -> Result<Vec<ShellKind>, ToolError> {
         if let Some(shells) = self.available.lock().expect("shell lock poisoned").clone() {
             return Ok(shells);
         }
-        let shells = discover_shells(&self.runner).await;
+        let runner = self.runner()?;
+        let shells = discover_shells(&runner).await;
         *self.available.lock().expect("shell lock poisoned") = Some(shells.clone());
         Ok(shells)
     }
@@ -193,6 +208,8 @@ impl Tool for ShellTool {
         Box::pin(async move {
             let input: ShellInput = serde_json::from_value(input)
                 .map_err(|error| ToolError::failure(format!("invalid input: {error}")))?;
+            let runner = self.runner()?;
+            let sandboxed = self.permission.mode() != PermissionMode::Free;
             let available = self.available_shells().await?;
             if available.is_empty() {
                 return Err(ToolError::failure(
@@ -223,6 +240,7 @@ impl Tool for ShellTool {
                     .description
                     .clone()
                     .or_else(|| Some(format!("run command in {}", kind.id))),
+                sandboxed,
             };
             match self.permission.check(request).await {
                 PermissionOutcome::Allowed { .. } => {}
@@ -245,7 +263,7 @@ impl Tool for ShellTool {
                 _ = context.cancellation.cancelled() => {
                     return Err(ToolError::operational("shell call cancelled"));
                 }
-                result = self.runner.run(process_request) => result,
+                result = runner.run(process_request) => result,
             };
 
             match outcome {

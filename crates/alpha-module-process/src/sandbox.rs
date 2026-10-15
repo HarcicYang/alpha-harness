@@ -153,10 +153,18 @@ pub fn bwrap_args(
     push(&mut args, "--tmpfs");
     push(&mut args, "/tmp");
 
-    let workspace = workspace.display().to_string();
+    let workspace_path = workspace;
+    let workspace = workspace_path.display().to_string();
     push(&mut args, "--bind");
     push(&mut args, &workspace);
     push(&mut args, &workspace);
+    for protected in [".git", ".agents", ".codex", ".aws"] {
+        let path = workspace_path.join(protected);
+        let path = path.display().to_string();
+        push(&mut args, "--ro-bind-try");
+        push(&mut args, &path);
+        push(&mut args, &path);
+    }
     for path in &config.read_only {
         let path = path.display().to_string();
         push(&mut args, "--ro-bind-try");
