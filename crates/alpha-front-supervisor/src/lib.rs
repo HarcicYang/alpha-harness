@@ -128,6 +128,11 @@ impl CoreSupervisor {
         Ok(self.connection.recv_timeout(timeout)?)
     }
 
+    /// Take an already-buffered core event without waiting.
+    pub fn try_recv_event(&self) -> Result<Option<ConnectionEvent>, SupervisorError> {
+        Ok(self.connection.try_recv()?)
+    }
+
     /// Answer a request initiated by the core.
     pub fn respond(
         &self,

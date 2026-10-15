@@ -39,6 +39,10 @@ const COLOR_SUCCESS: Color = Color::Rgb(93, 227, 144);
 const COLOR_WARNING: Color = Color::Rgb(82, 171, 237);
 const COLOR_ERROR: Color = Color::Rgb(255, 48, 70);
 
+const CORE_EVENT_BATCH_LIMIT: usize = 256;
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
+
 /// TUI runtime failure.
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {
@@ -178,23 +182,71 @@ pub struct ChatView {
     status_changed_at: Option<Instant>,
     /// Last status text observed by the UI loop.
     last_status: Option<String>,
-    /// Monotonic revision for transcript content.
-    transcript_revision: u64,
-    /// Cached rendered transcript for the current width and revision.
+    /// Monotonic revision per transcript entry.
+    transcript_entry_revisions: Vec<u64>,
+    /// Next transcript entry revision.
+    next_transcript_entry_revision: u64,
+    /// Whether the cached transcript rendering is stale.
+    transcript_cache_dirty: bool,
+    /// Cached rendered transcript for the current width.
     transcript_cache: Option<TranscriptCache>,
 }
 
 #[derive(Clone, Debug)]
 struct TranscriptCache {
     width: u16,
-    revision: u64,
+    entries: Vec<TranscriptCacheEntry>,
     lines: Vec<Line<'static>>,
+    line_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TranscriptCacheEntry {
+    revision: u64,
+    line_start: usize,
+    line_len: usize,
     line_count: usize,
 }
 
 impl ChatView {
     fn invalidate_transcript(&mut self) {
-        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.transcript_cache_dirty = true;
+    }
+
+    fn ensure_transcript_entry_revisions(&mut self) {
+        while self.transcript_entry_revisions.len() < self.transcript.len() {
+            let revision = self.next_transcript_entry_revision();
+            self.transcript_entry_revisions.push(revision);
+        }
+        self.transcript_entry_revisions
+            .truncate(self.transcript.len());
+    }
+
+    fn next_transcript_entry_revision(&mut self) -> u64 {
+        self.next_transcript_entry_revision = self.next_transcript_entry_revision.wrapping_add(1);
+        self.next_transcript_entry_revision
+    }
+
+    fn push_transcript_entry(&mut self, entry: TranscriptEntry) {
+        self.ensure_transcript_entry_revisions();
+        let revision = self.next_transcript_entry_revision();
+        self.transcript.push(entry);
+        self.transcript_entry_revisions.push(revision);
+        self.invalidate_transcript();
+    }
+
+    fn extend_transcript_entries(&mut self, entries: impl IntoIterator<Item = TranscriptEntry>) {
+        for entry in entries {
+            self.push_transcript_entry(entry);
+        }
+    }
+
+    fn mark_transcript_entry(&mut self, index: usize) {
+        self.ensure_transcript_entry_revisions();
+        if index < self.transcript_entry_revisions.len() {
+            self.transcript_entry_revisions[index] = self.next_transcript_entry_revision();
+            self.invalidate_transcript();
+        }
     }
 
     fn ensure_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
@@ -251,6 +303,7 @@ impl ChatView {
     fn new_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
         self.session_id = None;
         self.transcript.clear();
+        self.transcript_entry_revisions.clear();
         self.invalidate_transcript();
         self.streaming_assistant = None;
         self.streaming_thinking = None;
@@ -294,6 +347,7 @@ impl ChatView {
             self.mode = mode;
         }
         self.transcript.clear();
+        self.transcript_entry_revisions.clear();
         self.invalidate_transcript();
         self.streaming_assistant = None;
         self.streaming_thinking = None;
@@ -509,8 +563,7 @@ impl ChatView {
         match payload.get("type").and_then(Value::as_str).unwrap_or("") {
             "user_message" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
-                    self.transcript.push(TranscriptEntry::User(text.to_owned()));
-                    self.invalidate_transcript();
+                    self.push_transcript_entry(TranscriptEntry::User(text.to_owned()));
                     self.streaming_assistant = None;
                     self.streaming_thinking = None;
                 }
@@ -518,8 +571,7 @@ impl ChatView {
             "assistant_message" => {
                 let entries = assistant_payload_entries(payload);
                 self.clear_live_assistant();
-                self.transcript.extend(entries);
-                self.invalidate_transcript();
+                self.extend_transcript_entries(entries);
             }
             "tool_call" => {
                 let id = payload
@@ -535,9 +587,9 @@ impl ChatView {
                 if !id.is_empty() {
                     self.tool_names.insert(id, name.to_owned());
                 }
-                self.transcript
-                    .push(TranscriptEntry::Progress(tool_call_summary(name, input)));
-                self.invalidate_transcript();
+                self.push_transcript_entry(TranscriptEntry::Progress(tool_call_summary(
+                    name, input,
+                )));
             }
             "tool_result" => {
                 let id = payload
@@ -556,11 +608,9 @@ impl ChatView {
                     .get("content")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                self.transcript
-                    .push(TranscriptEntry::Progress(tool_result_summary(
-                        &name, status, content,
-                    )));
-                self.invalidate_transcript();
+                self.push_transcript_entry(TranscriptEntry::Progress(tool_result_summary(
+                    &name, status, content,
+                )));
             }
             "turn_ended" => {
                 self.running_turn = None;
@@ -610,13 +660,11 @@ impl ChatView {
                 if let Some(index) = self.streaming_assistant {
                     if let Some(TranscriptEntry::Assistant(text)) = self.transcript.get_mut(index) {
                         text.push_str(delta);
-                        self.invalidate_transcript();
+                        self.mark_transcript_entry(index);
                     }
                 } else {
-                    self.transcript
-                        .push(TranscriptEntry::Assistant(delta.to_owned()));
+                    self.push_transcript_entry(TranscriptEntry::Assistant(delta.to_owned()));
                     self.streaming_assistant = Some(self.transcript.len() - 1);
-                    self.invalidate_transcript();
                 }
             }
             "thinking_delta" => {
@@ -627,13 +675,11 @@ impl ChatView {
                 if let Some(index) = self.streaming_thinking {
                     if let Some(TranscriptEntry::Thinking(text)) = self.transcript.get_mut(index) {
                         text.push_str(delta);
-                        self.invalidate_transcript();
+                        self.mark_transcript_entry(index);
                     }
                 } else {
-                    self.transcript
-                        .push(TranscriptEntry::Thinking(delta.to_owned()));
+                    self.push_transcript_entry(TranscriptEntry::Thinking(delta.to_owned()));
                     self.streaming_thinking = Some(self.transcript.len() - 1);
-                    self.invalidate_transcript();
                 }
             }
             "step_started" => {
@@ -664,9 +710,7 @@ impl ChatView {
                     .and_then(Value::as_str)
                     .unwrap_or("model request failed");
                 self.clear_live_assistant();
-                self.transcript
-                    .push(TranscriptEntry::Error(message.to_owned()));
-                self.invalidate_transcript();
+                self.push_transcript_entry(TranscriptEntry::Error(message.to_owned()));
                 self.status = Some(message.to_owned());
                 self.running_turn = None;
                 self.transcript_scroll_back = 0;
@@ -690,13 +734,17 @@ impl ChatView {
                 )
             {
                 self.transcript.remove(index);
+                if index < self.transcript_entry_revisions.len() {
+                    self.transcript_entry_revisions.remove(index);
+                }
+                self.invalidate_transcript();
             }
         }
         self.streaming_thinking = None;
         self.streaming_assistant = None;
     }
 
-    fn tick_status(&mut self) {
+    fn tick_status(&mut self) -> bool {
         if self.status != self.last_status {
             self.last_status = self.status.clone();
             self.status_changed_at = Some(Instant::now());
@@ -708,7 +756,9 @@ impl ChatView {
             self.status = None;
             self.last_status = None;
             self.status_changed_at = None;
+            return true;
         }
+        false
     }
 
     fn handle_interaction_request(&mut self, request: &Request) {
@@ -748,7 +798,7 @@ impl ChatView {
         Ok(())
     }
 
-    fn expire_interaction(&mut self, supervisor: &CoreSupervisor) {
+    fn expire_interaction(&mut self, supervisor: &CoreSupervisor) -> bool {
         let expired = self
             .interaction
             .as_ref()
@@ -756,6 +806,7 @@ impl ChatView {
         if expired {
             let _ = self.respond_interaction(supervisor, "timeout");
         }
+        expired
     }
 }
 
@@ -1801,7 +1852,7 @@ impl ProviderView {
         }
     }
 
-    fn tick_status(&mut self) {
+    fn tick_status(&mut self) -> bool {
         if self.status != self.last_status {
             self.last_status = self.status.clone();
             self.status_changed_at = Some(Instant::now());
@@ -1813,7 +1864,9 @@ impl ProviderView {
             self.status = None;
             self.last_status = None;
             self.status_changed_at = None;
+            return true;
         }
+        false
     }
 }
 
@@ -1875,21 +1928,18 @@ fn run_loop(
     supervisor: &mut CoreSupervisor,
 ) -> Result<(), TuiError> {
     let mut redraw = true;
-    let mut next_tick = Instant::now();
+    let mut next_frame = Instant::now();
     loop {
-        let now = Instant::now();
-        let needs_tick = app.chat.status.is_some()
-            || app.chat.interaction.is_some()
-            || app.providers.status.is_some();
-        if redraw || (needs_tick && now >= next_tick) {
-            terminal.draw(|frame| draw_app(frame, app))?;
-            redraw = false;
-            next_tick = now + Duration::from_millis(250);
-        }
-        app.chat.expire_interaction(supervisor);
-        app.chat.tick_status();
-        app.providers.tick_status();
-        if let Some(connection_event) = supervisor.recv_event_timeout(Duration::from_millis(20))? {
+        redraw |= app.chat.expire_interaction(supervisor);
+        redraw |= app.chat.tick_status();
+        redraw |= app.providers.tick_status();
+
+        let mut core_events = 0;
+        while core_events < CORE_EVENT_BATCH_LIMIT {
+            let Some(connection_event) = supervisor.try_recv_event()? else {
+                break;
+            };
+            core_events += 1;
             redraw = true;
             match connection_event {
                 ConnectionEvent::Closed(error) => {
@@ -1904,7 +1954,24 @@ fn run_loop(
                 event => app.chat.handle_connection_event(event),
             }
         }
-        if event::poll(Duration::from_millis(0))? {
+
+        let now = Instant::now();
+        if redraw && now >= next_frame {
+            terminal.draw(|frame| draw_app(frame, app))?;
+            redraw = false;
+            next_frame = Instant::now() + FRAME_INTERVAL;
+        }
+
+        let wait = if core_events == CORE_EVENT_BATCH_LIMIT {
+            Duration::ZERO
+        } else if redraw {
+            next_frame
+                .saturating_duration_since(Instant::now())
+                .min(INPUT_POLL_INTERVAL)
+        } else {
+            INPUT_POLL_INTERVAL
+        };
+        if event::poll(wait)? {
             match event::read()? {
                 Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
                     redraw = true;
@@ -2646,22 +2713,7 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
     );
 
     let width = layout[1].width;
-    let cache_stale = view
-        .transcript_cache
-        .as_ref()
-        .is_none_or(|cache| cache.width != width || cache.revision != view.transcript_revision);
-    if cache_stale {
-        let lines = build_transcript_lines(view);
-        let line_count = Paragraph::new(Text::from(lines.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width.saturating_sub(2));
-        view.transcript_cache = Some(TranscriptCache {
-            width,
-            revision: view.transcript_revision,
-            lines,
-            line_count,
-        });
-    }
+    ensure_transcript_cache(view, width);
     let cache = view
         .transcript_cache
         .as_ref()
@@ -2671,7 +2723,14 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
     } else {
         "Transcript"
     };
-    let transcript_widget = Paragraph::new(Text::from(cache.lines.clone()))
+    let max_scroll = cache
+        .line_count
+        .saturating_sub(usize::from(layout[1].height.saturating_sub(2)));
+    let scroll = max_scroll
+        .saturating_sub(usize::from(view.transcript_scroll_back))
+        .min(u16::MAX as usize);
+    let (line_start, entry_scroll) = transcript_viewport(cache, scroll);
+    let transcript_widget = Paragraph::new(Text::from(cache.lines[line_start..].to_vec()))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -2683,13 +2742,10 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
         )
         .style(Style::default().fg(COLOR_TEXT))
         .wrap(Wrap { trim: false });
-    let max_scroll = cache
-        .line_count
-        .saturating_sub(usize::from(layout[1].height.saturating_sub(2)));
-    let scroll = max_scroll
-        .saturating_sub(usize::from(view.transcript_scroll_back))
-        .min(u16::MAX as usize) as u16;
-    frame.render_widget(transcript_widget.scroll((scroll, 0)), layout[1]);
+    frame.render_widget(
+        transcript_widget.scroll((entry_scroll.min(u16::MAX as usize) as u16, 0)),
+        layout[1],
+    );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -2730,42 +2786,133 @@ fn short_session_id(session: &str) -> &str {
     }
 }
 
-fn build_transcript_lines(view: &ChatView) -> Vec<Line<'static>> {
+fn transcript_viewport(cache: &TranscriptCache, scroll: usize) -> (usize, usize) {
+    if cache.entries.is_empty() {
+        return (0, 0);
+    }
+    let mut consumed = 0usize;
+    for entry in &cache.entries {
+        let next = consumed.saturating_add(entry.line_count);
+        if scroll < next {
+            return (entry.line_start, scroll.saturating_sub(consumed));
+        }
+        consumed = next;
+    }
+    (cache.lines.len(), 0)
+}
+
+fn ensure_transcript_cache(view: &mut ChatView, width: u16) {
+    let stale = view.transcript_cache.as_ref().is_none_or(|cache| {
+        cache.width != width
+            || cache.entries.len() != view.transcript.len()
+            || view.transcript_cache_dirty
+    });
+    if stale {
+        rebuild_transcript_cache(view, width);
+    }
+}
+
+fn rebuild_transcript_cache(view: &mut ChatView, width: u16) {
+    view.ensure_transcript_entry_revisions();
+    let (previous_width, previous_entries, mut previous_lines) = match view.transcript_cache.take()
+    {
+        Some(cache) => (
+            Some(cache.width),
+            cache.entries,
+            Some(cache.lines.into_iter()),
+        ),
+        None => (None, Vec::new(), None),
+    };
+    let width_changed = previous_width != Some(width);
+    let mut entries = Vec::with_capacity(view.transcript.len());
+    let mut lines = Vec::new();
+    let mut line_count = 0usize;
+
+    for (index, entry) in view.transcript.iter().enumerate() {
+        let revision = view.transcript_entry_revisions[index];
+        let previous = previous_entries.get(index);
+        let previous_len = previous.map_or(0, |cache_entry| cache_entry.line_len);
+        let reusable = previous.filter(|cache_entry| cache_entry.revision == revision);
+        let (entry_lines, entry_line_count) = if let Some(previous) = reusable {
+            let entry_lines = previous_lines
+                .as_mut()
+                .map(|lines| lines.by_ref().take(previous_len).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let entry_line_count = if width_changed {
+                wrapped_line_count(&entry_lines, width)
+            } else {
+                previous.line_count
+            };
+            (entry_lines, entry_line_count)
+        } else {
+            if let Some(lines) = previous_lines.as_mut() {
+                lines.by_ref().take(previous_len).for_each(drop);
+            }
+            let entry_lines = build_transcript_entry_lines(entry);
+            let entry_line_count = wrapped_line_count(&entry_lines, width);
+            (entry_lines, entry_line_count)
+        };
+        let line_start = lines.len();
+        entries.push(TranscriptCacheEntry {
+            revision,
+            line_start,
+            line_len: entry_lines.len(),
+            line_count: entry_line_count,
+        });
+        line_count = line_count.saturating_add(entry_line_count);
+        lines.extend(entry_lines);
+    }
+
     if view.transcript.is_empty() {
-        return vec![Line::styled(
+        lines = vec![Line::styled(
             "No messages yet",
             Style::default().fg(COLOR_MUTED),
         )];
+        line_count = wrapped_line_count(&lines, width);
     }
-    view.transcript
-        .iter()
-        .flat_map(|entry| match entry {
-            TranscriptEntry::User(text) => vec![Line::from(vec![
-                Span::styled(
-                    "you: ",
-                    Style::default()
-                        .fg(COLOR_ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
-            ])],
-            TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
-            TranscriptEntry::Thinking(text) => thinking_transcript_lines(text),
-            TranscriptEntry::Progress(text) => vec![Line::from(vec![
-                Span::styled("... ", Style::default().fg(COLOR_WARNING)),
-                Span::styled(text.clone(), Style::default().fg(COLOR_MUTED)),
-            ])],
-            TranscriptEntry::Error(text) => vec![Line::from(vec![
-                Span::styled(
-                    "error: ",
-                    Style::default()
-                        .fg(COLOR_ERROR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
-            ])],
-        })
-        .collect()
+
+    view.transcript_cache = Some(TranscriptCache {
+        width,
+        entries,
+        lines,
+        line_count,
+    });
+    view.transcript_cache_dirty = false;
+}
+
+fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
+    Paragraph::new(Text::from(lines.to_vec()))
+        .wrap(Wrap { trim: false })
+        .line_count(width.saturating_sub(2))
+}
+
+fn build_transcript_entry_lines(entry: &TranscriptEntry) -> Vec<Line<'static>> {
+    match entry {
+        TranscriptEntry::User(text) => vec![Line::from(vec![
+            Span::styled(
+                "you: ",
+                Style::default()
+                    .fg(COLOR_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
+        ])],
+        TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
+        TranscriptEntry::Thinking(text) => thinking_transcript_lines(text),
+        TranscriptEntry::Progress(text) => vec![Line::from(vec![
+            Span::styled("... ", Style::default().fg(COLOR_WARNING)),
+            Span::styled(text.clone(), Style::default().fg(COLOR_MUTED)),
+        ])],
+        TranscriptEntry::Error(text) => vec![Line::from(vec![
+            Span::styled(
+                "error: ",
+                Style::default()
+                    .fg(COLOR_ERROR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
+        ])],
+    }
 }
 
 fn thinking_transcript_lines(text: &str) -> Vec<Line<'static>> {
@@ -3435,6 +3582,37 @@ mod tests {
             view.transcript,
             vec![TranscriptEntry::Assistant("hello".to_owned())]
         );
+    }
+
+    #[test]
+    fn transcript_cache_reuses_unchanged_entries() {
+        let mut view = ChatView {
+            transcript: vec![
+                TranscriptEntry::Assistant("stable".to_owned()),
+                TranscriptEntry::Assistant("live".to_owned()),
+            ],
+            ..ChatView::default()
+        };
+        ensure_transcript_cache(&mut view, 40);
+        let stable_before = view.transcript_cache.as_ref().expect("cache").lines[0].spans[1]
+            .content
+            .as_ptr();
+
+        if let Some(TranscriptEntry::Assistant(text)) = view.transcript.get_mut(1) {
+            text.push_str(" more");
+        }
+        view.mark_transcript_entry(1);
+        ensure_transcript_cache(&mut view, 40);
+
+        let cache = view.transcript_cache.as_ref().expect("cache");
+        assert_eq!(cache.lines[0].spans[1].content.as_ptr(), stable_before);
+        let rendered = cache
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("live more"));
     }
 
     #[test]
