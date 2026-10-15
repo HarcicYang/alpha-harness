@@ -843,6 +843,17 @@ struct ListState {
 }
 
 #[derive(Default)]
+struct MarkdownTable {
+    alignments: Vec<pulldown_cmark::Alignment>,
+    header: Vec<Vec<Span<'static>>>,
+    rows: Vec<Vec<Vec<Span<'static>>>>,
+    current_row: Vec<Vec<Span<'static>>>,
+    current_cell: Vec<Span<'static>>,
+    in_header: bool,
+    in_cell: bool,
+}
+
+#[derive(Default)]
 struct MarkdownRenderer {
     lines: Vec<Line<'static>>,
     current: Vec<Span<'static>>,
@@ -852,6 +863,7 @@ struct MarkdownRenderer {
     item_prefixes: Vec<String>,
     link_targets: Vec<String>,
     in_code_block: bool,
+    table: Option<MarkdownTable>,
 }
 
 impl MarkdownRenderer {
@@ -870,6 +882,29 @@ impl MarkdownRenderer {
                 self.flush_line();
                 self.in_code_block = true;
                 self.format.code = true;
+            }
+            Tag::Table(alignments) => {
+                self.flush_line();
+                self.table = Some(MarkdownTable {
+                    alignments,
+                    ..MarkdownTable::default()
+                });
+            }
+            Tag::TableHead => {
+                if let Some(table) = &mut self.table {
+                    table.in_header = true;
+                }
+            }
+            Tag::TableRow => {
+                if let Some(table) = &mut self.table {
+                    table.current_row.clear();
+                }
+            }
+            Tag::TableCell => {
+                if let Some(table) = &mut self.table {
+                    table.current_cell.clear();
+                    table.in_cell = true;
+                }
             }
             Tag::List(start) => {
                 self.lists.push(ListState {
@@ -922,6 +957,41 @@ impl MarkdownRenderer {
                 self.format.code = false;
                 self.blank_line();
             }
+            TagEnd::TableCell => {
+                if let Some(table) = &mut self.table {
+                    table.in_cell = false;
+                    let cell = std::mem::take(&mut table.current_cell);
+                    if table.in_header {
+                        table.header.push(cell);
+                    } else {
+                        table.current_row.push(cell);
+                    }
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(table) = &mut self.table {
+                    let row = std::mem::take(&mut table.current_row);
+                    if table.in_header && table.header.is_empty() {
+                        table.header = row;
+                    } else if !row.is_empty() {
+                        table.rows.push(row);
+                    }
+                }
+            }
+            TagEnd::TableHead => {
+                if let Some(table) = &mut self.table {
+                    table.in_header = false;
+                    if table.header.is_empty() && !table.current_row.is_empty() {
+                        table.header = std::mem::take(&mut table.current_row);
+                    }
+                }
+            }
+            TagEnd::Table => {
+                if let Some(table) = self.table.take() {
+                    self.lines.extend(render_markdown_table(table));
+                    self.blank_line();
+                }
+            }
             TagEnd::List(_) => {
                 self.lists.pop();
                 self.blank_line();
@@ -960,6 +1030,21 @@ impl MarkdownRenderer {
     }
 
     fn append_styled(&mut self, text: &str, style: Style) {
+        if let Some(table) = &mut self.table
+            && table.in_cell
+        {
+            for (index, part) in text.split('\n').enumerate() {
+                if index > 0 && !part.is_empty() {
+                    table.current_cell.push(Span::styled(" ".to_owned(), style));
+                }
+                if !part.is_empty() {
+                    table
+                        .current_cell
+                        .push(Span::styled(part.to_owned(), style));
+                }
+            }
+            return;
+        }
         let mut first = true;
         for part in text.split('\n') {
             if !first {
@@ -1005,6 +1090,10 @@ impl MarkdownRenderer {
         }
     }
 
+    fn in_table_cell(&self) -> bool {
+        self.table.as_ref().is_some_and(|table| table.in_cell)
+    }
+
     fn blank_line(&mut self) {
         self.flush_line();
         if self.lines.is_empty() || self.lines.last().is_some_and(|line| line.spans.is_empty()) {
@@ -1014,6 +1103,9 @@ impl MarkdownRenderer {
     }
 
     fn finish(mut self) -> Vec<Line<'static>> {
+        if let Some(table) = self.table.take() {
+            self.lines.extend(render_markdown_table(table));
+        }
         self.flush_line();
         while self.lines.last().is_some_and(|line| line.spans.is_empty()) {
             self.lines.pop();
@@ -1025,9 +1117,107 @@ impl MarkdownRenderer {
     }
 }
 
+fn render_markdown_table(mut table: MarkdownTable) -> Vec<Line<'static>> {
+    let columns = table
+        .alignments
+        .len()
+        .max(table.header.len())
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or_default());
+    if columns == 0 {
+        return Vec::new();
+    }
+    table.header.resize(columns, Vec::new());
+    for row in &mut table.rows {
+        row.resize(columns, Vec::new());
+    }
+
+    let mut widths = vec![1; columns];
+    for (index, cell) in table.header.iter().enumerate() {
+        widths[index] = widths[index].max(table_cell_width(cell));
+    }
+    for row in &table.rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(table_cell_width(cell));
+        }
+    }
+
+    let mut lines = Vec::with_capacity(table.rows.len() + 3);
+    lines.push(render_table_row(
+        &table.header,
+        &widths,
+        &table.alignments,
+        true,
+    ));
+    lines.push(render_table_separator(&widths));
+    for row in &table.rows {
+        lines.push(render_table_row(row, &widths, &table.alignments, false));
+    }
+    lines
+}
+
+fn table_cell_width(cell: &[Span<'static>]) -> usize {
+    Line::from(cell.to_vec()).width().max(1)
+}
+
+fn render_table_row(
+    cells: &[Vec<Span<'static>>],
+    widths: &[usize],
+    alignments: &[pulldown_cmark::Alignment],
+    header: bool,
+) -> Line<'static> {
+    let border_style = Style::default().fg(COLOR_MUTED);
+    let mut spans = vec![Span::styled("|", border_style)];
+    for (index, cell) in cells.iter().enumerate() {
+        let width = widths[index];
+        let content_width = table_cell_width(cell);
+        let padding = width.saturating_sub(content_width);
+        let (left, right) = match alignments
+            .get(index)
+            .copied()
+            .unwrap_or(pulldown_cmark::Alignment::None)
+        {
+            pulldown_cmark::Alignment::None | pulldown_cmark::Alignment::Left => (0, padding),
+            pulldown_cmark::Alignment::Center => {
+                let left = padding / 2;
+                (left, padding - left)
+            }
+            pulldown_cmark::Alignment::Right => (padding, 0),
+        };
+        spans.push(Span::styled(" ", border_style));
+        if left > 0 {
+            spans.push(Span::raw(" ".repeat(left)));
+        }
+        for span in cell {
+            let mut span = span.clone();
+            if header {
+                span.style = span.style.add_modifier(Modifier::BOLD);
+            }
+            spans.push(span);
+        }
+        if right > 0 {
+            spans.push(Span::raw(" ".repeat(right)));
+        }
+        spans.push(Span::styled(" ", border_style));
+        spans.push(Span::styled("|", border_style));
+    }
+    Line::from(spans)
+}
+
+fn render_table_separator(widths: &[usize]) -> Line<'static> {
+    let border_style = Style::default().fg(COLOR_MUTED);
+    let mut spans = Vec::with_capacity(widths.len() * 2 + 1);
+    for width in widths {
+        spans.push(Span::styled("|", border_style));
+        spans.push(Span::styled("-".repeat(width + 2), border_style));
+    }
+    spans.push(Span::styled("|", border_style));
+    Line::from(spans)
+}
+
 fn render_markdown(text: &str) -> Vec<Line<'static>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
     let mut renderer = MarkdownRenderer::default();
     for event in Parser::new_ext(text, options) {
         match event {
@@ -1036,7 +1226,13 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
             MarkdownEvent::Text(text) => renderer.text(&text),
             MarkdownEvent::Code(text) => renderer.inline_code(&text),
             MarkdownEvent::SoftBreak => renderer.text(" "),
-            MarkdownEvent::HardBreak => renderer.flush_line(),
+            MarkdownEvent::HardBreak => {
+                if renderer.in_table_cell() {
+                    renderer.text(" ");
+                } else {
+                    renderer.flush_line();
+                }
+            }
             MarkdownEvent::Rule => {
                 renderer.flush_line();
                 renderer
@@ -3416,6 +3612,36 @@ mod tests {
             .find(|span| span.content == "code")
             .expect("code span");
         assert_eq!(code.style.fg, Some(COLOR_SUCCESS));
+    }
+
+    #[test]
+    fn markdown_output_renders_tables_with_alignment() {
+        let lines =
+            render_markdown("| Name | Count |\n|:-----|------:|\n| alpha | 1 |\n| beta | 22 |");
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            vec![
+                "| Name  | Count |",
+                "|-------|-------|",
+                "| alpha |     1 |",
+                "| beta  |    22 |",
+            ]
+        );
+        let header = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content == "Name")
+            .expect("table header cell");
+        assert!(header.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

@@ -400,10 +400,11 @@ remains incremental without forcing every adapter to implement SSE.
 
 The HTTP seam exposes response bodies as byte streams. The OpenAI-compatible
 adapter parses SSE text and tool-call fragments. The loop emits
-`agent/*` live events for steps, text deltas, tool lifecycle, completion, and
-errors, then commits one canonical assistant message and complete tool calls to
-the durable log. Partial assistant text received before a failed stream is
-preserved as an interrupted prefix.
+`agent/*` live events for steps, text deltas, thinking deltas, tool lifecycle,
+completion, and errors, then commits one canonical assistant message and
+complete tool calls to the durable log. Thinking deltas are emitted separately
+from visible text. Partial thinking and text received before a failed stream are
+preserved as structured interrupted content.
 
 The CLI subscribes to live events: stdout receives assistant deltas and stderr
 receives progress. Protocol stdio mode keeps stdout protocol-only.
@@ -450,7 +451,9 @@ picker. `/model`, `/thinking`, and `/effort` provide the same controls. Route
 changes apply to the next model step and are durable, so resuming a session
 restores the effective provider, model, and thinking level. Selecting a model
 also persists it as the provider instance's default model and default provider
-selection, so new sessions start from the same route.
+selection, so new sessions start from the same route. Thinking content is
+rendered separately from assistant text, and assistant Markdown supports GFM
+tables.
 
 ### D26: Credential storage
 
@@ -530,6 +533,13 @@ text, thinking, local tool calls, provider tool calls, provider tool results,
 and citations. Local tool calls still produce independent `ToolCall` and
 `ToolResult` events. Provider-native tools remain inside the assistant message
 and never enter the local tool registry.
+
+Adapters preserve provider thinking when replaying history. OpenAI Chat
+Completions sends assistant `reasoning_content`; OpenAI Responses sends
+`reasoning` items with encrypted content; Anthropic Messages sends signed
+`thinking` blocks and falls back to text when a signature is unavailable.
+Provider-facing history therefore keeps the same structured content that the
+session log and frontends expose.
 
 Schema 1 assistant messages with a plain `text` field are migrated at read
 time into a single text block. The current durable schema is version 6.
