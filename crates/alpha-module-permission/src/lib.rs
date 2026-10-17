@@ -1,8 +1,10 @@
 //! Permission modes, approvals, and policy evaluation.
 //!
 //! Modes: `read` denies mutations, `auto` asks on request and fails closed
-//! without an approval channel, `free` allows everything. `reviewed` behaves
-//! like `auto` until the review chain lands in M1.5.
+//! without an approval channel, `free` allows everything. `reviewed` routes
+//! requests through the intent classifier and approval reviewer chain; the
+//! defaults allow sandboxed and local read-only requests and deny other
+//! unsandboxed requests.
 
 #![forbid(unsafe_code)]
 
