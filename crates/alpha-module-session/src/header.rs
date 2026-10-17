@@ -5,20 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::SessionEvent;
 
+pub use alpha_schema::WorkspaceRef;
+
 /// Header schema version of the current implementation.
 pub const HEADER_SCHEMA: u32 = 1;
-
-/// Workspace binding of a session.
-///
-/// The workspace determines the execution world and the cwd. A session keeps
-/// its binding until an explicit, durable rebind.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceRef {
-    /// Workspace root.
-    pub root: String,
-    /// Fixed cwd inside the workspace.
-    pub cwd: String,
-}
 
 /// Session identity and binding, stored beside the event log.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
