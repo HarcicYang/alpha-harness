@@ -461,14 +461,15 @@ restores the effective provider, model, and reasoning effort. Selecting a model
 also persists it as the provider instance's default model and default provider
 selection, so new sessions start from the same route. Thinking content is
 rendered separately from assistant text without role prefixes, and assistant
-Markdown supports GFM tables. User messages are rendered as dark-gray bubbles
-on a near-black blue canvas. Messages and slash commands share one multiline
-composer with visible command and argument completions. `Enter` sends,
-`Ctrl-Enter` inserts a newline, and cursor editing supports arrows, `Home`,
-`End`, `Backspace`, and `Delete`. `Ctrl-R` opens a session manager that
-projects the first user message as a list preview, switches sessions entirely
-through keyboard UI, and deletes idle sessions after confirmation. Deletion is
-rejected while a session turn is running.
+Markdown supports GFM tables. User messages are rendered as full-width
+dark-gray bands with two rows of padding above and below on a near-black blue
+canvas. Messages and slash commands share one multiline composer with visible
+command and argument completions. `Enter` sends, `Ctrl-Enter` inserts a
+newline, and cursor editing supports arrows, `Home`, `End`, `Backspace`, and
+`Delete`. `Ctrl-R` opens a session manager that projects the first user message
+as a list preview, switches sessions entirely through keyboard UI, and deletes
+idle sessions after confirmation. Deletion is rejected while a session turn is
+running.
 
 ### D26: Credential storage
 

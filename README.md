@@ -59,8 +59,9 @@ becomes the persisted default for new sessions, and model pickers prefer the
 provider's live `/models` catalog over bundled fallback metadata.
 
 The transcript renders assistant text and reasoning without role prefixes. User
-messages use a dark-gray message bubble, and the full terminal canvas uses a
-near-black blue background for consistent contrast.
+messages use a full-width dark-gray band with two rows of vertical padding,
+and the full terminal canvas uses a near-black blue background for consistent
+contrast.
 
 Messages and slash commands share one multiline composer. `Enter` sends,
 `Ctrl-Enter` inserts a line break, and `Tab` accepts the visible command or

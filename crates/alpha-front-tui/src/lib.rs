@@ -37,7 +37,7 @@ use serde_json::{Value, json};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const COLOR_CANVAS: Color = Color::Rgb(9, 12, 18);
-const COLOR_USER_BUBBLE: Color = Color::Rgb(32, 37, 47);
+const COLOR_USER_BUBBLE: Color = Color::Rgb(43, 48, 59);
 const COLOR_BRAND: Color = Color::Rgb(90, 221, 225);
 const COLOR_ACCENT: Color = Color::Rgb(97, 192, 224);
 const COLOR_BRIGHT: Color = Color::Rgb(184, 255, 254);
@@ -3682,18 +3682,15 @@ fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line
 }
 
 fn user_transcript_lines(text: &str, inner_width: u16) -> Vec<Line<'static>> {
-    let available = usize::from(inner_width);
+    let width = usize::from(inner_width);
+    if width == 0 {
+        return Vec::new();
+    }
+    let horizontal_padding = 2.min(width / 2);
+    let content_width = width
+        .saturating_sub(horizontal_padding.saturating_mul(2))
+        .max(1);
     let logical_lines = text.lines().collect::<Vec<_>>();
-    let max_line_width = logical_lines
-        .iter()
-        .map(|line| UnicodeWidthStr::width(*line))
-        .max()
-        .unwrap_or_default();
-    let bubble_width = max_line_width
-        .saturating_add(2)
-        .max(3)
-        .min(available.saturating_sub(1).max(1));
-    let content_width = bubble_width.saturating_sub(2).max(1);
     let mut content_lines = logical_lines
         .into_iter()
         .flat_map(|line| wrap_bubble_line(line, content_width))
@@ -3702,16 +3699,25 @@ fn user_transcript_lines(text: &str, inner_width: u16) -> Vec<Line<'static>> {
         content_lines.push(String::new());
     }
     let style = Style::default().fg(COLOR_TEXT).bg(COLOR_USER_BUBBLE);
-    content_lines
-        .into_iter()
-        .map(|line| {
-            let padding = content_width.saturating_sub(UnicodeWidthStr::width(line.as_str()));
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled(format!(" {line}{} ", " ".repeat(padding)), style),
-            ])
-        })
-        .collect()
+    let padding_line = Line::styled(" ".repeat(width), style);
+    let mut lines = Vec::with_capacity(content_lines.len().saturating_add(4));
+    lines.push(padding_line.clone());
+    lines.push(padding_line.clone());
+    for line in content_lines {
+        let padding = content_width.saturating_sub(UnicodeWidthStr::width(line.as_str()));
+        lines.push(Line::styled(
+            format!(
+                "{}{line}{}{}",
+                " ".repeat(horizontal_padding),
+                " ".repeat(padding),
+                " ".repeat(horizontal_padding),
+            ),
+            style,
+        ));
+    }
+    lines.push(padding_line.clone());
+    lines.push(padding_line);
+    lines
 }
 
 fn wrap_bubble_line(line: &str, width: usize) -> Vec<String> {
@@ -4823,6 +4829,23 @@ mod tests {
             .find(|cell| cell.symbol() == "你")
             .map(|cell| cell.bg);
         assert_eq!(user_background, Some(COLOR_USER_BUBBLE));
+    }
+
+    #[test]
+    fn user_message_fills_width_with_vertical_padding() {
+        let lines = user_transcript_lines("hello", 20);
+        assert_eq!(lines.len(), 5);
+        assert!(lines.iter().all(|line| line.width() == 20));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.style.bg == Some(COLOR_USER_BUBBLE))
+        );
+        assert_eq!(lines[0].to_string(), " ".repeat(20));
+        assert_eq!(lines[1].to_string(), " ".repeat(20));
+        assert_eq!(lines[3].to_string(), " ".repeat(20));
+        assert_eq!(lines[4].to_string(), " ".repeat(20));
+        assert!(lines[2].to_string().contains("hello"));
     }
 
     #[test]
