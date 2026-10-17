@@ -10,6 +10,19 @@ These instructions apply to the entire repository.
   library loading or WASM hosting.
 - Keep the session log as the source of truth. Any model-visible context must be
   reconstructible from durable events.
+- Keep UI-independent frontend state and behavior in `alpha-front-runtime`.
+  Session control, turn actions, provider workflows, command semantics,
+  transcript reduction, restart recovery, and interaction timeouts must not
+  live in a terminal, desktop, or web adapter.
+- Keep protocol messages and shared front DTOs in `alpha-schema`. Frontends must
+  consume typed events and state instead of parsing protocol JSON ad hoc.
+- Treat frontend adapters as presentation and input layers. TUI code owns
+  terminal rendering, layout, key/mouse mapping, selection, clipboard, and
+  terminal lifecycle only; future GUI and WebUI adapters must follow the same
+  boundary.
+- Do not make a frontend crate depend on core service crates such as
+  `alpha-provider-api`. Shared provider and session shapes belong in
+  `alpha-schema`; shared frontend workflows belong in `alpha-front-runtime`.
 - Do not introduce JavaScript, TypeScript, Node.js, npm, pnpm, or JS-based build
   tooling anywhere in the repository or shipped dependency chain.
 
