@@ -51,6 +51,15 @@ const COLOR_ERROR: Color = Color::Rgb(255, 48, 70);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Terminal profile selected by the public CLI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalProfile {
+    /// Interactive chat without an alternate screen.
+    Chat,
+    /// Full-screen terminal profile.
+    FullScreen,
+}
+
 /// TUI runtime failure.
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {
@@ -1395,8 +1404,17 @@ impl ProviderView {
     }
 }
 
-/// Run the interactive TUI.
+/// Run the interactive chat profile.
+pub fn run_chat(runtime: FrontRuntime) -> Result<(), TuiError> {
+    run_terminal(runtime, TerminalProfile::Chat)
+}
+
+/// Run the full-screen terminal profile.
 pub fn run_tui(runtime: FrontRuntime) -> Result<(), TuiError> {
+    run_terminal(runtime, TerminalProfile::FullScreen)
+}
+
+fn run_terminal(runtime: FrontRuntime, profile: TerminalProfile) -> Result<(), TuiError> {
     let mut runtime = runtime;
     let mut app = App {
         chat: ChatView::default(),
@@ -1418,7 +1436,7 @@ pub fn run_tui(runtime: FrontRuntime) -> Result<(), TuiError> {
         app.screen = Screen::Chat;
     }
 
-    let mut guard = TerminalGuard::enter()?;
+    let mut guard = TerminalGuard::enter(profile)?;
     sync_views(&mut app, &runtime);
     let result = run_loop(&mut guard.terminal, &mut app, &mut runtime);
     let session_id = app.chat.session_id;
@@ -3442,11 +3460,13 @@ fn kind_details(kind: Option<&ProviderDescriptor>) -> Text<'static> {
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     keyboard_enhancement: bool,
+    alternate_screen: bool,
 }
 
 impl TerminalGuard {
-    fn enter() -> Result<Self, TuiError> {
+    fn enter(profile: TerminalProfile) -> Result<Self, TuiError> {
         enable_raw_mode()?;
+        let alternate_screen = profile == TerminalProfile::FullScreen;
         let mut output = stdout();
         let keyboard_enhancement = matches!(supports_keyboard_enhancement(), Ok(true));
         if keyboard_enhancement {
@@ -3460,11 +3480,14 @@ impl TerminalGuard {
                 )
             )?;
         }
-        execute!(output, EnterAlternateScreen, EnableMouseCapture)?;
+        if alternate_screen {
+            execute!(output, EnterAlternateScreen, EnableMouseCapture)?;
+        }
         let terminal = Terminal::new(CrosstermBackend::new(output))?;
         Ok(Self {
             terminal,
             keyboard_enhancement,
+            alternate_screen,
         })
     }
 }
@@ -3475,11 +3498,13 @@ impl Drop for TerminalGuard {
         if self.keyboard_enhancement {
             let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
         }
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            DisableMouseCapture,
-            LeaveAlternateScreen
-        );
+        if self.alternate_screen {
+            let _ = execute!(
+                self.terminal.backend_mut(),
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            );
+        }
         let _ = self.terminal.show_cursor();
     }
 }

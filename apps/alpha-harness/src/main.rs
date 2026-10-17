@@ -6,7 +6,7 @@ use std::time::Duration;
 use alpha_front_runtime::{
     FrontEvent, FrontRuntime, FrontRuntimeConfig, SessionOptions, read_terminal_approval,
 };
-use alpha_front_tui::run_tui;
+use alpha_front_tui::{run_chat, run_tui};
 use alpha_schema::LiveAgentEvent;
 use alpha_schema::{PermissionMode, SessionId};
 use clap::{Args, Parser, Subcommand};
@@ -74,7 +74,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args),
-        Command::Chat | Command::Tui => {
+        command @ (Command::Chat | Command::Tui) => {
             let runtime = match FrontRuntime::start(FrontRuntimeConfig::default()) {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -82,7 +82,12 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            match run_tui(runtime) {
+            let result = match command {
+                Command::Chat => run_chat(runtime),
+                Command::Tui => run_tui(runtime),
+                _ => unreachable!(),
+            };
+            match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("alpha: {error}");
