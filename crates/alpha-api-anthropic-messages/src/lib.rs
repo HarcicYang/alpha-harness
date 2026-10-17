@@ -248,10 +248,17 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
         )
         .collect::<Vec<_>>();
     let mut payload = serde_json::Map::new();
+    if let Value::Object(options) = &request.options {
+        for (key, value) in options {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
     payload.insert("model".to_owned(), json!(request.model));
     payload.insert("messages".to_owned(), Value::Array(messages));
     payload.insert("stream".to_owned(), json!(true));
-    payload.insert("max_tokens".to_owned(), json!(4096));
+    payload
+        .entry("max_tokens".to_owned())
+        .or_insert_with(|| json!(4096));
     match request.reasoning {
         ReasoningLevel::Auto => {}
         ReasoningLevel::Off => {
@@ -271,11 +278,6 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     }
     if !tools.is_empty() {
         payload.insert("tools".to_owned(), Value::Array(tools));
-    }
-    if let Value::Object(options) = &request.options {
-        for (key, value) in options {
-            payload.insert(key.clone(), value.clone());
-        }
     }
     serde_json::to_vec(&Value::Object(payload))
         .map_err(|error| ProviderError::Request(error.to_string()))

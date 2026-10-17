@@ -271,6 +271,73 @@ fn session_header_is_added_to_provider_requests() {
 }
 
 #[test]
+fn model_specific_adapter_receives_route_history_and_provider_tools() {
+    let default_adapter = Arc::new(CaptureAdapter {
+        request: Mutex::new(None),
+    });
+    let model_adapter = Arc::new(CaptureAdapter {
+        request: Mutex::new(None),
+    });
+    let provider = Arc::new(
+        AdapterProvider::new(
+            default_adapter.clone(),
+            Arc::new(CatalogHttp {
+                request: Mutex::new(None),
+            }),
+            "https://api.test/v1",
+            None,
+            Default::default(),
+            vec!["web_search".to_owned()],
+            json!({}),
+        )
+        .with_model_adapters(std::collections::BTreeMap::from([(
+            "routed-model".to_owned(),
+            model_adapter.clone() as Arc<dyn ApiAdapter>,
+        )])),
+    );
+    let _stream = provider.stream(CompletionRequest {
+        session_id: "session-123".to_owned(),
+        model: "routed-model".to_owned(),
+        reasoning: ReasoningLevel::Max,
+        messages: vec![
+            ChatMessage::AssistantContent(vec![AssistantContentBlock::Thinking {
+                text: "remembered reasoning".to_owned(),
+                signature: Some("signature".to_owned()),
+            }]),
+            ChatMessage::User("next".to_owned()),
+        ],
+        tools: Vec::new(),
+        provider_tools: vec!["web_search".to_owned()],
+    });
+
+    assert!(
+        default_adapter
+            .request
+            .lock()
+            .expect("request lock")
+            .is_none()
+    );
+    let request = model_adapter
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("model adapter request");
+    assert_eq!(request.reasoning, ReasoningLevel::Max);
+    assert_eq!(request.provider_tools, vec!["web_search".to_owned()]);
+    assert!(request.messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::AssistantContent(blocks)
+            if blocks.iter().any(|block| matches!(
+                block,
+                AssistantContentBlock::Thinking { text, signature }
+                    if text == "remembered reasoning"
+                        && signature.as_deref() == Some("signature")
+            ))
+    )));
+}
+
+#[test]
 fn complete_preserves_streamed_content_order() {
     let adapter = Arc::new(StreamingAdapter {
         chunks: Mutex::new(Some(vec![

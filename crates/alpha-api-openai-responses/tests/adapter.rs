@@ -128,7 +128,7 @@ async fn maps_reasoning_effort_into_response_requests() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
-                options: json!({}),
+                options: json!({ "reasoning": { "effort": "low" } }),
             },
         )
         .collect::<Vec<_>>()

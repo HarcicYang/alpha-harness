@@ -162,6 +162,11 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     let input: Vec<Value> = request.messages.iter().flat_map(wire_message).collect();
     let tools: Vec<Value> = request.tools.iter().map(wire_tool).collect();
     let mut payload = serde_json::Map::new();
+    if let Value::Object(options) = &request.options {
+        for (key, value) in options {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
     payload.insert("model".to_owned(), json!(request.model));
     payload.insert("input".to_owned(), Value::Array(input));
     payload.insert("stream".to_owned(), json!(true));
@@ -172,11 +177,6 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     }
     if let Some(effort) = request.reasoning.api_effort() {
         payload.insert("reasoning".to_owned(), json!({ "effort": effort }));
-    }
-    if let Value::Object(options) = &request.options {
-        for (key, value) in options {
-            payload.insert(key.clone(), value.clone());
-        }
     }
     serde_json::to_vec(&Value::Object(payload))
         .map_err(|error| ProviderError::Request(error.to_string()))

@@ -259,7 +259,7 @@ async fn maps_reasoning_level_into_thinking_budget() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
-                options: json!({}),
+                options: json!({ "thinking": { "type": "disabled" } }),
             },
         )
         .collect::<Vec<_>>()
