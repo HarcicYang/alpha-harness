@@ -99,27 +99,6 @@ impl InteractionDecision {
     }
 }
 
-/// Current provider, model, and reasoning route.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelRouteState {
-    /// Provider instance or provider kind.
-    pub provider: String,
-    /// Model identifier.
-    pub model: String,
-    /// Requested reasoning level.
-    pub reasoning: ReasoningLevel,
-}
-
-impl Default for ModelRouteState {
-    fn default() -> Self {
-        Self {
-            provider: String::new(),
-            model: String::new(),
-            reasoning: ReasoningLevel::Auto,
-        }
-    }
-}
-
 /// UI-independent chat and session state.
 #[derive(Clone, Debug, Default)]
 pub struct ChatState {
@@ -135,8 +114,12 @@ pub struct ChatState {
     pub running_turn: Option<TurnId>,
     /// Pending interaction request.
     pub interaction: Option<InteractionPrompt>,
-    /// Current provider/model/reasoning route.
-    pub route: ModelRouteState,
+    /// Provider instance or provider kind.
+    pub provider: String,
+    /// Model identifier.
+    pub model: String,
+    /// Requested reasoning level.
+    pub reasoning: ReasoningLevel,
     /// Effective permission mode.
     pub mode: PermissionMode,
     /// Provider-native tools waiting for the next session creation.
@@ -299,14 +282,12 @@ impl ChatState {
                 model,
                 reasoning,
             } => {
-                self.route = ModelRouteState {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    reasoning: *reasoning,
-                };
+                self.provider = provider.clone();
+                self.model = model.clone();
+                self.reasoning = *reasoning;
                 Some(format!(
                     "route: {}/{}  effort:{}",
-                    self.route.provider, self.route.model, self.route.reasoning
+                    self.provider, self.model, self.reasoning
                 ))
             }
             SessionEvent::ModeChanged { mode } => {

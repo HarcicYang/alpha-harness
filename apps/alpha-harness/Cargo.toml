@@ -37,6 +37,7 @@ alpha-schema.workspace = true
 alpha-protocol.workspace = true
 alpha-kernel.workspace = true
 alpha-bundle-default.workspace = true
+alpha-front-runtime.workspace = true
 alpha-front-supervisor.workspace = true
 alpha-front-client.workspace = true
 alpha-front-tui.workspace = true

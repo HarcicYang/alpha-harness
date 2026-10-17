@@ -18,9 +18,7 @@ use alpha_schema::{
 };
 use serde_json::{Value, json};
 
-pub use chat::{
-    ChatState, ChatUpdate, InteractionDecision, InteractionPrompt, ModelRouteState, TranscriptItem,
-};
+pub use chat::{ChatState, ChatUpdate, InteractionDecision, InteractionPrompt, TranscriptItem};
 pub use command::{COMMANDS, CommandSpec, FrontCommand, parse_command};
 pub use provider::{
     ModelChoice, ProviderRemoved, ProviderState, resolve_model_selection,
@@ -144,11 +142,9 @@ impl FrontRuntime {
         };
         let chat = ChatState {
             mode: config.session.mode,
-            route: ModelRouteState {
-                provider: config.session.provider.clone(),
-                model: config.session.model.clone(),
-                reasoning: config.session.reasoning,
-            },
+            provider: config.session.provider.clone(),
+            model: config.session.model.clone(),
+            reasoning: config.session.reasoning,
             ..ChatState::default()
         };
         Ok(Self {
@@ -171,11 +167,9 @@ impl FrontRuntime {
         }
         let chat = ChatState {
             mode: session.mode,
-            route: ModelRouteState {
-                provider: session.provider.clone(),
-                model: session.model.clone(),
-                reasoning: session.reasoning,
-            },
+            provider: session.provider.clone(),
+            model: session.model.clone(),
+            reasoning: session.reasoning,
             ..ChatState::default()
         };
         Ok(Self {
@@ -222,6 +216,42 @@ impl FrontRuntime {
             .refresh_models(&mut self.supervisor, provider)
     }
 
+    /// Create one provider instance from a registered kind.
+    pub fn create_provider_instance(&mut self, kind: &str) -> Result<String, FrontError> {
+        self.providers.create_instance(&mut self.supervisor, kind)
+    }
+
+    /// Remove one provider instance.
+    pub fn remove_provider_instance(&mut self, id: &str) -> Result<ProviderRemoved, FrontError> {
+        self.providers.remove_instance(&mut self.supervisor, id)
+    }
+
+    /// Select the default provider instance.
+    pub fn set_default_provider(&mut self, id: &str) -> Result<(), FrontError> {
+        self.providers
+            .set_default_instance(&mut self.supervisor, id)
+    }
+
+    /// Validate one provider instance.
+    pub fn test_provider(&mut self, id: &str) -> Result<(), FrontError> {
+        self.providers.test_instance(&mut self.supervisor, id)
+    }
+
+    /// Store one provider credential.
+    pub fn authenticate_provider(&mut self, id: &str, secret: String) -> Result<(), FrontError> {
+        self.providers
+            .authenticate_instance(&mut self.supervisor, id, secret)
+    }
+
+    /// Update and validate one provider instance.
+    pub fn update_provider(
+        &mut self,
+        instance: alpha_schema::ProviderInstance,
+    ) -> Result<(), FrontError> {
+        self.providers
+            .update_instance(&mut self.supervisor, instance)
+    }
+
     /// Create a session using the current defaults.
     pub fn create_session(&mut self) -> Result<SessionCreated, FrontError> {
         let workspace = self.session_options.workspace.clone();
@@ -234,11 +264,9 @@ impl FrontRuntime {
             self.session_options.reasoning,
         )?;
         self.chat.session_id = Some(created.session_id);
-        self.chat.route = ModelRouteState {
-            provider: created.provider.clone(),
-            model: created.model.clone(),
-            reasoning: created.reasoning,
-        };
+        self.chat.provider = created.provider.clone();
+        self.chat.model = created.model.clone();
+        self.chat.reasoning = created.reasoning;
         self.chat.mode = created.mode;
         self.chat.pending_provider_tools = None;
         self.chat.status = Some("session ready".to_owned());
@@ -290,11 +318,9 @@ impl FrontRuntime {
         self.chat.interaction = None;
         self.chat.pending_provider_tools = None;
         self.chat.last_seq = None;
-        self.chat.route = ModelRouteState {
-            provider: resumed.provider.clone(),
-            model: resumed.model.clone(),
-            reasoning: resumed.reasoning,
-        };
+        self.chat.provider = resumed.provider.clone();
+        self.chat.model = resumed.model.clone();
+        self.chat.reasoning = resumed.reasoning;
         self.chat.mode = resumed.mode;
         self.chat.status = Some(format!(
             "resumed {session_id} ({} messages, {} replayed)",
@@ -390,19 +416,29 @@ impl FrontRuntime {
                 })),
             )?;
         }
-        self.chat.route = ModelRouteState {
-            provider: provider.clone(),
-            model: model.clone(),
-            reasoning,
-        };
+        self.chat.provider = provider.clone();
+        self.chat.model = model.clone();
+        self.chat.reasoning = reasoning;
         self.session_options.provider = provider;
         self.session_options.model = model;
         self.session_options.reasoning = reasoning;
         self.chat.status = Some(format!(
             "route: {}/{}  effort:{}",
-            self.chat.route.provider, self.chat.route.model, self.chat.route.reasoning
+            self.chat.provider, self.chat.model, self.chat.reasoning
         ));
         Ok(())
+    }
+
+    /// Set the session route and persist it as the default for new sessions.
+    pub fn set_route_and_default(
+        &mut self,
+        provider: String,
+        model: String,
+        reasoning: ReasoningLevel,
+    ) -> Result<(), FrontError> {
+        self.providers
+            .set_default_model(&mut self.supervisor, &provider, &model)?;
+        self.set_route(provider, model, reasoning)
     }
 
     /// Confirm or discard pending steers.
@@ -481,7 +517,7 @@ impl FrontRuntime {
             FrontCommand::OpenProviders => Ok(CommandOutcome::OpenProviders),
             FrontCommand::OpenModels => {
                 self.refresh_providers()?;
-                let provider = self.chat.route.provider.clone();
+                let provider = self.chat.provider.clone();
                 self.refresh_models(Some(&provider))?;
                 Ok(CommandOutcome::OpenModels)
             }
@@ -500,8 +536,8 @@ impl FrontRuntime {
                     .ok_or_else(|| {
                         FrontError::Protocol(format!("unknown provider instance: {provider}"))
                     })?;
-                let reasoning = if choice.reasoning_levels.contains(&self.chat.route.reasoning) {
-                    self.chat.route.reasoning
+                let reasoning = if choice.reasoning_levels.contains(&self.chat.reasoning) {
+                    self.chat.reasoning
                 } else {
                     choice
                         .reasoning_levels
@@ -519,13 +555,12 @@ impl FrontRuntime {
             }
             FrontCommand::SelectModel { target, reasoning } => {
                 self.refresh_providers()?;
-                let current_provider = self.chat.route.provider.clone();
+                let current_provider = self.chat.provider.clone();
                 self.refresh_models(Some(&current_provider))?;
                 let choices = self.providers.model_choices();
-                let selected =
-                    resolve_model_selection(&choices, &self.chat.route.provider, &target)
-                        .ok_or_else(|| FrontError::Protocol(format!("unknown model: {target}")))?;
-                let requested = reasoning.unwrap_or(self.chat.route.reasoning);
+                let selected = resolve_model_selection(&choices, &self.chat.provider, &target)
+                    .ok_or_else(|| FrontError::Protocol(format!("unknown model: {target}")))?;
+                let requested = reasoning.unwrap_or(self.chat.reasoning);
                 let reasoning = if selected.reasoning_levels.contains(&requested) {
                     requested
                 } else {
@@ -545,23 +580,19 @@ impl FrontRuntime {
             }
             FrontCommand::SetThinking(level) => {
                 self.refresh_providers()?;
-                let provider = self.chat.route.provider.clone();
+                let provider = self.chat.provider.clone();
                 self.refresh_models(Some(&provider))?;
                 let levels = supported_reasoning_levels(
                     &self.providers.model_choices(),
-                    &self.chat.route.provider,
-                    &self.chat.route.model,
+                    &self.chat.provider,
+                    &self.chat.model,
                 );
                 if !levels.contains(&level) {
                     return Err(FrontError::Protocol(format!(
                         "reasoning effort `{level}` is not available for this model"
                     )));
                 }
-                self.set_route(
-                    self.chat.route.provider.clone(),
-                    self.chat.route.model.clone(),
-                    level,
-                )?;
+                self.set_route(self.chat.provider.clone(), self.chat.model.clone(), level)?;
                 Ok(CommandOutcome::Completed)
             }
             FrontCommand::SetMode(mode) => {

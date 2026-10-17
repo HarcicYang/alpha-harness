@@ -158,10 +158,7 @@ dependencies = [
 name = "alpha-front-tui"
 version = "0.1.0"
 dependencies = [
- "alpha-front-client",
- "alpha-front-supervisor",
- "alpha-protocol",
- "alpha-provider-api",
+ "alpha-front-runtime",
  "alpha-schema",
  "crossterm",
  "pulldown-cmark",
@@ -181,6 +178,7 @@ dependencies = [
  "alpha-build",
  "alpha-bundle-default",
  "alpha-front-client",
+ "alpha-front-runtime",
  "alpha-front-supervisor",
  "alpha-front-tui",
  "alpha-kernel",

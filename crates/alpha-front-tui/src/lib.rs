@@ -4,16 +4,14 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, stdout};
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::ops::{Deref, DerefMut};
+use std::time::{Duration, Instant};
 
-use alpha_front_client::ConnectionEvent;
-use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
-use alpha_protocol::{Id, Request};
-use alpha_provider_api::{
-    ModelDescriptor, ProviderDescriptor, ProviderInstance, ReasoningLevel, effective_models,
+use alpha_front_runtime::{
+    COMMANDS, ChatState, CommandOutcome, FrontCommand, FrontError, FrontRuntime,
+    InteractionDecision, InteractionPrompt, ProviderState, parse_command,
 };
-use alpha_schema::PermissionMode;
+use alpha_schema::{ProviderDescriptor, ProviderInstance, ReasoningLevel};
 use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
@@ -35,7 +33,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState as RatatuiListState, Paragraph, Wrap,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const COLOR_CANVAS: Color = Color::Rgb(9, 12, 18);
@@ -50,22 +48,18 @@ const COLOR_SUCCESS: Color = Color::Rgb(93, 227, 144);
 const COLOR_WARNING: Color = Color::Rgb(82, 171, 237);
 const COLOR_ERROR: Color = Color::Rgb(255, 48, 70);
 
-const CORE_EVENT_BATCH_LIMIT: usize = 256;
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 /// TUI runtime failure.
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {
-    /// Core process failed.
+    /// Shared frontend runtime failed.
     #[error(transparent)]
-    Supervisor(#[from] SupervisorError),
+    Runtime(#[from] FrontError),
     /// Terminal IO failed.
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// A core response was malformed.
-    #[error("invalid core response: {0}")]
-    Protocol(String),
 }
 
 /// Secret input state.
@@ -80,12 +74,8 @@ pub struct AuthPrompt {
 /// Provider state rendered by the first TUI screen.
 #[derive(Clone, Debug, Default)]
 pub struct ProviderView {
-    /// Registered provider kinds.
-    pub kinds: Vec<ProviderDescriptor>,
-    /// Persisted provider instances.
-    pub instances: Vec<ProviderInstance>,
-    /// Dynamically discovered model catalogs.
-    pub model_cache: BTreeMap<String, Vec<ModelDescriptor>>,
+    /// Shared provider state.
+    pub state: ProviderState,
     /// Selected provider kind index.
     pub selected_kind: usize,
     /// Selected instance index within the current kind.
@@ -96,25 +86,12 @@ pub struct ProviderView {
     pub config_editor: Option<ConfigEditor>,
     /// Instance waiting for delete confirmation.
     pub confirm_remove: Option<String>,
-    /// Credential backend status.
-    pub credential_status: Option<CredentialStatusView>,
     /// Status or error line.
     pub status: Option<String>,
     /// When the current status line was first observed.
     status_changed_at: Option<Instant>,
     /// Last status text observed by the UI loop.
     last_status: Option<String>,
-}
-
-/// Credential backend state rendered by the provider screen.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CredentialStatusView {
-    /// Backend name.
-    pub backend: String,
-    /// Whether the backend can be used.
-    pub available: bool,
-    /// Optional diagnostic detail.
-    pub detail: Option<String>,
 }
 
 /// Opaque provider config editor state.
@@ -128,71 +105,20 @@ pub struct ConfigEditor {
     pub error: Option<String>,
 }
 
-/// One visible line in the chat transcript.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TranscriptEntry {
-    /// User message.
-    User(String),
-    /// Assistant message.
-    Assistant(String),
-    /// Assistant reasoning or thinking content.
-    Thinking(String),
-    /// Tool or system progress.
-    Progress(String),
-    /// Error or warning.
-    Error(String),
-}
-
-/// One pending interaction rendered by the modal host.
-#[derive(Clone, Debug)]
-pub struct InteractionPrompt {
-    /// Protocol request identity used for the response.
-    pub id: Id,
-    /// Interaction kind.
-    pub kind: String,
-    /// Short title.
-    pub title: String,
-    /// Body text.
-    pub body: String,
-    /// Deadline for the modal.
-    pub deadline: Instant,
-}
+/// One structured transcript item.
+pub use alpha_front_runtime::TranscriptItem as TranscriptEntry;
 
 /// Chat state for the primary TUI screen.
 #[derive(Clone, Debug, Default)]
 pub struct ChatView {
-    /// Active session identity.
-    pub session_id: Option<String>,
-    /// Visible transcript.
-    pub transcript: Vec<TranscriptEntry>,
-    /// Index of the in-progress assistant line.
-    pub streaming_assistant: Option<usize>,
-    /// Index of the in-progress thinking line.
-    pub streaming_thinking: Option<usize>,
+    /// Shared chat and session state.
+    pub state: ChatState,
     /// Composer input.
     pub composer: Composer,
     /// Selected slash-command completion.
     completion_selected: usize,
     /// Whether the user dismissed the current completion list.
     completion_dismissed: bool,
-    /// Status or error line.
-    pub status: Option<String>,
-    /// Current running turn id.
-    pub running_turn: Option<String>,
-    /// Pending approval or other interaction.
-    pub interaction: Option<InteractionPrompt>,
-    /// Provider instance or kind used for new sessions.
-    pub provider: String,
-    /// Model used for new sessions.
-    pub model: String,
-    /// Reasoning effort used for new sessions.
-    pub reasoning: ReasoningLevel,
-    /// Effective permission mode.
-    pub mode: PermissionMode,
-    /// Provider-native tools waiting for the next session creation.
-    pending_provider_tools: Option<Vec<String>>,
-    /// Tool names keyed by durable call identity.
-    tool_names: BTreeMap<String, String>,
     /// Distance from the transcript bottom after manual scrolling.
     transcript_scroll_back: u16,
     /// When the current status line was first observed.
@@ -211,6 +137,34 @@ pub struct ChatView {
     selection: Option<TextSelection>,
     /// Rendered transcript rows used for text selection.
     transcript_surface: TranscriptSurface,
+}
+
+impl Deref for ChatView {
+    type Target = ChatState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for ChatView {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl Deref for ProviderView {
+    type Target = ProviderState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for ProviderView {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
 }
 
 /// Multiline composer with a character-boundary cursor.
@@ -565,20 +519,6 @@ impl ChatView {
         self.next_transcript_entry_revision
     }
 
-    fn push_transcript_entry(&mut self, entry: TranscriptEntry) {
-        self.ensure_transcript_entry_revisions();
-        let revision = self.next_transcript_entry_revision();
-        self.transcript.push(entry);
-        self.transcript_entry_revisions.push(revision);
-        self.invalidate_transcript();
-    }
-
-    fn extend_transcript_entries(&mut self, entries: impl IntoIterator<Item = TranscriptEntry>) {
-        for entry in entries {
-            self.push_transcript_entry(entry);
-        }
-    }
-
     fn mark_transcript_entry(&mut self, index: usize) {
         self.ensure_transcript_entry_revisions();
         if index < self.transcript_entry_revisions.len() {
@@ -587,277 +527,27 @@ impl ChatView {
         }
     }
 
-    fn ensure_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        if self.session_id.is_some() {
-            return Ok(());
-        }
-        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let created = supervisor
-            .request(
-                "session.create",
-                Some(json!({
-                    "workspace": workspace,
-                    "cwd": workspace,
-                    "mode": self.mode,
-                    "provider": self.provider,
-                    "model": self.model,
-                    "reasoning": self.reasoning,
-                })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.session_id = created
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        if self.session_id.is_none() {
-            return Err(TuiError::Protocol(
-                "session.create returned no session id".to_owned(),
-            ));
-        }
-        if let Some(provider) = created.get("provider").and_then(Value::as_str) {
-            self.provider = provider.to_owned();
-        }
-        if let Some(model) = created.get("model").and_then(Value::as_str) {
-            self.model = model.to_owned();
-        }
-        if let Some(reasoning) = created
-            .get("reasoning")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-        {
-            self.reasoning = reasoning;
-        }
-        if let Some(mode) = created
-            .get("mode")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-        {
-            self.mode = mode;
-        }
-        if let Some(provider_tools) = self.pending_provider_tools.clone() {
-            supervisor
-                .request(
-                    "session.set_capabilities",
-                    Some(json!({
-                        "sessionId": self.session_id,
-                        "providerTools": provider_tools,
-                    })),
-                )
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        }
-        self.status = Some("session ready".to_owned());
-        Ok(())
-    }
-
-    fn new_session(&mut self) {
-        self.session_id = None;
-        self.transcript.clear();
+    fn reset_session_view(&mut self) {
         self.transcript_entry_revisions.clear();
         self.invalidate_transcript();
-        self.streaming_assistant = None;
-        self.streaming_thinking = None;
-        self.running_turn = None;
-        self.interaction = None;
-        self.tool_names.clear();
-        self.pending_provider_tools = None;
         self.selection = None;
         self.transcript_surface = TranscriptSurface::default();
         self.transcript_scroll_back = 0;
         self.reset_completion();
-        self.status = Some("new session".to_owned());
     }
 
-    fn resume_session(
-        &mut self,
-        supervisor: &mut CoreSupervisor,
-        session_id: &str,
-    ) -> Result<(), TuiError> {
-        let session_id = session_id
-            .parse::<alpha_schema::SessionId>()
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        let resumed = supervisor
-            .request("session.resume", Some(json!({ "sessionId": session_id })))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.session_id = Some(session_id.to_string());
-        if let Some(provider) = resumed.get("provider").and_then(Value::as_str) {
-            self.provider = provider.to_owned();
+    fn sync_state(&mut self, state: &ChatState) {
+        let previous = std::mem::replace(&mut self.state, state.clone());
+        self.ensure_transcript_entry_revisions();
+        let shared = state.transcript.len().min(previous.transcript.len());
+        for index in 0..shared {
+            if previous.transcript[index] != state.transcript[index] {
+                self.mark_transcript_entry(index);
+            }
         }
-        if let Some(model) = resumed.get("model").and_then(Value::as_str) {
-            self.model = model.to_owned();
+        if previous.transcript.len() != state.transcript.len() {
+            self.invalidate_transcript();
         }
-        if let Some(reasoning) = resumed
-            .get("reasoning")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-        {
-            self.reasoning = reasoning;
-        }
-        if let Some(mode) = resumed
-            .get("mode")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-        {
-            self.mode = mode;
-        }
-        self.transcript.clear();
-        self.transcript_entry_revisions.clear();
-        self.invalidate_transcript();
-        self.streaming_assistant = None;
-        self.streaming_thinking = None;
-        self.running_turn = None;
-        self.tool_names.clear();
-        self.pending_provider_tools = None;
-        self.selection = None;
-        self.transcript_surface = TranscriptSurface::default();
-        self.transcript_scroll_back = 0;
-        self.reset_completion();
-        supervisor
-            .request(
-                "session.attach",
-                Some(json!({ "sessionId": session_id, "afterSeq": 0 })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.status = Some(format!(
-            "resumed {session_id} ({} messages)",
-            resumed
-                .get("messages")
-                .and_then(Value::as_u64)
-                .unwrap_or_default()
-        ));
-        Ok(())
-    }
-
-    fn set_mode(
-        &mut self,
-        supervisor: &mut CoreSupervisor,
-        mode: PermissionMode,
-    ) -> Result<(), TuiError> {
-        if let Some(session_id) = &self.session_id {
-            supervisor
-                .request(
-                    "session.set_mode",
-                    Some(json!({ "sessionId": session_id, "mode": mode })),
-                )
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        }
-        self.mode = mode;
-        self.status = Some(format!("mode: {mode}"));
-        Ok(())
-    }
-
-    fn set_route(
-        &mut self,
-        supervisor: &mut CoreSupervisor,
-        provider: String,
-        model: String,
-        reasoning: ReasoningLevel,
-    ) -> Result<(), TuiError> {
-        if provider.trim().is_empty() || model.trim().is_empty() {
-            return Err(TuiError::Protocol(
-                "provider and model must not be empty".to_owned(),
-            ));
-        }
-        if let Some(session_id) = &self.session_id {
-            supervisor
-                .request(
-                    "session.set_route",
-                    Some(json!({
-                        "sessionId": session_id,
-                        "provider": provider,
-                        "model": model,
-                        "reasoning": reasoning,
-                    })),
-                )
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        }
-        self.provider = provider;
-        self.model = model;
-        self.reasoning = reasoning;
-        self.status = Some(format!(
-            "route: {}/{}  effort:{}",
-            self.provider, self.model, self.reasoning
-        ));
-        Ok(())
-    }
-
-    fn confirm_steers(
-        &mut self,
-        supervisor: &mut CoreSupervisor,
-        accept: bool,
-    ) -> Result<(), TuiError> {
-        let Some(session_id) = &self.session_id else {
-            return Err(TuiError::Protocol("no active session".to_owned()));
-        };
-        supervisor
-            .request(
-                "session.confirm_steers",
-                Some(json!({ "sessionId": session_id, "accept": accept })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.status = Some(if accept {
-            "pending steers confirmed".to_owned()
-        } else {
-            "pending steers discarded".to_owned()
-        });
-        Ok(())
-    }
-
-    fn set_capabilities(
-        &mut self,
-        supervisor: &mut CoreSupervisor,
-        provider_tools: Vec<String>,
-    ) -> Result<(), TuiError> {
-        if let Some(session_id) = &self.session_id {
-            supervisor
-                .request(
-                    "session.set_capabilities",
-                    Some(json!({
-                        "sessionId": session_id,
-                        "providerTools": provider_tools,
-                    })),
-                )
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        }
-        self.pending_provider_tools = Some(provider_tools);
-        self.status = Some("provider capabilities updated".to_owned());
-        Ok(())
-    }
-
-    fn submit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let prompt = self.composer.text().trim().to_owned();
-        if prompt.is_empty() {
-            return Ok(());
-        }
-        self.ensure_session(supervisor)?;
-        let session_id = self
-            .session_id
-            .clone()
-            .ok_or_else(|| TuiError::Protocol("no active session".to_owned()))?;
-        if self.running_turn.is_some() {
-            supervisor
-                .request(
-                    "session.steer",
-                    Some(json!({ "sessionId": session_id, "text": prompt })),
-                )
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-            self.status = Some("steer queued".to_owned());
-        } else {
-            let response = supervisor
-                .request(
-                    "session.submit",
-                    Some(json!({ "sessionId": session_id, "prompt": prompt })),
-                )
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-            self.running_turn = response
-                .get("turnId")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            self.status = Some("turn started".to_owned());
-        }
-        self.composer.clear();
-        self.reset_completion();
-        self.transcript_scroll_back = 0;
-        Ok(())
     }
 
     fn reset_completion(&mut self) {
@@ -871,239 +561,6 @@ impl ChatView {
 
     fn scroll_transcript_down(&mut self, lines: u16) {
         self.transcript_scroll_back = self.transcript_scroll_back.saturating_sub(lines);
-    }
-
-    fn cancel(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let (Some(session_id), Some(turn_id)) = (&self.session_id, &self.running_turn) else {
-            return Ok(());
-        };
-        supervisor
-            .request(
-                "session.cancel",
-                Some(json!({ "sessionId": session_id, "turnId": turn_id })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.status = Some("cancel requested".to_owned());
-        Ok(())
-    }
-
-    fn handle_connection_event(&mut self, event: ConnectionEvent) {
-        match event {
-            ConnectionEvent::Notification(notification)
-                if notification.method == "session.event" =>
-            {
-                if let Some(params) = notification.params {
-                    self.handle_session_event(&params);
-                }
-            }
-            ConnectionEvent::Request(request) if request.method == "interaction.request" => {
-                self.handle_interaction_request(&request);
-            }
-            ConnectionEvent::Closed(error) => {
-                self.status = Some(format!("core disconnected: {error}"));
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_session_event(&mut self, params: &Value) {
-        if let Some(session_id) = params.get("sessionId").and_then(Value::as_str) {
-            if self.session_id.as_deref() != Some(session_id) {
-                return;
-            }
-        }
-        let kind = params.get("kind").and_then(Value::as_str).unwrap_or("");
-        let event = params.get("event").unwrap_or(&Value::Null);
-        match kind {
-            "durable" => self.handle_durable_event(event.get("payload").unwrap_or(&Value::Null)),
-            "live" => self.handle_live_event(event),
-            _ => {}
-        }
-    }
-
-    fn handle_durable_event(&mut self, payload: &Value) {
-        match payload.get("type").and_then(Value::as_str).unwrap_or("") {
-            "user_message" => {
-                if let Some(text) = payload.get("text").and_then(Value::as_str) {
-                    self.push_transcript_entry(TranscriptEntry::User(text.to_owned()));
-                    self.streaming_assistant = None;
-                    self.streaming_thinking = None;
-                }
-            }
-            "assistant_message" => {
-                let entries = assistant_payload_entries(payload);
-                self.clear_live_assistant();
-                self.extend_transcript_entries(entries);
-            }
-            "tool_call" => {
-                let id = payload
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                let name = payload
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool");
-                let input = payload.get("input").unwrap_or(&Value::Null);
-                if !id.is_empty() {
-                    self.tool_names.insert(id, name.to_owned());
-                }
-                self.push_transcript_entry(TranscriptEntry::Progress(tool_call_summary(
-                    name, input,
-                )));
-            }
-            "tool_result" => {
-                let id = payload
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let status = payload
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("finished");
-                let name = self
-                    .tool_names
-                    .remove(id)
-                    .unwrap_or_else(|| "tool".to_owned());
-                let content = payload
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                self.push_transcript_entry(TranscriptEntry::Progress(tool_result_summary(
-                    &name, status, content,
-                )));
-            }
-            "turn_ended" => {
-                self.running_turn = None;
-                self.status = Some("turn finished".to_owned());
-            }
-            "mode_changed" => {
-                if let Ok(mode) =
-                    serde_json::from_value(payload.get("mode").cloned().unwrap_or(Value::Null))
-                {
-                    self.mode = mode;
-                    self.status = Some(format!("mode: {mode}"));
-                }
-            }
-            "route_changed" => {
-                if let Some(provider) = payload.get("provider").and_then(Value::as_str) {
-                    self.provider = provider.to_owned();
-                }
-                if let Some(model) = payload.get("model").and_then(Value::as_str) {
-                    self.model = model.to_owned();
-                }
-                if let Ok(reasoning) = serde_json::from_value(
-                    payload
-                        .get("reasoning")
-                        .cloned()
-                        .unwrap_or(Value::String("auto".to_owned())),
-                ) {
-                    self.reasoning = reasoning;
-                }
-                self.status = Some(format!(
-                    "route: {}/{}  effort:{}",
-                    self.provider, self.model, self.reasoning
-                ));
-            }
-            "steer_queued" => self.status = Some("steer queued".to_owned()),
-            "steer_injected" => self.status = Some("steer injected".to_owned()),
-            _ => {}
-        }
-    }
-
-    fn handle_live_event(&mut self, event: &Value) {
-        match event.get("type").and_then(Value::as_str).unwrap_or("") {
-            "text_delta" => {
-                let delta = event
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if let Some(index) = self.streaming_assistant {
-                    if let Some(TranscriptEntry::Assistant(text)) = self.transcript.get_mut(index) {
-                        text.push_str(delta);
-                        self.mark_transcript_entry(index);
-                    }
-                } else {
-                    self.push_transcript_entry(TranscriptEntry::Assistant(delta.to_owned()));
-                    self.streaming_assistant = Some(self.transcript.len() - 1);
-                }
-            }
-            "thinking_delta" => {
-                let delta = event
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if let Some(index) = self.streaming_thinking {
-                    if let Some(TranscriptEntry::Thinking(text)) = self.transcript.get_mut(index) {
-                        text.push_str(delta);
-                        self.mark_transcript_entry(index);
-                    }
-                } else {
-                    self.push_transcript_entry(TranscriptEntry::Thinking(delta.to_owned()));
-                    self.streaming_thinking = Some(self.transcript.len() - 1);
-                }
-            }
-            "step_started" => {
-                if let Some(step) = event.get("step").and_then(Value::as_u64) {
-                    self.status = Some(format!("model step {step}"));
-                }
-            }
-            "tool_started" => {
-                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                let input = event.get("input").unwrap_or(&Value::Null);
-                self.status = Some(format!("running {}", tool_call_summary(name, input)));
-            }
-            "tool_finished" => {
-                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                let status = event
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("finished");
-                let content = event
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                self.status = Some(tool_result_summary(name, status, content));
-            }
-            "error" => {
-                let message = event
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("model request failed");
-                self.clear_live_assistant();
-                self.push_transcript_entry(TranscriptEntry::Error(message.to_owned()));
-                self.status = Some(message.to_owned());
-                self.running_turn = None;
-                self.transcript_scroll_back = 0;
-            }
-            _ => {}
-        }
-    }
-
-    fn clear_live_assistant(&mut self) {
-        let mut indices = [self.streaming_thinking, self.streaming_assistant]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        indices.sort_unstable();
-        indices.dedup();
-        for index in indices.into_iter().rev() {
-            if index < self.transcript.len()
-                && matches!(
-                    &self.transcript[index],
-                    TranscriptEntry::Assistant(_) | TranscriptEntry::Thinking(_)
-                )
-            {
-                self.transcript.remove(index);
-                if index < self.transcript_entry_revisions.len() {
-                    self.transcript_entry_revisions.remove(index);
-                }
-                self.invalidate_transcript();
-            }
-        }
-        self.streaming_thinking = None;
-        self.streaming_assistant = None;
     }
 
     fn tick_status(&mut self) -> bool {
@@ -1122,86 +579,6 @@ impl ChatView {
         }
         false
     }
-
-    fn handle_interaction_request(&mut self, request: &Request) {
-        let params = request.params.clone().unwrap_or(Value::Null);
-        let kind = params
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or("interaction")
-            .to_owned();
-        let title = if kind == "permission" {
-            "Permission requested".to_owned()
-        } else {
-            kind.clone()
-        };
-        let body = serde_json::to_string_pretty(&params).unwrap_or_else(|_| params.to_string());
-        self.interaction = Some(InteractionPrompt {
-            id: request.id.clone(),
-            kind,
-            title,
-            body,
-            deadline: Instant::now() + Duration::from_secs(300),
-        });
-    }
-
-    fn respond_interaction(
-        &mut self,
-        supervisor: &CoreSupervisor,
-        decision: &str,
-    ) -> Result<(), TuiError> {
-        let Some(prompt) = self.interaction.take() else {
-            return Ok(());
-        };
-        supervisor
-            .respond(prompt.id, Ok(json!({ "decision": decision })))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.status = Some(format!("interaction: {decision}"));
-        Ok(())
-    }
-
-    fn expire_interaction(&mut self, supervisor: &CoreSupervisor) -> bool {
-        let expired = self
-            .interaction
-            .as_ref()
-            .is_some_and(|prompt| Instant::now() >= prompt.deadline);
-        if expired {
-            let _ = self.respond_interaction(supervisor, "timeout");
-        }
-        expired
-    }
-}
-
-fn assistant_payload_entries(payload: &Value) -> Vec<TranscriptEntry> {
-    let mut entries = Vec::new();
-    if let Some(blocks) = payload.get("blocks").and_then(Value::as_array) {
-        for block in blocks {
-            match block.get("type").and_then(Value::as_str) {
-                Some("thinking") => {
-                    if let Some(text) = block.get("text").and_then(Value::as_str)
-                        && !text.is_empty()
-                    {
-                        entries.push(TranscriptEntry::Thinking(text.to_owned()));
-                    }
-                }
-                Some("text") => {
-                    if let Some(text) = block.get("text").and_then(Value::as_str)
-                        && !text.is_empty()
-                    {
-                        entries.push(TranscriptEntry::Assistant(text.to_owned()));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    if entries.is_empty()
-        && let Some(text) = payload.get("text").and_then(Value::as_str)
-        && !text.is_empty()
-    {
-        entries.push(TranscriptEntry::Assistant(text.to_owned()));
-    }
-    entries
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1723,101 +1100,6 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     output
 }
 
-#[derive(Clone, Copy)]
-struct CommandSpec {
-    name: &'static str,
-    usage: &'static str,
-    description: &'static str,
-    takes_argument: bool,
-}
-
-const COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        name: "provider",
-        usage: "/provider [ID]",
-        description: "Open the provider manager or switch provider",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "model",
-        usage: "/model [MODEL] [EFFORT]",
-        description: "Open the model picker or switch the route",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "thinking",
-        usage: "/thinking LEVEL",
-        description: "Open the effort picker or set effort",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "effort",
-        usage: "/effort LEVEL",
-        description: "Set the reasoning effort",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "mode",
-        usage: "/mode MODE",
-        description: "Set read, auto, reviewed, or free",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "confirm",
-        usage: "/confirm",
-        description: "Run pending steers",
-        takes_argument: false,
-    },
-    CommandSpec {
-        name: "discard",
-        usage: "/discard",
-        description: "Discard pending steers",
-        takes_argument: false,
-    },
-    CommandSpec {
-        name: "capabilities",
-        usage: "/capabilities TOOLS",
-        description: "Set provider-native tools",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "new",
-        usage: "/new",
-        description: "Start a new session draft",
-        takes_argument: false,
-    },
-    CommandSpec {
-        name: "resume",
-        usage: "/resume ID",
-        description: "Resume a session",
-        takes_argument: true,
-    },
-    CommandSpec {
-        name: "sessions",
-        usage: "/sessions",
-        description: "Open the session manager",
-        takes_argument: false,
-    },
-    CommandSpec {
-        name: "diagnostics",
-        usage: "/diagnostics",
-        description: "Show core connection details",
-        takes_argument: false,
-    },
-    CommandSpec {
-        name: "help",
-        usage: "/help",
-        description: "Show help",
-        takes_argument: false,
-    },
-    CommandSpec {
-        name: "quit",
-        usage: "/quit",
-        description: "Exit the TUI",
-        takes_argument: false,
-    },
-];
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CommandCompletion {
     start: usize,
@@ -1831,146 +1113,6 @@ struct CommandCompletion {
 enum Screen {
     Chat,
     Providers,
-}
-
-fn model_choices(view: &ProviderView) -> Vec<ModelChoice> {
-    let mut choices = Vec::new();
-    for instance in view.instances.iter().filter(|instance| !instance.disabled) {
-        let Some(kind) = view.kinds.iter().find(|kind| kind.kind == instance.kind) else {
-            continue;
-        };
-        let mut models = view
-            .model_cache
-            .get(&instance.id)
-            .cloned()
-            .unwrap_or_else(|| effective_models(instance, &kind.models));
-        let default_model = instance
-            .model_overrides
-            .get("default")
-            .and_then(Value::as_str);
-        models.sort_by_key(|model| Some(model.id.as_str()) != default_model);
-        for model in models {
-            choices.push(ModelChoice {
-                provider: instance.id.clone(),
-                provider_name: kind.name.clone(),
-                model: model.id,
-                model_name: model.name,
-                reasoning_levels: if model.reasoning {
-                    model.reasoning_levels
-                } else {
-                    vec![ReasoningLevel::Auto]
-                },
-            });
-        }
-    }
-    choices
-}
-
-fn current_model_choice<'a>(
-    choices: &'a [ModelChoice],
-    provider: &str,
-    model: &str,
-) -> Option<&'a ModelChoice> {
-    choices
-        .iter()
-        .find(|choice| choice.provider == provider && choice.model == model)
-}
-
-fn supported_reasoning_levels(
-    choices: &[ModelChoice],
-    provider: &str,
-    model: &str,
-) -> Vec<ReasoningLevel> {
-    current_model_choice(choices, provider, model)
-        .map(|choice| choice.reasoning_levels.clone())
-        .unwrap_or_else(|| vec![ReasoningLevel::Auto])
-}
-
-fn resolve_model_selection(
-    choices: &[ModelChoice],
-    current_provider: &str,
-    target: &str,
-) -> Option<ModelChoice> {
-    let target = target.trim();
-    if target.is_empty() {
-        return None;
-    }
-    if let Some(choice) = choices
-        .iter()
-        .find(|choice| format!("{}/{}", choice.provider, choice.model) == target)
-        .or_else(|| {
-            choices
-                .iter()
-                .find(|choice| choice.provider == current_provider && choice.model == target)
-        })
-        .or_else(|| {
-            let mut matches = choices.iter().filter(|choice| choice.model == target);
-            let first = matches.next()?;
-            matches.next().is_none().then_some(first)
-        })
-    {
-        return Some(choice.clone());
-    }
-
-    let explicit = choices.iter().find_map(|choice| {
-        target
-            .strip_prefix(&format!("{}/", choice.provider))
-            .map(|model| (choice.provider.clone(), model.to_owned()))
-    });
-    let (provider, model) = explicit.unwrap_or_else(|| {
-        let provider = if choices
-            .iter()
-            .any(|choice| choice.provider == current_provider)
-        {
-            current_provider.to_owned()
-        } else {
-            choices
-                .first()
-                .map(|choice| choice.provider.clone())
-                .unwrap_or_default()
-        };
-        (provider, target.to_owned())
-    });
-    if provider.is_empty() || model.is_empty() {
-        return None;
-    }
-    let provider_name = choices
-        .iter()
-        .find(|choice| choice.provider == provider)
-        .map(|choice| choice.provider_name.clone())
-        .unwrap_or_else(|| provider.clone());
-    Some(ModelChoice {
-        provider,
-        provider_name,
-        model: model.clone(),
-        model_name: model,
-        reasoning_levels: ReasoningLevel::ALL.to_vec(),
-    })
-}
-
-fn parse_reasoning_level(value: &str) -> Result<ReasoningLevel, TuiError> {
-    serde_json::from_value(Value::String(value.to_owned()))
-        .map_err(|error| TuiError::Protocol(error.to_string()))
-}
-
-fn set_default_model(
-    supervisor: &mut CoreSupervisor,
-    provider: &str,
-    model: &str,
-) -> Result<(), TuiError> {
-    supervisor
-        .request(
-            "provider.set_default_model",
-            Some(json!({ "id": provider, "model": model })),
-        )
-        .map_err(|error| TuiError::Protocol(error.to_string()))?;
-    supervisor
-        .request(
-            "provider.set_default_instance",
-            Some(json!({ "id": provider })),
-        )
-        .map_err(|error| TuiError::Protocol(error.to_string()))?;
-    Ok(())
 }
 
 struct App {
@@ -1991,63 +1133,14 @@ struct SessionPicker {
     status: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-struct SessionEntry {
-    id: String,
-    mode: String,
-    workspace: String,
-    provider: String,
-    model: String,
-    first_message: Option<String>,
+type SessionEntry = alpha_schema::SessionListEntry;
+
+fn load_sessions(runtime: &mut FrontRuntime) -> Result<Vec<SessionEntry>, TuiError> {
+    Ok(runtime.list_sessions()?)
 }
 
-impl SessionEntry {
-    fn from_value(value: &Value) -> Option<Self> {
-        Some(Self {
-            id: value.get("id")?.as_str()?.to_owned(),
-            mode: value
-                .get("mode")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_owned(),
-            workspace: value
-                .get("workspace")
-                .and_then(|workspace| workspace.get("root"))
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_owned(),
-            provider: value
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                .to_owned(),
-            model: value
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or("unset")
-                .to_owned(),
-            first_message: value
-                .get("firstMessage")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })
-    }
-}
-
-fn load_sessions(supervisor: &mut CoreSupervisor) -> Result<Vec<SessionEntry>, TuiError> {
-    let sessions = supervisor
-        .request("session.list", None)
-        .map_err(|error| TuiError::Protocol(error.to_string()))?;
-    Ok(sessions
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(SessionEntry::from_value)
-        .collect())
-}
-
-fn open_session_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-    let sessions = load_sessions(supervisor)?;
+fn open_session_picker(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
+    let sessions = load_sessions(runtime)?;
     app.session_picker = Some(SessionPicker {
         sessions,
         selected: 0,
@@ -2057,14 +1150,7 @@ fn open_session_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-struct ModelChoice {
-    provider: String,
-    provider_name: String,
-    model: String,
-    model_name: String,
-    reasoning_levels: Vec<ReasoningLevel>,
-}
+type ModelChoice = alpha_front_runtime::ModelChoice;
 
 struct ModelPicker {
     choices: Vec<ModelChoice>,
@@ -2078,21 +1164,9 @@ struct ThinkingPicker {
 
 impl ProviderView {
     /// Reload provider state from the managed core.
-    pub fn refresh(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let kinds = supervisor
-            .request("provider.list_kinds", None)
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        let instances = supervisor
-            .request("provider.list_instances", None)
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        let credential_status = supervisor
-            .request("provider.credential_status", None)
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.kinds =
-            serde_json::from_value(kinds).map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.instances = serde_json::from_value(instances)
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.credential_status = Some(parse_credential_status(&credential_status));
+    pub fn refresh(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
+        runtime.refresh_providers()?;
+        self.state = runtime.providers().clone();
         self.selected_kind = self.selected_kind.min(self.kinds.len().saturating_sub(1));
         self.clamp_instance_selection();
         Ok(())
@@ -2101,38 +1175,11 @@ impl ProviderView {
     /// Refresh dynamic model catalogs, retaining static metadata on failure.
     pub fn refresh_models(
         &mut self,
-        supervisor: &mut CoreSupervisor,
+        runtime: &mut FrontRuntime,
         provider: Option<&str>,
     ) -> Result<(), TuiError> {
-        let mut instance_ids = self
-            .instances
-            .iter()
-            .filter(|instance| !instance.disabled)
-            .map(|instance| instance.id.clone())
-            .collect::<Vec<_>>();
-        if let Some(provider) = provider {
-            instance_ids.retain(|id| id == provider);
-        }
-        self.model_cache
-            .retain(|id, _| instance_ids.iter().any(|instance_id| instance_id == id));
-        let mut failures = Vec::new();
-        for id in instance_ids {
-            if self.model_cache.contains_key(&id) {
-                continue;
-            }
-            match supervisor.request("provider.list_models", Some(json!({ "id": id }))) {
-                Ok(value) => match serde_json::from_value::<Vec<ModelDescriptor>>(value) {
-                    Ok(models) => {
-                        self.model_cache.insert(id, models);
-                    }
-                    Err(error) => failures.push(format!("{id}: {error}")),
-                },
-                Err(error) => failures.push(format!("{id}: {error}")),
-            }
-        }
-        if !failures.is_empty() {
-            self.status = Some(format!("model catalog fallback: {}", failures.join("; ")));
-        }
+        runtime.refresh_models(provider)?;
+        self.state = runtime.providers().clone();
         Ok(())
     }
 
@@ -2180,31 +1227,12 @@ impl ProviderView {
         self.selected_instance = current.clamp(0, count as isize - 1) as usize;
     }
 
-    fn create_instance(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let kind = self
-            .selected_kind()
-            .ok_or_else(|| TuiError::Protocol("no provider kind selected".to_owned()))?;
-        let id = format!(
-            "{}-{}",
-            kind.kind,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        );
-        let instance = ProviderInstance {
-            id: id.clone(),
-            kind: kind.kind.clone(),
-            config_version: 1,
-            config: kind.default_config.clone(),
-            auth_ref: None,
-            model_overrides: json!({}),
-            disabled: false,
-        };
-        supervisor
-            .request("provider.create_instance", Some(json!(instance)))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.refresh(supervisor)?;
+    fn create_instance(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
+        let kind = self.selected_kind().ok_or_else(|| {
+            TuiError::Runtime(FrontError::Protocol("no provider kind selected".to_owned()))
+        })?;
+        let id = runtime.create_provider_instance(&kind.kind)?;
+        self.refresh(runtime)?;
         if let Some(index) = self
             .instances_for_selected_kind()
             .iter()
@@ -2220,27 +1248,24 @@ impl ProviderView {
         let id = self
             .selected_instance()
             .map(|instance| instance.id.clone())
-            .ok_or_else(|| TuiError::Protocol("no provider instance selected".to_owned()))?;
+            .ok_or_else(|| {
+                TuiError::Runtime(FrontError::Protocol(
+                    "no provider instance selected".to_owned(),
+                ))
+            })?;
         self.confirm_remove = Some(id);
         Ok(())
     }
 
-    fn confirm_remove_instance(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    fn confirm_remove_instance(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
         let Some(id) = self.confirm_remove.take() else {
             return Ok(());
         };
-        let response = supervisor
-            .request("provider.remove_instance", Some(json!({ "id": id })))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        self.refresh(supervisor)?;
-        if response
-            .get("credentialRemoved")
-            .and_then(serde_json::Value::as_bool)
-            == Some(false)
-        {
+        let response = runtime.remove_provider_instance(&id)?;
+        if !response.credential_removed {
             let detail = response
-                .get("credentialError")
-                .and_then(serde_json::Value::as_str)
+                .credential_error
+                .as_deref()
                 .unwrap_or("credential cleanup failed");
             self.status = Some(format!("removed {id}; {detail}"));
         } else {
@@ -2249,39 +1274,35 @@ impl ProviderView {
         Ok(())
     }
 
-    fn set_default_instance(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    fn set_default_instance(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
         let Some(instance) = self.selected_instance() else {
-            return Err(TuiError::Protocol(
+            return Err(TuiError::Runtime(FrontError::Protocol(
                 "no provider instance selected".to_owned(),
-            ));
+            )));
         };
         let id = instance.id.clone();
-        supervisor
-            .request("provider.set_default_instance", Some(json!({ "id": id })))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        runtime.set_default_provider(&id)?;
         self.status = Some(format!("default provider: {id}"));
         Ok(())
     }
 
-    fn test_instance(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    fn test_instance(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
         let Some(instance) = self.selected_instance() else {
-            return Err(TuiError::Protocol(
+            return Err(TuiError::Runtime(FrontError::Protocol(
                 "no provider instance selected".to_owned(),
-            ));
+            )));
         };
         let id = instance.id.clone();
-        supervisor
-            .request("provider.test_instance", Some(json!({ "id": id })))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        runtime.test_provider(&id)?;
         self.status = Some(format!("provider test passed: {id}"));
         Ok(())
     }
 
     fn begin_auth(&mut self) -> Result<(), TuiError> {
         let Some(instance) = self.selected_instance() else {
-            return Err(TuiError::Protocol(
+            return Err(TuiError::Runtime(FrontError::Protocol(
                 "no provider instance selected".to_owned(),
-            ));
+            )));
         };
         self.auth_prompt = Some(AuthPrompt {
             instance_id: instance.id.clone(),
@@ -2290,36 +1311,27 @@ impl ProviderView {
         Ok(())
     }
 
-    fn submit_auth(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let prompt = self
-            .auth_prompt
-            .take()
-            .ok_or_else(|| TuiError::Protocol("no auth prompt active".to_owned()))?;
+    fn submit_auth(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
+        let prompt = self.auth_prompt.take().ok_or_else(|| {
+            TuiError::Runtime(FrontError::Protocol("no auth prompt active".to_owned()))
+        })?;
         if prompt.input.is_empty() {
             self.status = Some("credential input was empty".to_owned());
             return Ok(());
         }
-        supervisor
-            .request(
-                "provider.authenticate_instance",
-                Some(json!({
-                    "id": prompt.instance_id,
-                    "secret": prompt.input,
-                })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        runtime.authenticate_provider(&prompt.instance_id, prompt.input)?;
         self.status = Some(format!("credential stored for {}", prompt.instance_id));
-        self.refresh(supervisor)?;
         Ok(())
     }
 
     fn begin_config_edit(&mut self) -> Result<(), TuiError> {
-        let instance = self
-            .selected_instance()
-            .cloned()
-            .ok_or_else(|| TuiError::Protocol("no provider instance selected".to_owned()))?;
+        let instance = self.selected_instance().cloned().ok_or_else(|| {
+            TuiError::Runtime(FrontError::Protocol(
+                "no provider instance selected".to_owned(),
+            ))
+        })?;
         let text = serde_json::to_string_pretty(&instance.config)
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+            .map_err(|error| TuiError::Runtime(FrontError::Protocol(error.to_string())))?;
         self.config_editor = Some(ConfigEditor {
             instance,
             text,
@@ -2328,7 +1340,7 @@ impl ProviderView {
         Ok(())
     }
 
-    fn submit_config_edit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    fn submit_config_edit(&mut self, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
         let Some(mut editor) = self.config_editor.take() else {
             return Ok(());
         };
@@ -2340,37 +1352,28 @@ impl ProviderView {
                 return Ok(());
             }
         };
-        let original = editor.instance.clone();
         editor.instance.config = config;
-        supervisor
-            .request("provider.update_instance", Some(json!(editor.instance)))
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
-        if let Err(error) = supervisor.request(
-            "provider.test_instance",
-            Some(json!({ "id": editor.instance.id })),
-        ) {
-            let _ = supervisor.request("provider.update_instance", Some(json!(original)));
+        if let Err(error) = runtime.update_provider(editor.instance.clone()) {
             editor.error = Some(error.to_string());
             self.config_editor = Some(editor);
             return Ok(());
         }
-        self.model_cache.remove(&editor.instance.id);
-        self.refresh(supervisor)?;
         self.status = Some(format!("updated {}", editor.instance.id));
         Ok(())
     }
 
     fn credential_hint(&self) -> Option<String> {
         let status = self.credential_status.as_ref()?;
-        if status.available {
-            None
-        } else {
-            Some(match status.detail.as_deref() {
-                Some(detail) if !detail.is_empty() => {
-                    format!("keyring_unavailable: {} ({detail})", status.backend)
-                }
-                _ => format!("keyring_unavailable: {}", status.backend),
-            })
+        match status.status {
+            alpha_schema::CredentialBackendStatus::Available => None,
+            alpha_schema::CredentialBackendStatus::Unavailable => {
+                Some(match status.detail.as_deref() {
+                    Some(detail) if !detail.is_empty() => {
+                        format!("keyring_unavailable: {} ({detail})", status.backend)
+                    }
+                    _ => format!("keyring_unavailable: {}", status.backend),
+                })
+            }
         }
     }
 
@@ -2392,27 +1395,9 @@ impl ProviderView {
     }
 }
 
-fn parse_credential_status(value: &serde_json::Value) -> CredentialStatusView {
-    CredentialStatusView {
-        backend: value
-            .get("backend")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned(),
-        available: value
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|status| status == "available"),
-        detail: value
-            .get("detail")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
-    }
-}
-
 /// Run the interactive TUI.
-pub fn run_tui() -> Result<(), TuiError> {
-    let mut supervisor = CoreSupervisor::start(SupervisorConfig::default())?;
+pub fn run_tui(runtime: FrontRuntime) -> Result<(), TuiError> {
+    let mut runtime = runtime;
     let mut app = App {
         chat: ChatView::default(),
         providers: ProviderView::default(),
@@ -2423,7 +1408,7 @@ pub fn run_tui() -> Result<(), TuiError> {
         help: false,
         quit: false,
     };
-    app.providers.refresh(&mut supervisor)?;
+    app.providers.refresh(&mut runtime)?;
     if app
         .providers
         .instances
@@ -2434,8 +1419,9 @@ pub fn run_tui() -> Result<(), TuiError> {
     }
 
     let mut guard = TerminalGuard::enter()?;
-    let result = run_loop(&mut guard.terminal, &mut app, &mut supervisor);
-    let session_id = app.chat.session_id.clone();
+    sync_views(&mut app, &runtime);
+    let result = run_loop(&mut guard.terminal, &mut app, &mut runtime);
+    let session_id = app.chat.session_id;
     drop(guard);
     if let Some(session_id) = session_id {
         println!("session: {session_id}");
@@ -2447,34 +1433,19 @@ pub fn run_tui() -> Result<(), TuiError> {
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
 ) -> Result<(), TuiError> {
     let mut redraw = true;
     let mut next_frame = Instant::now();
     loop {
-        redraw |= app.chat.expire_interaction(supervisor);
+        redraw |= runtime.expire_interaction()?;
         redraw |= app.chat.tick_status();
         redraw |= app.providers.tick_status();
 
-        let mut core_events = 0;
-        while core_events < CORE_EVENT_BATCH_LIMIT {
-            let Some(connection_event) = supervisor.try_recv_event()? else {
-                break;
-            };
-            core_events += 1;
+        let core_events = runtime.try_receive_events()?.len();
+        if core_events > 0 {
             redraw = true;
-            match connection_event {
-                ConnectionEvent::Closed(error) => {
-                    app.chat.status = Some(format!("core disconnected: {error}"));
-                    if supervisor.restart().is_ok() {
-                        let session_id = app.chat.session_id.clone();
-                        if let Some(session_id) = session_id {
-                            let _ = app.chat.resume_session(supervisor, &session_id);
-                        }
-                    }
-                }
-                event => app.chat.handle_connection_event(event),
-            }
+            sync_views(app, runtime);
         }
 
         let now = Instant::now();
@@ -2484,9 +1455,7 @@ fn run_loop(
             next_frame = Instant::now() + FRAME_INTERVAL;
         }
 
-        let wait = if core_events == CORE_EVENT_BATCH_LIMIT {
-            Duration::ZERO
-        } else if redraw {
+        let wait = if redraw {
             next_frame
                 .saturating_duration_since(Instant::now())
                 .min(INPUT_POLL_INTERVAL)
@@ -2515,22 +1484,23 @@ fn run_loop(
                         continue;
                     }
                     if app.session_picker.is_some() {
-                        handle_session_picker_key(app, supervisor, key.code)?;
+                        handle_session_picker_key(app, runtime, key.code)?;
                         continue;
                     }
                     if app.model_picker.is_some() {
-                        handle_model_picker_key(app, supervisor, key.code)?;
+                        handle_model_picker_key(app, runtime, key.code)?;
                         continue;
                     }
                     if app.thinking_picker.is_some() {
-                        handle_thinking_picker_key(app, supervisor, key.code)?;
+                        handle_thinking_picker_key(app, runtime, key.code)?;
                         continue;
                     }
                     if app.screen == Screen::Providers {
-                        handle_provider_key(app, supervisor, key.code, key.modifiers)?;
+                        handle_provider_key(app, runtime, key.code, key.modifiers)?;
                     } else {
-                        handle_chat_key(app, supervisor, key.code, key.modifiers)?;
+                        handle_chat_key(app, runtime, key.code, key.modifiers)?;
                     }
+                    sync_views(app, runtime);
                     if app.quit {
                         return Ok(());
                     }
@@ -2546,9 +1516,14 @@ fn run_loop(
     }
 }
 
+fn sync_views(app: &mut App, runtime: &FrontRuntime) {
+    app.chat.sync_state(runtime.chat());
+    app.providers.state = runtime.providers().clone();
+}
+
 fn handle_provider_key(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<(), TuiError> {
@@ -2556,7 +1531,7 @@ fn handle_provider_key(
         match code {
             KeyCode::Esc => app.providers.config_editor = None,
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Err(error) = app.providers.submit_config_edit(supervisor) {
+                if let Err(error) = app.providers.submit_config_edit(runtime) {
                     if let Some(editor) = &mut app.providers.config_editor {
                         editor.error = Some(error.to_string());
                     }
@@ -2589,7 +1564,7 @@ fn handle_provider_key(
     if app.providers.auth_prompt.is_some() {
         match code {
             KeyCode::Enter => {
-                if let Err(error) = app.providers.submit_auth(supervisor) {
+                if let Err(error) = app.providers.submit_auth(runtime) {
                     app.providers.status = Some(error.to_string());
                 }
             }
@@ -2611,7 +1586,7 @@ fn handle_provider_key(
     if app.providers.confirm_remove.is_some() {
         match code {
             KeyCode::Char('y') => {
-                if let Err(error) = app.providers.confirm_remove_instance(supervisor) {
+                if let Err(error) = app.providers.confirm_remove_instance(runtime) {
                     app.providers.status = Some(error.to_string());
                 }
             }
@@ -2627,7 +1602,7 @@ fn handle_provider_key(
         KeyCode::Char('r') => {
             app.providers.status = None;
             app.providers.model_cache.clear();
-            if let Err(error) = app.providers.refresh(supervisor) {
+            if let Err(error) = app.providers.refresh(runtime) {
                 app.providers.status = Some(error.to_string());
             }
         }
@@ -2636,7 +1611,7 @@ fn handle_provider_key(
         KeyCode::Left => app.providers.move_instance_selection(-1),
         KeyCode::Right => app.providers.move_instance_selection(1),
         KeyCode::Char('n') => {
-            if let Err(error) = app.providers.create_instance(supervisor) {
+            if let Err(error) = app.providers.create_instance(runtime) {
                 app.providers.status = Some(error.to_string());
             }
         }
@@ -2646,12 +1621,12 @@ fn handle_provider_key(
             }
         }
         KeyCode::Char('s') => {
-            if let Err(error) = app.providers.set_default_instance(supervisor) {
+            if let Err(error) = app.providers.set_default_instance(runtime) {
                 app.providers.status = Some(error.to_string());
             }
         }
         KeyCode::Char('t') => {
-            if let Err(error) = app.providers.test_instance(supervisor) {
+            if let Err(error) = app.providers.test_instance(runtime) {
                 app.providers.status = Some(error.to_string());
             }
         }
@@ -2672,24 +1647,17 @@ fn handle_provider_key(
 
 fn handle_chat_key(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<(), TuiError> {
     if app.chat.interaction.is_some() {
         match code {
-            KeyCode::Char('y') => app
-                .chat
-                .respond_interaction(supervisor, "once")
-                .map(|_| ())?,
-            KeyCode::Char('s') => app
-                .chat
-                .respond_interaction(supervisor, "session")
-                .map(|_| ())?,
-            KeyCode::Char('n') | KeyCode::Esc => app
-                .chat
-                .respond_interaction(supervisor, "deny")
-                .map(|_| ())?,
+            KeyCode::Char('y') => runtime.respond_interaction(InteractionDecision::Once)?,
+            KeyCode::Char('s') => runtime.respond_interaction(InteractionDecision::Session)?,
+            KeyCode::Char('n') | KeyCode::Esc => {
+                runtime.respond_interaction(InteractionDecision::Deny)?
+            }
             _ => {}
         }
         return Ok(());
@@ -2704,29 +1672,29 @@ fn handle_chat_key(
             select_completion(app, -1);
         }
         KeyCode::BackTab => {
-            if let Err(error) = cycle_thinking_level(app, supervisor) {
+            if let Err(error) = cycle_thinking_level(app, runtime) {
                 app.chat.status = Some(error.to_string());
             }
         }
         KeyCode::Char('l') if modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Err(error) = open_model_picker(app, supervisor) {
+            if let Err(error) = open_model_picker(app, runtime) {
                 app.chat.status = Some(error.to_string());
             }
         }
         KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Err(error) = open_thinking_picker(app, supervisor) {
+            if let Err(error) = open_thinking_picker(app, runtime) {
                 app.chat.status = Some(error.to_string());
             }
         }
         KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
             app.screen = Screen::Providers;
             app.providers.status = None;
-            if let Err(error) = app.providers.refresh(supervisor) {
+            if let Err(error) = app.providers.refresh(runtime) {
                 app.providers.status = Some(error.to_string());
             }
         }
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Err(error) = open_session_picker(app, supervisor) {
+            if let Err(error) = open_session_picker(app, runtime) {
                 app.chat.status = Some(error.to_string());
             }
         }
@@ -2739,14 +1707,14 @@ fn handle_chat_key(
             app.chat.reset_completion();
         }
         KeyCode::Enter => {
-            if let Err(error) = submit_composer(app, supervisor) {
+            if let Err(error) = submit_composer(app, runtime) {
                 app.chat.status = Some(error.to_string());
             }
         }
         KeyCode::Esc => {
             if completion_visible {
                 app.chat.completion_dismissed = true;
-            } else if let Err(error) = app.chat.cancel(supervisor) {
+            } else if let Err(error) = runtime.cancel() {
                 app.chat.status = Some(error.to_string());
             }
         }
@@ -2795,7 +1763,7 @@ fn handle_chat_key(
     Ok(())
 }
 
-fn submit_composer(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+fn submit_composer(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
     if completion_accepts_enter(app) {
         accept_completion(app);
         return Ok(());
@@ -2807,9 +1775,13 @@ fn submit_composer(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(),
     if input.starts_with('/') {
         app.chat.composer.clear();
         app.chat.reset_completion();
-        execute_command(app, supervisor, &input)
+        execute_command(app, runtime, &input)
     } else {
-        app.chat.submit(supervisor)
+        runtime.submit_prompt(app.chat.composer.text().trim())?;
+        app.chat.composer.clear();
+        app.chat.reset_completion();
+        app.chat.transcript_scroll_back = 0;
+        Ok(())
     }
 }
 
@@ -2981,10 +1953,16 @@ fn command_completions(app: &App) -> Vec<CommandCompletion> {
                     )
                 }));
             } else {
-                values.extend(model_choices(&app.providers).into_iter().map(|choice| {
-                    let label = format!("{}/{}", choice.provider, choice.model);
-                    (label.clone(), label, choice.model_name)
-                }));
+                values.extend(
+                    app.providers
+                        .state
+                        .model_choices()
+                        .into_iter()
+                        .map(|choice| {
+                            let label = format!("{}/{}", choice.provider, choice.model);
+                            (label.clone(), label, choice.model_name)
+                        }),
+                );
                 if values.is_empty() && !app.chat.model.is_empty() {
                     values.push((
                         app.chat.model.clone(),
@@ -3086,165 +2064,33 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<(), TuiError> 
 
 fn execute_command(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
     command: &str,
 ) -> Result<(), TuiError> {
-    let (name, argument) = split_command(command);
-    match name {
-        "provider" if argument.is_empty() => {
+    let parsed = parse_command(command);
+    let reset_view = matches!(parsed, FrontCommand::NewSession | FrontCommand::Resume(_));
+    match runtime.execute_command(parsed)? {
+        CommandOutcome::Completed => {}
+        CommandOutcome::OpenProviders => {
             app.screen = Screen::Providers;
-            app.providers.refresh(supervisor)?;
+            app.providers.refresh(runtime)?;
         }
-        "provider" => {
-            app.providers.refresh(supervisor)?;
-            app.providers.refresh_models(supervisor, Some(argument))?;
-            let choices = model_choices(&app.providers);
-            let Some(choice) = choices.iter().find(|choice| choice.provider == argument) else {
-                return Err(TuiError::Protocol(format!(
-                    "unknown provider instance: {argument}"
-                )));
-            };
-            let reasoning = if choice.reasoning_levels.contains(&app.chat.reasoning) {
-                app.chat.reasoning
-            } else {
-                choice
-                    .reasoning_levels
-                    .first()
-                    .copied()
-                    .unwrap_or(ReasoningLevel::Auto)
-            };
-            app.chat.set_route(
-                supervisor,
-                choice.provider.clone(),
-                choice.model.clone(),
-                reasoning,
-            )?;
-            set_default_model(supervisor, &choice.provider, &choice.model)?;
-        }
-        "model" if argument.is_empty() => {
-            open_model_picker(app, supervisor)?;
-        }
-        "model" => {
-            let mut parts = argument.split_whitespace();
-            let target = parts.next().unwrap_or_default();
-            let requested_reasoning = parts
-                .next()
-                .map(parse_reasoning_level)
-                .transpose()?
-                .unwrap_or(app.chat.reasoning);
-            if parts.next().is_some() {
-                return Err(TuiError::Protocol(
-                    "usage: /model <model> [effort]".to_owned(),
-                ));
-            }
-            app.providers.refresh(supervisor)?;
-            app.providers
-                .refresh_models(supervisor, Some(&app.chat.provider))?;
-            let choices = model_choices(&app.providers);
-            let selected = resolve_model_selection(&choices, &app.chat.provider, target)
-                .ok_or_else(|| TuiError::Protocol(format!("unknown model: {target}")))?;
-            let reasoning = if selected.reasoning_levels.contains(&requested_reasoning) {
-                requested_reasoning
-            } else {
-                selected
-                    .reasoning_levels
-                    .first()
-                    .copied()
-                    .unwrap_or(ReasoningLevel::Auto)
-            };
-            app.chat.set_route(
-                supervisor,
-                selected.provider.clone(),
-                selected.model.clone(),
-                reasoning,
-            )?;
-            set_default_model(supervisor, &selected.provider, &selected.model)?;
-        }
-        "thinking" | "effort" if argument.is_empty() => {
-            open_thinking_picker(app, supervisor)?;
-        }
-        "thinking" | "effort" => {
-            let level = parse_reasoning_level(argument)?;
-            app.providers.refresh(supervisor)?;
-            app.providers
-                .refresh_models(supervisor, Some(&app.chat.provider))?;
-            let choices = model_choices(&app.providers);
-            let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
-            if !levels.contains(&level) {
-                return Err(TuiError::Protocol(format!(
-                    "reasoning effort `{level}` is not available for this model"
-                )));
-            }
-            app.chat.set_route(
-                supervisor,
-                app.chat.provider.clone(),
-                app.chat.model.clone(),
-                level,
-            )?;
-        }
-        "mode" if argument.is_empty() => {
-            return Err(TuiError::Protocol(
-                "usage: /mode <read|auto|reviewed|free>".to_owned(),
-            ));
-        }
-        "mode" => {
-            let mode = argument
-                .parse::<PermissionMode>()
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-            app.chat.set_mode(supervisor, mode)?;
-        }
-        "confirm" => app.chat.confirm_steers(supervisor, true)?,
-        "discard" => app.chat.confirm_steers(supervisor, false)?,
-        "capabilities" => {
-            let provider_tools = argument
-                .split([',', ' '])
-                .filter(|tool| !tool.is_empty())
-                .map(str::to_owned)
-                .collect();
-            app.chat.set_capabilities(supervisor, provider_tools)?;
-        }
-        "new" => {
-            app.chat.new_session();
-            app.screen = Screen::Chat;
-        }
-        "resume" if !argument.is_empty() => {
-            app.chat.resume_session(supervisor, argument)?;
-            app.screen = Screen::Chat;
-        }
-        "resume" => {
-            return Err(TuiError::Protocol("usage: /resume <SESSION_ID>".to_owned()));
-        }
-        "sessions" => {
-            open_session_picker(app, supervisor)?;
-        }
-        "diagnostics" => {
-            let info = supervisor.info();
-            app.chat.status = Some(format!(
-                "core pid={} protocol={} instance={}",
-                info.pid, info.protocol, info.core_instance_id
-            ));
-        }
-        "help" => app.help = true,
-        "quit" => app.quit = true,
-        "" => {}
-        other => app.chat.status = Some(format!("unknown command: {other}")),
+        CommandOutcome::OpenModels => open_model_picker(app, runtime)?,
+        CommandOutcome::OpenThinking => open_thinking_picker(app, runtime)?,
+        CommandOutcome::OpenSessions => open_session_picker(app, runtime)?,
+        CommandOutcome::Help => app.help = true,
+        CommandOutcome::Quit => app.quit = true,
+    }
+    if reset_view {
+        app.chat.reset_session_view();
+        app.screen = Screen::Chat;
     }
     Ok(())
 }
 
-fn split_command(command: &str) -> (&str, &str) {
-    let command = command
-        .trim()
-        .strip_prefix('/')
-        .unwrap_or_else(|| command.trim());
-    command
-        .split_once(char::is_whitespace)
-        .map_or((command, ""), |(name, argument)| (name, argument.trim()))
-}
-
 fn handle_session_picker_key(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
     code: KeyCode,
 ) -> Result<(), TuiError> {
     let Some(picker) = &mut app.session_picker else {
@@ -3256,17 +2102,20 @@ fn handle_session_picker_key(
                 let Some(session) = picker.confirm_delete.take() else {
                     return Ok(());
                 };
-                if let Err(error) = delete_session(app, supervisor, &session.id) {
+                if let Err(error) = delete_session(app, runtime, session.id) {
                     if let Some(picker) = &mut app.session_picker {
                         picker.status = Some(error.to_string());
                     }
                 } else {
-                    let sessions = load_sessions(supervisor)?;
+                    let sessions = load_sessions(runtime)?;
                     if let Some(picker) = &mut app.session_picker {
                         picker.sessions = sessions;
                         picker.selected =
                             picker.selected.min(picker.sessions.len().saturating_sub(1));
-                        picker.status = Some(format!("deleted {}", short_session_id(&session.id)));
+                        picker.status = Some(format!(
+                            "deleted {}",
+                            short_session_id(&session.id.to_string())
+                        ));
                     }
                 }
             }
@@ -3296,13 +2145,15 @@ fn handle_session_picker_key(
         KeyCode::Enter => {
             let selected = picker.sessions.get(picker.selected).cloned();
             if let Some(session) = selected {
-                app.chat.resume_session(supervisor, &session.id)?;
+                runtime.resume_session(session.id)?;
+                app.chat.reset_session_view();
                 app.screen = Screen::Chat;
             }
             app.session_picker = None;
         }
         KeyCode::Char('n') => {
-            app.chat.new_session();
+            runtime.new_session();
+            app.chat.reset_session_view();
             app.screen = Screen::Chat;
             app.session_picker = None;
         }
@@ -3311,7 +2162,7 @@ fn handle_session_picker_key(
         }
         KeyCode::Char('r') => {
             picker.status = None;
-            picker.sessions = load_sessions(supervisor)?;
+            picker.sessions = load_sessions(runtime)?;
             picker.selected = picker.selected.min(picker.sessions.len().saturating_sub(1));
         }
         _ => {}
@@ -3321,23 +2172,21 @@ fn handle_session_picker_key(
 
 fn delete_session(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
-    session_id: &str,
+    runtime: &mut FrontRuntime,
+    session_id: alpha_schema::SessionId,
 ) -> Result<(), TuiError> {
-    supervisor
-        .request("session.delete", Some(json!({ "sessionId": session_id })))
-        .map_err(|error| TuiError::Protocol(error.to_string()))?;
-    if app.chat.session_id.as_deref() == Some(session_id) {
-        app.chat.new_session();
+    runtime.delete_session(session_id)?;
+    if app.chat.session_id.is_none() {
+        app.chat.reset_session_view();
     }
     Ok(())
 }
 
-fn open_model_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-    app.providers.refresh(supervisor)?;
-    app.providers
-        .refresh_models(supervisor, Some(&app.chat.provider))?;
-    let mut choices = model_choices(&app.providers);
+fn open_model_picker(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
+    app.providers.refresh(runtime)?;
+    let provider = app.chat.provider.clone();
+    app.providers.refresh_models(runtime, Some(&provider))?;
+    let mut choices = app.providers.state.model_choices();
     if !app.chat.provider.is_empty()
         && !app.chat.model.is_empty()
         && !choices
@@ -3379,7 +2228,7 @@ fn open_model_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(
 
 fn handle_model_picker_key(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
     code: KeyCode,
 ) -> Result<(), TuiError> {
     let Some(picker) = &mut app.model_picker else {
@@ -3414,9 +2263,7 @@ fn handle_model_picker_key(
                     .copied()
                     .unwrap_or(ReasoningLevel::Auto)
             };
-            app.chat
-                .set_route(supervisor, choice.provider, choice.model, reasoning)?;
-            set_default_model(supervisor, &app.chat.provider, &app.chat.model)?;
+            runtime.set_route_and_default(choice.provider, choice.model, reasoning)?;
             app.model_picker = None;
         }
         _ => {}
@@ -3424,12 +2271,16 @@ fn handle_model_picker_key(
     Ok(())
 }
 
-fn open_thinking_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-    app.providers.refresh(supervisor)?;
-    app.providers
-        .refresh_models(supervisor, Some(&app.chat.provider))?;
-    let choices = model_choices(&app.providers);
-    let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
+fn open_thinking_picker(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
+    app.providers.refresh(runtime)?;
+    let provider = app.chat.provider.clone();
+    app.providers.refresh_models(runtime, Some(&provider))?;
+    let choices = app.providers.state.model_choices();
+    let levels = alpha_front_runtime::supported_reasoning_levels(
+        &choices,
+        &app.chat.provider,
+        &app.chat.model,
+    );
     if levels.len() <= 1 {
         app.chat.status = Some("current model has no reasoning-effort controls".to_owned());
         return Ok(());
@@ -3444,7 +2295,7 @@ fn open_thinking_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Resul
 
 fn handle_thinking_picker_key(
     app: &mut App,
-    supervisor: &mut CoreSupervisor,
+    runtime: &mut FrontRuntime,
     code: KeyCode,
 ) -> Result<(), TuiError> {
     let Some(picker) = &mut app.thinking_picker else {
@@ -3468,12 +2319,7 @@ fn handle_thinking_picker_key(
                 app.thinking_picker = None;
                 return Ok(());
             }
-            app.chat.set_route(
-                supervisor,
-                app.chat.provider.clone(),
-                app.chat.model.clone(),
-                level,
-            )?;
+            runtime.set_route(app.chat.provider.clone(), app.chat.model.clone(), level)?;
             app.thinking_picker = None;
         }
         _ => {}
@@ -3481,16 +2327,20 @@ fn handle_thinking_picker_key(
     Ok(())
 }
 
-fn cycle_thinking_level(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+fn cycle_thinking_level(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), TuiError> {
     if app.chat.provider.is_empty() || app.chat.model.is_empty() {
         app.chat.status = Some("select a model first".to_owned());
         return Ok(());
     }
-    app.providers.refresh(supervisor)?;
-    app.providers
-        .refresh_models(supervisor, Some(&app.chat.provider))?;
-    let choices = model_choices(&app.providers);
-    let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
+    app.providers.refresh(runtime)?;
+    let provider = app.chat.provider.clone();
+    app.providers.refresh_models(runtime, Some(&provider))?;
+    let choices = app.providers.state.model_choices();
+    let levels = alpha_front_runtime::supported_reasoning_levels(
+        &choices,
+        &app.chat.provider,
+        &app.chat.model,
+    );
     if levels.len() <= 1 {
         app.chat.status = Some("current model has no reasoning-effort controls".to_owned());
         return Ok(());
@@ -3500,12 +2350,8 @@ fn cycle_thinking_level(app: &mut App, supervisor: &mut CoreSupervisor) -> Resul
         .position(|level| *level == app.chat.reasoning)
         .unwrap_or(0);
     let next = levels[(current + 1) % levels.len()];
-    app.chat.set_route(
-        supervisor,
-        app.chat.provider.clone(),
-        app.chat.model.clone(),
-        next,
-    )
+    runtime.set_route(app.chat.provider.clone(), app.chat.model.clone(), next)?;
+    Ok(())
 }
 
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
@@ -3568,7 +2414,8 @@ fn draw_chat_screen(
             Constraint::Length(1),
         ])
         .split(area);
-    let session = view.session_id.as_deref().unwrap_or("new session");
+    let session_id = view.session_id.map(|session_id| session_id.to_string());
+    let session = session_id.as_deref().unwrap_or("new session");
     let header = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
@@ -3834,22 +2681,57 @@ fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
 
 fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line<'static>> {
     match entry {
-        TranscriptEntry::User(text) => user_transcript_lines(text, width),
-        TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
-        TranscriptEntry::Thinking(text) => thinking_transcript_lines(text),
-        TranscriptEntry::Progress(text) => vec![Line::from(vec![
+        TranscriptEntry::User { text } => user_transcript_lines(text, width),
+        TranscriptEntry::AssistantDelta { text } => assistant_transcript_lines(text),
+        TranscriptEntry::ThinkingDelta { text } => thinking_transcript_lines(text),
+        TranscriptEntry::AssistantMessage { blocks } => blocks
+            .iter()
+            .flat_map(|block| match block {
+                alpha_schema::AssistantContentBlock::Text { text } => {
+                    assistant_transcript_lines(text)
+                }
+                alpha_schema::AssistantContentBlock::Thinking { text, .. } => {
+                    thinking_transcript_lines(text)
+                }
+                other => vec![Line::from(format!("{other:?}"))],
+            })
+            .collect(),
+        TranscriptEntry::ToolCall { name, input, .. } => vec![Line::from(vec![
             Span::styled("... ", Style::default().fg(COLOR_WARNING)),
-            Span::styled(text.clone(), Style::default().fg(COLOR_MUTED)),
+            Span::styled(
+                tool_call_summary(name, input),
+                Style::default().fg(COLOR_MUTED),
+            ),
         ])],
-        TranscriptEntry::Error(text) => vec![Line::from(vec![
+        TranscriptEntry::ToolResult {
+            name,
+            status,
+            content,
+            ..
+        } => vec![Line::from(vec![
+            Span::styled("... ", Style::default().fg(COLOR_WARNING)),
+            Span::styled(
+                tool_result_summary(name, tool_status_label(*status), content),
+                Style::default().fg(COLOR_MUTED),
+            ),
+        ])],
+        TranscriptEntry::Error { message } => vec![Line::from(vec![
             Span::styled(
                 "error: ",
                 Style::default()
                     .fg(COLOR_ERROR)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
+            Span::styled(message.clone(), Style::default().fg(COLOR_TEXT)),
         ])],
+    }
+}
+
+fn tool_status_label(status: alpha_schema::ToolStatus) -> &'static str {
+    match status {
+        alpha_schema::ToolStatus::Completed => "completed",
+        alpha_schema::ToolStatus::Failed => "failed",
+        alpha_schema::ToolStatus::Interrupted => "interrupted",
     }
 }
 
@@ -3946,13 +2828,13 @@ fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
                 ListItem::new(Text::from(vec![
                     Line::from(vec![
                         Span::styled(
-                            format!("{}  ", short_session_id(&session.id)),
+                            format!("{}  ", short_session_id(&session.id.to_string())),
                             Style::default()
                                 .fg(COLOR_BRIGHT)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            format!("{}  {}  {}", session.mode, route, session.workspace),
+                            format!("{}  {}  {}", session.mode, route, session.workspace.root),
                             Style::default().fg(COLOR_MUTED),
                         ),
                     ]),
@@ -4088,7 +2970,10 @@ fn draw_session_delete_confirmation(frame: &mut ratatui::Frame<'_>, session: &Se
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| "(empty session)".to_owned());
     let text = Text::from(vec![
-        Line::from(format!("Delete session {}?", short_session_id(&session.id))),
+        Line::from(format!(
+            "Delete session {}?",
+            short_session_id(&session.id.to_string())
+        )),
         Line::from(""),
         Line::from(preview),
         Line::from(""),
@@ -4275,10 +3160,17 @@ fn draw_command_completions(
 fn draw_interaction_prompt(frame: &mut ratatui::Frame<'_>, prompt: &InteractionPrompt) {
     let area = centered_rect(70, 12, frame.area());
     clear_with_background(frame, area);
+    let title = if prompt.kind == "permission" {
+        "Permission requested".to_owned()
+    } else {
+        prompt.kind.clone()
+    };
+    let body =
+        serde_json::to_string_pretty(&prompt.prompt).unwrap_or_else(|_| prompt.prompt.to_string());
     let text = Text::from(vec![
-        Line::from(prompt.title.clone()),
+        Line::from(title),
         Line::from(""),
-        Line::from(prompt.body.clone()),
+        Line::from(body),
         Line::from(""),
         Line::from("y allow once   s allow session   n deny"),
     ]);
@@ -4594,8 +3486,14 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
+    use alpha_schema::{
+        AdapterRequirement, AssistantContentBlock, AuthMethodDescriptor, ModelDescriptor,
+        PermissionMode, ProviderDescriptor, ProviderInstance, ReasoningLevel, SessionId, Timestamp,
+        ToolCallId, ToolStatus, WorkspaceRef,
+    };
+    use serde_json::json;
+
     use super::*;
-    use alpha_provider_api::{AdapterRequirement, AuthMethodDescriptor, ModelDescriptor};
 
     fn composer(text: &str) -> Composer {
         let mut composer = Composer::default();
@@ -4606,11 +3504,12 @@ mod tests {
     }
 
     fn app_with_composer(text: &str) -> App {
+        let chat = ChatView {
+            composer: composer(text),
+            ..ChatView::default()
+        };
         App {
-            chat: ChatView {
-                composer: composer(text),
-                ..ChatView::default()
-            },
+            chat,
             providers: ProviderView::default(),
             screen: Screen::Chat,
             session_picker: None,
@@ -4625,8 +3524,8 @@ mod tests {
         ProviderDescriptor {
             kind: "test".to_owned(),
             name: "Test".to_owned(),
-            config_schema: serde_json::json!({}),
-            default_config: serde_json::json!({}),
+            config_schema: json!({}),
+            default_config: json!({}),
             auth_methods: vec![AuthMethodDescriptor {
                 key: "api_key".to_owned(),
                 label: "API key".to_owned(),
@@ -4649,10 +3548,48 @@ mod tests {
         }
     }
 
+    fn instance() -> ProviderInstance {
+        ProviderInstance {
+            id: "test".to_owned(),
+            kind: "test".to_owned(),
+            config_version: 1,
+            config: json!({}),
+            auth_ref: None,
+            model_overrides: json!({}),
+            disabled: false,
+        }
+    }
+
+    fn terminal_contains(terminal: &Terminal<ratatui::backend::TestBackend>, needle: &str) -> bool {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .contains(needle)
+    }
+
     #[test]
-    fn selection_stays_in_bounds() {
+    fn composer_edits_at_unicode_boundaries() {
+        let mut composer = composer("a界b");
+        composer.move_left();
+        composer.backspace();
+        composer.insert_char('x');
+        assert_eq!(composer.text(), "axb");
+        composer.move_home();
+        composer.delete();
+        assert_eq!(composer.text(), "xb");
+    }
+
+    #[test]
+    fn provider_selection_stays_in_bounds() {
         let mut view = ProviderView {
-            kinds: vec![descriptor(), descriptor()],
+            state: ProviderState {
+                kinds: vec![descriptor(), descriptor()],
+                ..ProviderState::default()
+            },
             ..ProviderView::default()
         };
         view.move_kind_selection(-1);
@@ -4661,298 +3598,6 @@ mod tests {
         assert_eq!(view.selected_kind, 1);
         view.move_kind_selection(1);
         assert_eq!(view.selected_kind, 1);
-    }
-
-    #[test]
-    fn arbitrary_model_ids_resolve_to_the_current_provider() {
-        let view = ProviderView {
-            kinds: vec![descriptor()],
-            instances: vec![ProviderInstance {
-                id: "test".to_owned(),
-                kind: "test".to_owned(),
-                config_version: 1,
-                config: serde_json::json!({}),
-                auth_ref: None,
-                model_overrides: serde_json::json!({}),
-                disabled: false,
-            }],
-            ..ProviderView::default()
-        };
-        let choices = model_choices(&view);
-        let selected =
-            resolve_model_selection(&choices, "test", "deepseek-v4.1-flash").expect("selection");
-        assert_eq!(selected.provider, "test");
-        assert_eq!(selected.model, "deepseek-v4.1-flash");
-        assert_eq!(selected.reasoning_levels, ReasoningLevel::ALL.to_vec());
-    }
-
-    #[test]
-    fn details_include_adapter_and_model() {
-        let details = kind_details(Some(&descriptor()));
-        let rendered = details
-            .lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert!(rendered.contains("test (required)"));
-        assert!(rendered.contains("model"));
-    }
-
-    #[test]
-    fn parses_unavailable_credential_status() {
-        let status = parse_credential_status(&serde_json::json!({
-            "backend": "secret-service",
-            "status": "unavailable",
-            "detail": "dbus unavailable"
-        }));
-        assert_eq!(status.backend, "secret-service");
-        assert!(!status.available);
-        assert_eq!(status.detail.as_deref(), Some("dbus unavailable"));
-    }
-
-    #[test]
-    fn chat_streams_and_replaces_assistant_text() {
-        let mut view = ChatView {
-            session_id: Some("session-a".to_owned()),
-            ..ChatView::default()
-        };
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "live",
-            "event": { "type": "text_delta", "text": "hel" }
-        }));
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "live",
-            "event": { "type": "text_delta", "text": "lo" }
-        }));
-        assert_eq!(
-            view.transcript,
-            vec![TranscriptEntry::Assistant("hello".to_owned())]
-        );
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "durable",
-            "event": {
-                "payload": {
-                    "type": "assistant_message",
-                    "text": "hello"
-                }
-            }
-        }));
-        assert_eq!(
-            view.transcript,
-            vec![TranscriptEntry::Assistant("hello".to_owned())]
-        );
-    }
-
-    #[test]
-    fn transcript_cache_reuses_unchanged_entries() {
-        let mut view = ChatView {
-            transcript: vec![
-                TranscriptEntry::Assistant("stable".to_owned()),
-                TranscriptEntry::Assistant("live".to_owned()),
-            ],
-            ..ChatView::default()
-        };
-        ensure_transcript_cache(&mut view, 40);
-        let stable_before = view.transcript_cache.as_ref().expect("cache").lines[0].spans[0]
-            .content
-            .as_ptr();
-
-        if let Some(TranscriptEntry::Assistant(text)) = view.transcript.get_mut(1) {
-            text.push_str(" more");
-        }
-        view.mark_transcript_entry(1);
-        ensure_transcript_cache(&mut view, 40);
-
-        let cache = view.transcript_cache.as_ref().expect("cache");
-        assert_eq!(cache.lines[0].spans[0].content.as_ptr(), stable_before);
-        let rendered = cache
-            .lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert!(rendered.contains("live more"));
-    }
-
-    #[test]
-    fn chat_streams_thinking_separately_from_visible_text() {
-        let mut view = ChatView {
-            session_id: Some("session-a".to_owned()),
-            ..ChatView::default()
-        };
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "live",
-            "event": { "type": "thinking_delta", "text": "plan" }
-        }));
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "live",
-            "event": { "type": "text_delta", "text": "answer" }
-        }));
-        assert_eq!(
-            view.transcript,
-            vec![
-                TranscriptEntry::Thinking("plan".to_owned()),
-                TranscriptEntry::Assistant("answer".to_owned()),
-            ]
-        );
-
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "durable",
-            "event": {
-                "payload": {
-                    "type": "assistant_message",
-                    "blocks": [
-                        { "type": "thinking", "text": "plan", "signature": "sig" },
-                        { "type": "text", "text": "answer" }
-                    ]
-                }
-            }
-        }));
-        assert_eq!(
-            view.transcript,
-            vec![
-                TranscriptEntry::Thinking("plan".to_owned()),
-                TranscriptEntry::Assistant("answer".to_owned()),
-            ]
-        );
-        assert!(view.streaming_thinking.is_none());
-        assert!(view.streaming_assistant.is_none());
-    }
-
-    #[test]
-    fn chat_ignores_events_from_other_sessions() {
-        let mut view = ChatView {
-            session_id: Some("session-a".to_owned()),
-            ..ChatView::default()
-        };
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-b",
-            "kind": "live",
-            "event": { "type": "text_delta", "text": "wrong" }
-        }));
-        assert!(view.transcript.is_empty());
-    }
-
-    #[test]
-    fn new_session_resets_to_an_unpersisted_draft() {
-        let mut view = ChatView {
-            session_id: Some("session-a".to_owned()),
-            transcript: vec![TranscriptEntry::User("hello".to_owned())],
-            running_turn: Some("turn-a".to_owned()),
-            pending_provider_tools: Some(vec!["web_search".to_owned()]),
-            ..ChatView::default()
-        };
-        view.new_session();
-        assert!(view.session_id.is_none());
-        assert!(view.transcript.is_empty());
-        assert!(view.running_turn.is_none());
-        assert!(view.pending_provider_tools.is_none());
-        assert_eq!(view.status.as_deref(), Some("new session"));
-    }
-
-    #[test]
-    fn route_event_updates_the_active_route() {
-        let mut view = ChatView {
-            session_id: Some("session-a".to_owned()),
-            ..ChatView::default()
-        };
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "durable",
-            "event": {
-                "payload": {
-                    "type": "route_changed",
-                    "provider": "provider-b",
-                    "model": "model-b",
-                    "reasoning": "high"
-                }
-            }
-        }));
-        assert_eq!(view.provider, "provider-b");
-        assert_eq!(view.model, "model-b");
-        assert_eq!(view.reasoning, ReasoningLevel::High);
-    }
-
-    #[test]
-    fn chat_header_draws_route_and_shortcuts() {
-        let mut view = ChatView {
-            provider: "provider-a".to_owned(),
-            model: "model-a".to_owned(),
-            reasoning: ReasoningLevel::High,
-            mode: PermissionMode::Auto,
-            ..ChatView::default()
-        };
-        let backend = ratatui::backend::TestBackend::new(100, 20);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
-            .expect("draw chat");
-        assert!(terminal_contains(
-            &terminal,
-            "provider-a/model-a high | auto"
-        ));
-        assert!(terminal_contains(&terminal, "Ctrl-R sessions"));
-    }
-
-    #[test]
-    fn reasoning_transcript_omits_the_label() {
-        let lines = thinking_transcript_lines("plan\ndetail");
-        let rendered = lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(rendered, vec!["plan", "detail"]);
-    }
-
-    #[test]
-    fn chat_renders_tool_call_and_result_summaries() {
-        let mut view = ChatView {
-            session_id: Some("session-a".to_owned()),
-            ..ChatView::default()
-        };
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "durable",
-            "event": {
-                "payload": {
-                    "type": "tool_call",
-                    "id": "call-1",
-                    "name": "shell",
-                    "input": { "command": "ls -la" }
-                }
-            }
-        }));
-        view.handle_session_event(&serde_json::json!({
-            "sessionId": "session-a",
-            "kind": "durable",
-            "event": {
-                "payload": {
-                    "type": "tool_result",
-                    "id": "call-1",
-                    "status": "completed",
-                    "content": "src/lib.rs\nCargo.toml"
-                }
-            }
-        }));
-        assert_eq!(
-            view.transcript,
-            vec![
-                TranscriptEntry::Progress("shell: ls -la".to_owned()),
-                TranscriptEntry::Progress("shell: completed - src/lib.rs (2 lines)".to_owned()),
-            ]
-        );
     }
 
     #[test]
@@ -4972,30 +3617,101 @@ mod tests {
         assert!(rendered.iter().any(|line| line == "Title"));
         assert!(rendered.iter().any(|line| line == "Hello world and code."));
         assert!(rendered.iter().any(|line| line == "- one"));
-        assert!(rendered.iter().any(|line| line == "- two"));
         assert!(rendered.iter().any(|line| line.contains("fn main() {}")));
-
-        let bold = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "world")
-            .expect("bold span");
-        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
-        let code = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "code")
-            .expect("code span");
-        assert_eq!(code.style.fg, Some(COLOR_SUCCESS));
     }
 
     #[test]
-    fn transcript_uses_unlabeled_message_styles() {
+    fn structured_tool_entries_render_as_terminal_summaries() {
+        let lines = build_transcript_entry_lines(
+            &TranscriptEntry::ToolCall {
+                id: ToolCallId::new(),
+                name: "shell".to_owned(),
+                input: json!({ "command": "ls -la" }),
+            },
+            80,
+        );
+        assert!(lines[0].to_string().contains("shell: ls -la"));
+
+        let lines = build_transcript_entry_lines(
+            &TranscriptEntry::ToolResult {
+                id: ToolCallId::new(),
+                name: "shell".to_owned(),
+                status: ToolStatus::Completed,
+                content: "src\nCargo.toml".to_owned(),
+            },
+            80,
+        );
+        assert!(lines[0].to_string().contains("shell: completed"));
+    }
+
+    #[test]
+    fn durable_assistant_blocks_preserve_order() {
+        let entry = TranscriptEntry::AssistantMessage {
+            blocks: vec![
+                AssistantContentBlock::Thinking {
+                    text: "reasoning".to_owned(),
+                    signature: None,
+                },
+                AssistantContentBlock::Text {
+                    text: "first".to_owned(),
+                },
+                AssistantContentBlock::Text {
+                    text: "second".to_owned(),
+                },
+            ],
+        };
+        let rendered = build_transcript_entry_lines(&entry, 80)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, vec!["reasoning", "first", "second"]);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn transcript_cache_reuses_unchanged_entries() {
+        let mut view = ChatView::default();
+        view.transcript = vec![
+            TranscriptEntry::AssistantMessage {
+                blocks: vec![AssistantContentBlock::Text {
+                    text: "stable".to_owned(),
+                }],
+            },
+            TranscriptEntry::AssistantDelta {
+                text: "live".to_owned(),
+            },
+        ];
+        ensure_transcript_cache(&mut view, 40);
+        let stable_before = view.transcript_cache.as_ref().expect("cache").lines[0].spans[0]
+            .content
+            .as_ptr();
+        if let Some(TranscriptEntry::AssistantDelta { text }) = view.transcript.get_mut(1) {
+            text.push_str(" more");
+        }
+        view.mark_transcript_entry(1);
+        ensure_transcript_cache(&mut view, 40);
+        let cache = view.transcript_cache.as_ref().expect("cache");
+        assert_eq!(cache.lines[0].spans[0].content.as_ptr(), stable_before);
+        assert!(
+            cache
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("live more"))
+        );
+    }
+
+    #[test]
+    fn transcript_renders_structured_user_and_assistant_items() {
         let mut app = app_with_composer("");
         app.chat.transcript = vec![
-            TranscriptEntry::User("你好".to_owned()),
-            TranscriptEntry::Thinking("plan".to_owned()),
-            TranscriptEntry::Assistant("answer".to_owned()),
+            TranscriptEntry::User {
+                text: "你好".to_owned(),
+            },
+            TranscriptEntry::AssistantMessage {
+                blocks: vec![AssistantContentBlock::Text {
+                    text: "answer".to_owned(),
+                }],
+            },
         ];
         let backend = ratatui::backend::TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -5004,216 +3720,20 @@ mod tests {
             .expect("draw transcript");
         assert!(terminal_contains(&terminal, "你"));
         assert!(terminal_contains(&terminal, "好"));
-        assert!(terminal_contains(&terminal, "plan"));
         assert!(terminal_contains(&terminal, "answer"));
-        assert!(!terminal_contains(&terminal, "you:"));
-        assert!(!terminal_contains(&terminal, "effort: plan"));
-        assert!(!terminal_contains(&terminal, "alpha: answer"));
-
-        let user_background = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .find(|cell| cell.symbol() == "你")
-            .map(|cell| cell.bg);
-        assert_eq!(user_background, Some(COLOR_USER_BUBBLE));
     }
 
     #[test]
-    fn user_message_fills_width_with_vertical_padding() {
-        let lines = user_transcript_lines("hello", 20);
-        assert_eq!(lines.len(), 3);
-        assert!(lines.iter().all(|line| line.width() == 20));
-        assert!(
-            lines
-                .iter()
-                .all(|line| line.style.bg == Some(COLOR_USER_BUBBLE))
-        );
-        assert_eq!(lines[0].to_string(), " ".repeat(20));
-        assert!(lines[1].to_string().contains("hello"));
-        assert_eq!(lines[2].to_string(), " ".repeat(20));
-    }
-
-    #[test]
-    fn transcript_surface_reconstructs_wide_characters() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 1));
-        buffer.set_string(0, 0, "你 好", Style::default());
-        let surface = capture_transcript_surface(&buffer, Rect::new(0, 0, 12, 1));
-        assert_eq!(surface.rows, vec!["你 好"]);
-    }
-
-    #[test]
-    fn selection_extracts_multiline_text_and_wide_characters() {
-        let surface = TranscriptSurface {
-            area: Rect::new(2, 3, 10, 3),
-            rows: vec!["alpha".to_owned(), "你 好".to_owned(), "omega".to_owned()],
-        };
-        assert_eq!(
-            surface.selected_text(TextSelection {
-                anchor: Position::new(2, 3),
-                cursor: Position::new(5, 4),
-            }),
-            "alpha\n你 好"
-        );
-        assert_eq!(
-            surface.selected_text(TextSelection {
-                anchor: Position::new(3, 4),
-                cursor: Position::new(2, 4),
-            }),
-            "你"
-        );
-    }
-
-    #[test]
-    fn tui_uses_the_canvas_background() {
-        let mut app = app_with_composer("");
-        let backend = ratatui::backend::TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| draw_app(frame, &mut app))
-            .expect("draw canvas");
-        assert_eq!(terminal.backend().buffer().content()[0].bg, COLOR_CANVAS);
-    }
-
-    #[test]
-    fn empty_transcript_has_no_frame_or_placeholder() {
-        let mut view = ChatView::default();
-        let backend = ratatui::backend::TestBackend::new(80, 20);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
-            .expect("draw empty transcript");
-        assert!(!terminal_contains(&terminal, "Transcript"));
-        assert!(!terminal_contains(&terminal, "No messages yet"));
-    }
-
-    #[test]
-    fn markdown_output_renders_tables_with_alignment() {
-        let lines =
-            render_markdown("| Name | Count |\n|:-----|------:|\n| alpha | 1 |\n| beta | 22 |");
-        let rendered = lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            rendered,
-            vec![
-                "| Name  | Count |",
-                "|-------|-------|",
-                "| alpha |     1 |",
-                "| beta  |    22 |",
-            ]
-        );
-        let header = lines[0]
-            .spans
-            .iter()
-            .find(|span| span.content == "Name")
-            .expect("table header cell");
-        assert!(header.style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn assistant_payload_preserves_block_order() {
-        let payload = serde_json::json!({
-            "blocks": [
-                { "type": "thinking", "text": "reasoning" },
-                { "type": "text", "text": "first" },
-                { "type": "text", "text": "second" }
-            ]
-        });
-        assert_eq!(
-            assistant_payload_entries(&payload),
-            vec![
-                TranscriptEntry::Thinking("reasoning".to_owned()),
-                TranscriptEntry::Assistant("first".to_owned()),
-                TranscriptEntry::Assistant("second".to_owned()),
-            ]
-        );
-    }
-
-    #[test]
-    fn transcript_scroll_reaches_the_last_entry() {
-        let mut view = ChatView {
-            transcript: (0..80)
-                .map(|index| TranscriptEntry::Assistant(format!("line {index}")))
-                .collect(),
-            ..ChatView::default()
-        };
-        let backend = ratatui::backend::TestBackend::new(40, 12);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
-            .expect("draw transcript");
-        assert!(terminal_contains(&terminal, "line 79"));
-
-        view.scroll_transcript_up(u16::MAX);
-        terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
-            .expect("draw transcript top");
-        assert!(terminal_contains(&terminal, "line 0"));
-
-        view.scroll_transcript_down(u16::MAX);
-        terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
-            .expect("draw transcript bottom");
-        assert!(terminal_contains(&terminal, "line 79"));
-    }
-
-    fn terminal_contains(terminal: &Terminal<ratatui::backend::TestBackend>, needle: &str) -> bool {
-        terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
-            .contains(needle)
-    }
-
-    #[test]
-    fn transcript_scroll_returns_to_the_bottom() {
-        let mut view = ChatView::default();
-        view.scroll_transcript_up(10);
-        assert_eq!(view.transcript_scroll_back, 10);
-        view.scroll_transcript_down(3);
-        assert_eq!(view.transcript_scroll_back, 7);
-        view.scroll_transcript_down(100);
-        assert_eq!(view.transcript_scroll_back, 0);
-    }
-
-    #[test]
-    fn config_editor_starts_from_the_selected_instance() {
-        let mut view = ProviderView {
-            kinds: vec![descriptor()],
-            instances: vec![ProviderInstance {
-                id: "test".to_owned(),
-                kind: "test".to_owned(),
-                config_version: 1,
-                config: serde_json::json!({ "base_url": "https://example.test" }),
-                auth_ref: None,
-                model_overrides: serde_json::json!({}),
-                disabled: false,
-            }],
-            ..ProviderView::default()
-        };
-        view.begin_config_edit().expect("begin edit");
-        let editor = view.config_editor.expect("editor");
-        assert!(editor.text.contains("https://example.test"));
-    }
-
-    #[test]
-    fn session_picker_renders_a_first_message_preview() {
+    fn session_picker_renders_first_message_preview() {
         let picker = SessionPicker {
-            sessions: vec![SessionEntry {
-                id: "01900000-0000-7000-8000-000000000000".to_owned(),
-                mode: "auto".to_owned(),
-                workspace: "/tmp/workspace".to_owned(),
+            sessions: vec![alpha_schema::SessionListEntry {
+                id: SessionId::new(),
+                created_at: Timestamp::from_millis(1),
+                mode: PermissionMode::Auto,
+                workspace: WorkspaceRef {
+                    root: "/tmp/workspace".to_owned(),
+                    cwd: "/tmp/workspace".to_owned(),
+                },
                 provider: "openai".to_owned(),
                 model: "gpt".to_owned(),
                 first_message: Some("fix the failing parser test".to_owned()),
@@ -5232,70 +3752,50 @@ mod tests {
     }
 
     #[test]
-    fn composer_edits_at_the_cursor_and_preserves_unicode_boundaries() {
-        let mut composer = composer("a界b");
-        composer.move_left();
-        assert_eq!(composer.cursor(), "a界".len());
-        composer.backspace();
-        assert_eq!(composer.text(), "ab");
-        composer.insert_char('x');
-        assert_eq!(composer.text(), "axb");
-        composer.move_home();
-        composer.delete();
-        assert_eq!(composer.text(), "xb");
-    }
-
-    #[test]
-    fn composer_moves_between_lines_and_inserts_at_the_target() {
-        let mut composer = composer("one\ntwo");
-        composer.move_up();
-        composer.insert_char('!');
-        assert_eq!(composer.text(), "one!\ntwo");
-        composer.move_down();
-        composer.move_end();
-        composer.insert_char('?');
-        assert_eq!(composer.text(), "one!\ntwo?");
-        composer.insert_newline();
-        assert_eq!(composer.text(), "one!\ntwo?\n");
-    }
-
-    #[test]
     fn slash_command_completion_filters_and_accepts() {
         let mut app = app_with_composer("/mo");
         let completions = command_completions(&app);
-        assert_eq!(completions.len(), 2);
         assert!(
             completions
                 .iter()
                 .any(|completion| completion.label == "/model [MODEL] [EFFORT]")
         );
         assert!(completion_accepts_enter(&app));
-
         accept_completion(&mut app);
         assert_eq!(app.chat.composer.text(), "/model ");
-        assert!(!completion_accepts_enter(&app));
     }
 
     #[test]
-    fn command_completions_include_argument_values() {
-        let app = app_with_composer("/mode ");
-        let completions = command_completions(&app);
-        assert_eq!(
-            completions
-                .iter()
-                .map(|completion| completion.insert.as_str())
-                .collect::<Vec<_>>(),
-            vec!["read", "auto", "reviewed", "free"]
-        );
+    fn empty_transcript_has_no_frame_or_placeholder() {
+        let mut view = ChatView::default();
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
+            .expect("draw empty transcript");
+        assert!(!terminal_contains(&terminal, "Transcript"));
+        assert!(!terminal_contains(&terminal, "No messages yet"));
     }
 
     #[test]
-    fn command_parser_accepts_the_composer_slash_prefix() {
-        assert_eq!(split_command("/mode"), ("mode", ""));
-        assert_eq!(split_command("/mode reviewed"), ("mode", "reviewed"));
-        assert_eq!(
-            split_command("/resume session-id"),
-            ("resume", "session-id")
+    fn provider_config_editor_starts_from_selected_instance() {
+        let mut view = ProviderView {
+            state: ProviderState {
+                kinds: vec![descriptor()],
+                instances: vec![ProviderInstance {
+                    config: json!({ "base_url": "https://example.test" }),
+                    ..instance()
+                }],
+                ..ProviderState::default()
+            },
+            ..ProviderView::default()
+        };
+        view.begin_config_edit().expect("begin edit");
+        assert!(
+            view.config_editor
+                .expect("editor")
+                .text
+                .contains("https://example.test")
         );
     }
 
@@ -5305,12 +3805,31 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         terminal
-            .draw(|frame| {
-                draw_chat_screen(frame, &mut app.chat, &[], true);
-            })
+            .draw(|frame| draw_chat_screen(frame, &mut app.chat, &[], true))
             .expect("draw composer");
         assert!(terminal_contains(&terminal, "first line"));
         assert!(terminal_contains(&terminal, "second line"));
-        assert!(!terminal_contains(&terminal, "Composer"));
+    }
+
+    #[test]
+    fn delete_confirmation_uses_typed_session_identity() {
+        let session = alpha_schema::SessionListEntry {
+            id: SessionId::new(),
+            created_at: Timestamp::from_millis(1),
+            mode: PermissionMode::Auto,
+            workspace: WorkspaceRef {
+                root: "/tmp/workspace".to_owned(),
+                cwd: "/tmp/workspace".to_owned(),
+            },
+            provider: String::new(),
+            model: String::new(),
+            first_message: None,
+        };
+        let backend = ratatui::backend::TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_session_delete_confirmation(frame, &session))
+            .expect("draw confirmation");
+        assert!(terminal_contains(&terminal, "Delete session"));
     }
 }

@@ -1,14 +1,15 @@
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use alpha_front_client::ConnectionEvent;
-use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig};
+use alpha_front_runtime::{
+    FrontEvent, FrontRuntime, FrontRuntimeConfig, SessionOptions, read_terminal_approval,
+};
 use alpha_front_tui::run_tui;
+use alpha_schema::LiveAgentEvent;
 use alpha_schema::{PermissionMode, SessionId};
 use clap::{Args, Parser, Subcommand};
-use serde_json::{Value, json};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -73,13 +74,22 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args),
-        Command::Chat | Command::Tui => match run_tui() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("alpha: {error}");
-                ExitCode::FAILURE
+        Command::Chat | Command::Tui => {
+            let runtime = match FrontRuntime::start(FrontRuntimeConfig::default()) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("alpha: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match run_tui(runtime) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("alpha: {error}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Command::Sessions => list_sessions_command(),
         Command::Core(args) => {
             if !args.stdio {
@@ -101,37 +111,31 @@ fn main() -> ExitCode {
 }
 
 fn list_sessions_command() -> ExitCode {
-    let mut supervisor = match CoreSupervisor::start(SupervisorConfig::default()) {
-        Ok(supervisor) => supervisor,
+    let mut runtime = match FrontRuntime::start(FrontRuntimeConfig {
+        refresh_providers: false,
+        ..FrontRuntimeConfig::default()
+    }) {
+        Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("alpha sessions: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let sessions = match supervisor.request("session.list", None) {
+    let sessions = match runtime.list_sessions() {
         Ok(sessions) => sessions,
         Err(error) => {
             eprintln!("alpha sessions: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let Some(sessions) = sessions.as_array() else {
-        eprintln!("alpha sessions: invalid session list");
-        return ExitCode::FAILURE;
-    };
-    for header in sessions {
-        let id = header.get("id").and_then(Value::as_str).unwrap_or("?");
-        let mode = header.get("mode").and_then(Value::as_str).unwrap_or("?");
-        let created = header
-            .get("created_at")
-            .and_then(Value::as_i64)
-            .unwrap_or_default();
-        let workspace = header
-            .get("workspace")
-            .and_then(|workspace| workspace.get("root"))
-            .and_then(Value::as_str)
-            .unwrap_or("?");
-        println!("{id}\t{mode}\t{created}\t{workspace}");
+    for session in sessions {
+        println!(
+            "{}\t{}\t{}\t{}",
+            session.id,
+            session.mode,
+            session.created_at.as_millis(),
+            session.workspace.root
+        );
     }
     ExitCode::SUCCESS
 }
@@ -142,8 +146,22 @@ fn run_command(args: RunArgs) -> ExitCode {
         eprintln!("alpha run: provide a prompt or use --resume <SESSION_ID>");
         return ExitCode::FAILURE;
     }
-    let mut supervisor = match CoreSupervisor::start(SupervisorConfig::default()) {
-        Ok(supervisor) => supervisor,
+    let workspace = match resolve_workspace(args.workspace) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            eprintln!("alpha run: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut session = SessionOptions::new(workspace);
+    session.mode = args.mode;
+    session.provider = args.provider.unwrap_or_default();
+    session.model = args.model.unwrap_or_default();
+    let mut runtime = match FrontRuntime::start(FrontRuntimeConfig {
+        session,
+        ..FrontRuntimeConfig::default()
+    }) {
+        Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("alpha run: {error}");
             return ExitCode::FAILURE;
@@ -151,19 +169,11 @@ fn run_command(args: RunArgs) -> ExitCode {
     };
 
     let session_id = if let Some(session_id) = args.resume {
-        match supervisor.request("session.resume", Some(json!({ "sessionId": session_id }))) {
+        match runtime.resume_session(session_id) {
             Ok(resumed) => {
                 eprintln!(
                     "alpha run: resumed {} ({} messages, repairs={})",
-                    session_id,
-                    resumed
-                        .get("messages")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default(),
-                    resumed
-                        .get("repairs")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default()
+                    session_id, resumed.messages, resumed.repairs
                 );
                 session_id
             }
@@ -173,34 +183,8 @@ fn run_command(args: RunArgs) -> ExitCode {
             }
         }
     } else {
-        let workspace = match resolve_workspace(args.workspace) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                eprintln!("alpha run: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        match supervisor.request(
-            "session.create",
-            Some(json!({
-                "workspace": workspace,
-                "cwd": workspace,
-                "mode": args.mode,
-                "provider": args.provider.unwrap_or_default(),
-                "model": args.model.unwrap_or_default(),
-            })),
-        ) {
-            Ok(created) => {
-                let Some(session_id) = created
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .and_then(|id| id.parse::<SessionId>().ok())
-                else {
-                    eprintln!("alpha run: session.create returned no session id");
-                    return ExitCode::FAILURE;
-                };
-                session_id
-            }
+        match runtime.create_session() {
+            Ok(created) => created.session_id,
             Err(error) => {
                 eprintln!("alpha run: {error}. Configure a provider with `alpha tui` first.");
                 return ExitCode::FAILURE;
@@ -211,68 +195,79 @@ fn run_command(args: RunArgs) -> ExitCode {
     if prompt.trim().is_empty() {
         return ExitCode::SUCCESS;
     }
-    if let Err(error) = supervisor.request(
-        "session.submit",
-        Some(json!({ "sessionId": session_id, "prompt": prompt })),
-    ) {
+    if let Err(error) = runtime.submit_prompt(&prompt) {
         eprintln!("alpha run: {error}");
         return ExitCode::FAILURE;
     }
 
     let mut streamed = false;
-    let mut final_text = String::new();
     loop {
-        let event = match supervisor.recv_event_timeout(Duration::from_millis(100)) {
-            Ok(event) => event,
+        let events = match runtime.receive_events(Duration::from_millis(100)) {
+            Ok(events) => events,
             Err(error) => {
                 eprintln!("alpha run: {error}");
                 return ExitCode::FAILURE;
             }
         };
-        match event {
-            Some(ConnectionEvent::Notification(notification))
-                if notification.method == "session.event" =>
-            {
-                let Some(params) = notification.params else {
-                    continue;
-                };
-                if let Some(text) = handle_run_event(&params, &mut streamed) {
-                    final_text = text;
+        for event in events {
+            match event {
+                FrontEvent::Live { event } => match event {
+                    LiveAgentEvent::TextDelta { text } => {
+                        print!("{text}");
+                        let _ = std::io::stdout().flush();
+                        streamed = true;
+                    }
+                    LiveAgentEvent::StepStarted { step } => {
+                        eprintln!("alpha run: step {step}: calling model...");
+                    }
+                    LiveAgentEvent::ToolStarted { name, .. } => {
+                        eprintln!("alpha run: -> {name}");
+                    }
+                    LiveAgentEvent::ToolFinished { name, status, .. } => {
+                        eprintln!("alpha run: <- {name} {}", tool_status_label(status));
+                    }
+                    LiveAgentEvent::Error { message } => {
+                        eprintln!("alpha run: {message}");
+                    }
+                    LiveAgentEvent::ThinkingDelta { .. } => {}
+                },
+                FrontEvent::InteractionRequested { .. } => {
+                    let prompt = runtime
+                        .chat()
+                        .interaction
+                        .as_ref()
+                        .map(|prompt| prompt.prompt.clone())
+                        .unwrap_or_default();
+                    let decision = read_terminal_approval(&prompt);
+                    if let Err(error) = runtime.respond_interaction(decision) {
+                        eprintln!("alpha run: {error}");
+                        return ExitCode::FAILURE;
+                    }
                 }
-                if turn_finished(&params) {
+                FrontEvent::TurnEnded { .. } => {
                     if streamed {
                         println!();
-                    } else if !final_text.is_empty() {
-                        println!("{final_text}");
+                    } else {
+                        let final_text = final_assistant_text(runtime.chat());
+                        if !final_text.is_empty() {
+                            println!("{final_text}");
+                        }
                     }
                     eprintln!("session: {session_id}");
                     return ExitCode::SUCCESS;
                 }
-            }
-            Some(ConnectionEvent::Request(request)) if request.method == "interaction.request" => {
-                let decision = read_approval_decision(&request.params);
-                if let Err(error) =
-                    supervisor.respond(request.id, Ok(json!({ "decision": decision })))
-                {
-                    eprintln!("alpha run: {error}");
+                FrontEvent::CoreRestarted { resumed } => {
+                    eprintln!(
+                        "alpha run: core restarted; session {}",
+                        if resumed { "resumed" } else { "not resumed" }
+                    );
+                    return ExitCode::FAILURE;
+                }
+                FrontEvent::CoreDisconnected { error } => {
+                    eprintln!("alpha run: core disconnected: {error}");
                     return ExitCode::FAILURE;
                 }
             }
-            Some(ConnectionEvent::Closed(error)) => {
-                eprintln!("alpha run: core disconnected: {error}");
-                match supervisor.restart() {
-                    Ok(()) => {
-                        let _ = supervisor
-                            .request("session.resume", Some(json!({ "sessionId": session_id })));
-                        eprintln!(
-                            "alpha run: core restarted; the interrupted turn was not replayed"
-                        );
-                    }
-                    Err(restart) => eprintln!("alpha run: core restart failed: {restart}"),
-                }
-                return ExitCode::FAILURE;
-            }
-            _ => {}
         }
     }
 }
@@ -290,126 +285,27 @@ fn resolve_workspace(workspace: Option<PathBuf>) -> Result<PathBuf, String> {
     })
 }
 
-fn handle_run_event(params: &Value, streamed: &mut bool) -> Option<String> {
-    let kind = params.get("kind").and_then(Value::as_str).unwrap_or("");
-    let event = params.get("event").unwrap_or(&Value::Null);
-    match kind {
-        "live" => match event.get("type").and_then(Value::as_str).unwrap_or("") {
-            "text_delta" => {
-                if let Some(text) = event.get("text").and_then(Value::as_str) {
-                    print!("{text}");
-                    let _ = std::io::stdout().flush();
-                    *streamed = true;
-                }
-            }
-            "step_started" => {
-                if let Some(step) = event.get("step").and_then(Value::as_u64) {
-                    eprintln!("alpha run: step {step}: calling model...");
-                }
-            }
-            "tool_started" => {
-                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                eprintln!("alpha run: -> {name}");
-            }
-            "tool_finished" => {
-                let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
-                let status = event
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("finished");
-                eprintln!("alpha run: <- {name} {status}");
-            }
-            "error" => {
-                let message = event
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("model request failed");
-                eprintln!("alpha run: {message}");
-            }
-            _ => {}
-        },
-        "durable" => {
-            let payload = event.get("payload").unwrap_or(&Value::Null);
-            match payload.get("type").and_then(Value::as_str).unwrap_or("") {
-                "assistant_message" => {
-                    let text = assistant_payload_text(payload);
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
-                }
-                "tool_call" => {
-                    let name = payload
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool");
-                    eprintln!("alpha run: -> {name}");
-                }
-                "tool_result" => {
-                    let status = payload
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("finished");
-                    eprintln!("alpha run: <- {status}");
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
-fn assistant_payload_text(payload: &Value) -> String {
-    if let Some(text) = payload.get("text").and_then(Value::as_str) {
-        if !text.is_empty() {
-            return text.to_owned();
-        }
-    }
-    payload
-        .get("blocks")
-        .and_then(Value::as_array)
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|block| {
-                    (block.get("type").and_then(Value::as_str) == Some("text"))
-                        .then(|| block.get("text").and_then(Value::as_str))
-                        .flatten()
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n")
+fn final_assistant_text(chat: &alpha_front_runtime::ChatState) -> String {
+    chat.transcript
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            alpha_front_runtime::TranscriptItem::AssistantMessage { blocks } => Some(
+                blocks
+                    .iter()
+                    .filter_map(alpha_schema::AssistantContentBlock::text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ),
+            _ => None,
         })
         .unwrap_or_default()
 }
 
-fn turn_finished(params: &Value) -> bool {
-    params.get("kind").and_then(Value::as_str) == Some("durable")
-        && params
-            .get("event")
-            .and_then(|event| event.get("payload"))
-            .and_then(|payload| payload.get("type"))
-            .and_then(Value::as_str)
-            == Some("turn_ended")
-}
-
-fn read_approval_decision(params: &Option<Value>) -> &'static str {
-    if !std::io::stdin().is_terminal() {
-        return "deny";
-    }
-    if let Some(params) = params {
-        eprintln!(
-            "alpha run: permission requested: {}",
-            serde_json::to_string(params).unwrap_or_default()
-        );
-    }
-    eprintln!("[a]llow once  [s]ession  [d]eny");
-    let mut line = String::new();
-    if std::io::stdin().read_line(&mut line).is_err() {
-        return "deny";
-    }
-    match line.trim().to_ascii_lowercase().as_str() {
-        "a" | "y" | "yes" => "once",
-        "s" | "session" => "session",
-        _ => "deny",
+fn tool_status_label(status: alpha_schema::ToolStatus) -> &'static str {
+    match status {
+        alpha_schema::ToolStatus::Completed => "completed",
+        alpha_schema::ToolStatus::Failed => "failed",
+        alpha_schema::ToolStatus::Interrupted => "interrupted",
     }
 }
