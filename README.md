@@ -41,16 +41,23 @@ alpha run --mode free "add a README section"
 ## Terminal interface
 
 ```sh
+alpha chat
+```
+
+The chat profile uses the shared front runtime without the full-screen
+alternate terminal. The full-screen profile is available as:
+
+```sh
 alpha tui
 ```
 
-The TUI starts its own core process, discovers provider kinds and persisted
-provider instances, and exposes provider creation, removal, default selection,
-credential entry, validation, schema-guided JSON configuration editing, and
-refresh. Secrets are written to the platform keyring by the core and are never
-returned to the TUI. A session is created only when the first non-empty message
-is sent, so opening the TUI or starting a new draft does not create an empty
-stored session.
+The terminal profiles start a managed core through the shared front runtime,
+discover provider kinds and persisted provider instances, and expose provider
+creation, removal, default selection, credential entry, validation,
+schema-guided JSON configuration editing, and refresh. Secrets are written to
+the platform keyring by the core and are never returned to the front. A session
+is created only when the first non-empty message is sent, so opening a front or
+starting a new draft does not create an empty stored session.
 
 The chat header shows `provider/model effort | mode`. `Ctrl-L` opens the model
 picker, `Shift-Tab` cycles reasoning effort, and `Ctrl-T` opens the effort

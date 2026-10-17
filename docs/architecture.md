@@ -154,16 +154,18 @@ Headless and SDK first:
 - `alpha __core --stdio`: hidden core process managed by a front.
 - Rust SDK embeds the core crates directly.
 
-A TUI is the second profile; a daemon can come later because protocol and
-transport are separate.
+`chat` and `tui` use the same UI-independent front runtime with different
+terminal profiles. A daemon can come later because protocol and transport are
+separate.
 
 ### D13: External protocol
 
 JSON-RPC 2.0 over stdio with newline-delimited JSON framing. stdout carries
 protocol messages only; logs go to stderr. The `alpha-schema` crate owns
-public shapes and durable payloads. The first carrier is the private stdio
-pipe between a front supervisor and its core child. Other carriers can be
-added later without protocol changes.
+public shapes, durable payloads, provider metadata, and typed front protocol
+messages such as `SessionEventNotification`. The first carrier is the private
+stdio pipe between a front supervisor and its core child. Other carriers can
+be added later without protocol changes.
 
 Methods include session lifecycle (`session.create`, `session.list`,
 `session.resume`, `session.attach`, `session.events`), message submission,
@@ -440,19 +442,30 @@ is not a supported user workflow.
 The core caches Location contexts by `(workspace root, fixed cwd)`.
 Filesystem, process, prompt, and compaction services are shared by sessions in
 the same Location; session actors overlay their own mode, tools, approval
-channel, steer queue, and provider override. TUI transcript updates ignore
+channel, steer queue, and provider override. The shared front runtime ignores
 events from sessions other than the active session.
 
-The first TUI screen is a provider manager backed by `provider.list_kinds`,
-`provider.list_instances`, and `provider.credential_status`. It can create and
-remove instances, select the default instance, submit an API key through the
-credential module, validate an instance, edit the opaque provider config as
-schema-guided JSON, refresh provider state, and confirm destructive removal.
-It uses a full-screen alternate terminal and starts and stops its own core
-process. Secrets are never returned by provider reads and never enter front
-state after submission. A new chat is an in-memory draft until its first
-non-empty message is submitted; only then does the front call `session.create`
-and persist a session.
+`alpha-front-runtime` owns UI-independent frontend state and behavior: session
+lifecycle, turn submission, steering, cancellation, mode and route changes,
+provider configuration, model selection, transcript reduction, interaction
+timeouts, slash-command semantics, and core restart recovery. It depends on the
+protocol client, supervisor, and schema, not on a terminal or desktop toolkit.
+Frontends consume typed state and events rather than parsing protocol JSON.
+
+The provider manager is a shared runtime workflow backed by
+`provider.list_kinds`, `provider.list_instances`, and
+`provider.credential_status`. It can create and remove instances, select the
+default instance, submit an API key through the credential module, validate an
+instance, edit the opaque provider config as schema-guided JSON, refresh
+provider state, and confirm destructive removal. Secrets are never returned by
+provider reads and never enter front state after submission. A new chat is an
+in-memory draft until its first non-empty message is submitted; only then does
+the runtime call `session.create` and persist a session.
+
+The `alpha-front-tui` crate contains terminal input handling, layout, rendering,
+terminal selection and clipboard support, and terminal lifecycle only. The
+`chat` profile does not enter the alternate screen; the `tui` profile does.
+Both consume the shared runtime.
 
 The chat screen keeps the effective provider/model route, reasoning effort, and
 permission mode visible as `provider/model effort | mode`. `Ctrl-L` selects a
@@ -627,7 +640,8 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-protocol` | JSON-RPC 2.0 and NDJSON framing, request routing |
 | `alpha-front-client` | blocking alpha-protocol client used by fronts |
 | `alpha-front-supervisor` | managed core child process lifecycle |
-| `alpha-front-tui` | full-screen terminal frontend |
+| `alpha-front-runtime` | UI-independent frontend state, controller, and workflows |
+| `alpha-front-tui` | interactive chat and full-screen terminal adapters |
 | `alpha-provider-api` | provider descriptors and API adapter contracts |
 | `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
 | `alpha-api-openai-responses` | OpenAI Responses adapter |
