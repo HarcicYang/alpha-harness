@@ -7,34 +7,14 @@ use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use keyring_core::{CredentialStore as KeyringCredentialStore, Entry, Error as KeyringError};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+
+pub use alpha_schema::{CredentialBackendStatus, CredentialStatus};
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "credential";
 
 const SERVICE: &str = "alpha-harness";
-
-/// Credential backend availability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialBackendStatus {
-    /// The backend can be used.
-    Available,
-    /// The backend cannot be accessed on this system.
-    Unavailable,
-}
-
-/// Human-readable credential backend status.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialStatus {
-    /// Backend name.
-    pub backend: String,
-    /// Availability.
-    pub status: CredentialBackendStatus,
-    /// Optional diagnostic detail.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
 
 /// Credential storage failures.
 #[derive(Debug, thiserror::Error)]

@@ -10,6 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-kernel.workspace = true
+alpha-schema.workspace = true
 keyring-core = "1.0.0"
 serde.workspace = true
 thiserror.workspace = true

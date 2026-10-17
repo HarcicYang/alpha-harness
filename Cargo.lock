@@ -263,6 +263,7 @@ name = "alpha-module-credential"
 version = "0.1.0"
 dependencies = [
  "alpha-kernel",
+ "alpha-schema",
  "apple-native-keyring-store",
  "keyring-core",
  "serde",

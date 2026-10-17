@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use alpha_schema::{
-    EventEnvelope, MessageId, PermissionMode, ReasoningLevel, Seq, SessionId, Timestamp, ToolCallId,
+    EventEnvelope, LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel, Seq,
+    SessionEventNotification, SessionId, Timestamp, ToolCallId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,4 +72,37 @@ fn reasoning_levels_round_trip_with_stable_names() {
         ReasoningLevel::Max
     );
     assert_eq!(ReasoningLevel::default(), ReasoningLevel::Auto);
+}
+
+#[test]
+fn live_session_events_keep_the_protocol_shape() {
+    let session_id = SessionId::new();
+    let notification = SessionEventNotification::Live {
+        session_id,
+        turn_id: Some("turn-1".to_owned()),
+        stream_id: Some("turn-1:text".to_owned()),
+        step_id: None,
+        event: LiveAgentEvent::TextDelta {
+            text: "hello".to_owned(),
+        },
+    };
+
+    let value = serde_json::to_value(&notification).expect("serialize notification");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "sessionId": session_id,
+            "kind": "live",
+            "turnId": "turn-1",
+            "streamId": "turn-1:text",
+            "event": {
+                "type": "text_delta",
+                "text": "hello"
+            }
+        })
+    );
+
+    let decoded: SessionEventNotification =
+        serde_json::from_value(value).expect("deserialize notification");
+    assert_eq!(decoded, notification);
 }

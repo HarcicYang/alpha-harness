@@ -19,9 +19,11 @@ use alpha_module_session::{
     TurnEndReason, WorkspaceRef,
 };
 use alpha_protocol::{OutboundTransport, RpcError};
-use alpha_schema::{MessageId, PermissionMode, ReasoningLevel, SessionId, TurnId};
+use alpha_schema::{
+    LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel, SessionEventNotification, SessionId,
+    TurnId,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -550,14 +552,15 @@ impl AgentHostService {
                 .iter()
                 .filter(|envelope| envelope.seq.get() > after_seq)
             {
+                let notification = SessionEventNotification::Durable {
+                    session_id,
+                    event: envelope.clone(),
+                };
                 self.transport
                     .notify(
                         "session.event".to_owned(),
-                        json!({
-                            "sessionId": session_id,
-                            "kind": "durable",
-                            "event": envelope,
-                        }),
+                        serde_json::to_value(notification)
+                            .map_err(|error| AgentHostError::Runtime(error.to_string()))?,
                     )
                     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
                 last_seq = envelope.seq.get();
@@ -567,15 +570,18 @@ impl AgentHostService {
         })();
         let pending = self.sink.finish_attach(session_id);
         let (last_seq, replayed) = replay?;
-        for params in pending {
-            if params["kind"] == "durable" {
-                let seq = params["event"]["seq"].as_u64().unwrap_or_default();
-                if seq <= last_seq {
+        for notification in pending {
+            if let SessionEventNotification::Durable { event, .. } = &notification {
+                if event.seq.get() <= last_seq {
                     continue;
                 }
             }
             self.transport
-                .notify("session.event".to_owned(), params)
+                .notify(
+                    "session.event".to_owned(),
+                    serde_json::to_value(notification)
+                        .map_err(|error| AgentHostError::Runtime(error.to_string()))?,
+                )
                 .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         }
         Ok(SessionAttached { replayed })
@@ -687,7 +693,7 @@ impl AgentHostService {
 struct SessionEventSink {
     transport: Arc<dyn OutboundTransport>,
     attaching: Mutex<HashSet<SessionId>>,
-    pending: Mutex<HashMap<SessionId, Vec<serde_json::Value>>>,
+    pending: Mutex<HashMap<SessionId, Vec<SessionEventNotification>>>,
 }
 
 impl SessionEventSink {
@@ -710,7 +716,7 @@ impl SessionEventSink {
             .insert(session_id, Vec::new());
     }
 
-    fn finish_attach(&self, session_id: SessionId) -> Vec<serde_json::Value> {
+    fn finish_attach(&self, session_id: SessionId) -> Vec<SessionEventNotification> {
         self.attaching
             .lock()
             .expect("attach lock poisoned")
@@ -722,7 +728,11 @@ impl SessionEventSink {
             .unwrap_or_default()
     }
 
-    fn publish(&self, session_id: SessionId, params: serde_json::Value) -> Result<(), RpcError> {
+    fn publish(
+        &self,
+        session_id: SessionId,
+        notification: SessionEventNotification,
+    ) -> Result<(), RpcError> {
         if self
             .attaching
             .lock()
@@ -734,10 +744,14 @@ impl SessionEventSink {
                 .expect("attach pending lock poisoned")
                 .entry(session_id)
                 .or_default()
-                .push(params);
+                .push(notification);
             return Ok(());
         }
-        self.transport.notify("session.event".to_owned(), params)
+        self.transport.notify(
+            "session.event".to_owned(),
+            serde_json::to_value(notification)
+                .map_err(|error| RpcError::internal(error.to_string()))?,
+        )
     }
 }
 
@@ -754,11 +768,10 @@ fn install_writer_observer(
             .apply(envelope);
         let _ = sink.publish(
             session_id,
-            json!({
-                "sessionId": session_id,
-                "kind": "durable",
-                "event": envelope,
-            }),
+            SessionEventNotification::Durable {
+                session_id,
+                event: envelope.clone(),
+            },
         );
     }));
 }
@@ -812,13 +825,15 @@ fn install_live_observers(
                 .unwrap_or_default();
             let _ = sink.publish(
                 session_id,
-                json!({
-                    "sessionId": session_id,
-                    "kind": "live",
-                    "turnId": turn_id,
-                    "streamId": format!("{turn_id}:text"),
-                    "event": { "type": "text_delta", "text": event.text },
-                }),
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id.clone()),
+                    stream_id: Some(format!("{turn_id}:text")),
+                    step_id: None,
+                    event: LiveAgentEvent::TextDelta {
+                        text: event.text.clone(),
+                    },
+                },
             );
         })
     })
@@ -837,13 +852,15 @@ fn install_live_observers(
                 .unwrap_or_default();
             let _ = sink.publish(
                 session_id,
-                json!({
-                    "sessionId": session_id,
-                    "kind": "live",
-                    "turnId": turn_id,
-                    "streamId": format!("{turn_id}:thinking"),
-                    "event": { "type": "thinking_delta", "text": event.text },
-                }),
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id.clone()),
+                    stream_id: Some(format!("{turn_id}:thinking")),
+                    step_id: None,
+                    event: LiveAgentEvent::ThinkingDelta {
+                        text: event.text.clone(),
+                    },
+                },
             );
         })
     })
@@ -860,16 +877,16 @@ fn install_live_observers(
                 .expect("turn lock poisoned")
                 .map(|id| id.to_string())
                 .unwrap_or_default();
+            let step = u64::try_from(event.step).unwrap_or(u64::MAX);
             let _ = sink.publish(
                 session_id,
-                json!({
-                    "sessionId": session_id,
-                    "kind": "live",
-                    "turnId": turn_id,
-                    "stepId": event.step,
-                    "streamId": format!("{turn_id}:step-{}", event.step),
-                    "event": { "type": "step_started", "step": event.step },
-                }),
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id.clone()),
+                    stream_id: Some(format!("{turn_id}:step-{step}")),
+                    step_id: Some(step),
+                    event: LiveAgentEvent::StepStarted { step },
+                },
             );
         })
     })
@@ -888,17 +905,16 @@ fn install_live_observers(
                 .unwrap_or_default();
             let _ = sink.publish(
                 session_id,
-                json!({
-                    "sessionId": session_id,
-                    "kind": "live",
-                    "turnId": turn_id,
-                    "streamId": format!("{turn_id}:tool"),
-                    "event": {
-                        "type": "tool_started",
-                        "name": event.name,
-                        "input": event.input,
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id.clone()),
+                    stream_id: Some(format!("{turn_id}:tool")),
+                    step_id: None,
+                    event: LiveAgentEvent::ToolStarted {
+                        name: event.name.clone(),
+                        input: event.input.clone(),
                     },
-                }),
+                },
             );
         })
     })
@@ -917,18 +933,17 @@ fn install_live_observers(
                 .unwrap_or_default();
             let _ = sink.publish(
                 session_id,
-                json!({
-                    "sessionId": session_id,
-                    "kind": "live",
-                    "turnId": turn_id,
-                    "streamId": format!("{turn_id}:tool"),
-                    "event": {
-                        "type": "tool_finished",
-                        "name": event.name,
-                        "status": event.status,
-                        "content": event.content,
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id.clone()),
+                    stream_id: Some(format!("{turn_id}:tool")),
+                    step_id: None,
+                    event: LiveAgentEvent::ToolFinished {
+                        name: event.name.clone(),
+                        status: event.status,
+                        content: event.content.clone(),
                     },
-                }),
+                },
             );
         })
     })
@@ -940,14 +955,15 @@ fn install_live_observers(
         Box::pin(async move {
             let _ = sink.publish(
                 session_id,
-                json!({
-                    "sessionId": session_id,
-                    "kind": "live",
-                    "event": {
-                        "type": "error",
-                        "message": event.message,
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: None,
+                    stream_id: None,
+                    step_id: None,
+                    event: LiveAgentEvent::Error {
+                        message: event.message.clone(),
                     },
-                }),
+                },
             );
         })
     })
@@ -1272,7 +1288,13 @@ mod tests {
         sink.begin_attach(session_id);
         sink.publish(
             session_id,
-            json!({ "kind": "live", "event": { "type": "one" } }),
+            SessionEventNotification::Live {
+                session_id,
+                turn_id: None,
+                stream_id: None,
+                step_id: None,
+                event: LiveAgentEvent::StepStarted { step: 1 },
+            },
         )
         .expect("buffer event");
         assert!(
@@ -1286,7 +1308,13 @@ mod tests {
         assert_eq!(pending.len(), 1);
         sink.publish(
             session_id,
-            json!({ "kind": "live", "event": { "type": "two" } }),
+            SessionEventNotification::Live {
+                session_id,
+                turn_id: None,
+                stream_id: None,
+                step_id: None,
+                event: LiveAgentEvent::StepStarted { step: 2 },
+            },
         )
         .expect("publish event");
         assert_eq!(

@@ -5,6 +5,28 @@ use serde_json::Value;
 
 use crate::ReasoningLevel;
 
+/// Credential backend availability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialBackendStatus {
+    /// The backend can be used.
+    Available,
+    /// The backend cannot be accessed on this system.
+    Unavailable,
+}
+
+/// Human-readable credential backend status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialStatus {
+    /// Backend name.
+    pub backend: String,
+    /// Availability.
+    pub status: CredentialBackendStatus,
+    /// Optional diagnostic detail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// One adapter dependency declared by a provider kind.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterRequirement {
