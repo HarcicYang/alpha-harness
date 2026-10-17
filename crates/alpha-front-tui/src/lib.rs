@@ -3470,12 +3470,12 @@ fn draw_chat_screen(
                 format!("{provider}/{model}"),
                 Style::default().fg(COLOR_TEXT),
             ),
-            Span::styled("  effort:", Style::default().fg(COLOR_MUTED)),
+            Span::raw(" "),
             Span::styled(
                 view.reasoning.to_string(),
                 Style::default().fg(COLOR_SUCCESS),
             ),
-            Span::styled("  mode:", Style::default().fg(COLOR_MUTED)),
+            Span::styled(" | ", Style::default().fg(COLOR_MUTED)),
             Span::styled(view.mode.to_string(), Style::default().fg(COLOR_WARNING)),
         ]))
         .alignment(Alignment::Right),
@@ -3488,28 +3488,14 @@ fn draw_chat_screen(
         .transcript_cache
         .as_ref()
         .expect("transcript cache must be populated");
-    let transcript_title = if view.transcript_scroll_back > 0 {
-        "Transcript (scrolled)"
-    } else {
-        "Transcript"
-    };
     let max_scroll = cache
         .line_count
-        .saturating_sub(usize::from(layout[1].height.saturating_sub(2)));
+        .saturating_sub(usize::from(layout[1].height));
     let scroll = max_scroll
         .saturating_sub(usize::from(view.transcript_scroll_back))
         .min(u16::MAX as usize);
     let (line_start, entry_scroll) = transcript_viewport(cache, scroll);
     let transcript_widget = Paragraph::new(Text::from(cache.lines[line_start..].to_vec()))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(COLOR_MUTED))
-                .title(Span::styled(
-                    transcript_title,
-                    Style::default().fg(COLOR_BRAND),
-                )),
-        )
         .style(Style::default().fg(COLOR_TEXT))
         .wrap(Wrap { trim: false });
     frame.render_widget(
@@ -3530,8 +3516,7 @@ fn draw_chat_screen(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(COLOR_MUTED))
-                    .title(Span::styled("Composer", Style::default().fg(COLOR_BRAND))),
+                    .border_style(Style::default().fg(COLOR_MUTED)),
             )
             .scroll((scroll.min(u16::MAX as usize) as u16, 0)),
         composer_area,
@@ -3649,14 +3634,6 @@ fn rebuild_transcript_cache(view: &mut ChatView, width: u16) {
         lines.extend(entry_lines);
     }
 
-    if view.transcript.is_empty() {
-        lines = vec![Line::styled(
-            "No messages yet",
-            Style::default().fg(COLOR_MUTED),
-        )];
-        line_count = wrapped_line_count(&lines, width);
-    }
-
     view.transcript_cache = Some(TranscriptCache {
         width,
         entries,
@@ -3669,12 +3646,12 @@ fn rebuild_transcript_cache(view: &mut ChatView, width: u16) {
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
     Paragraph::new(Text::from(lines.to_vec()))
         .wrap(Wrap { trim: false })
-        .line_count(width.saturating_sub(2))
+        .line_count(width)
 }
 
 fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line<'static>> {
     match entry {
-        TranscriptEntry::User(text) => user_transcript_lines(text, width.saturating_sub(2)),
+        TranscriptEntry::User(text) => user_transcript_lines(text, width),
         TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
         TranscriptEntry::Thinking(text) => thinking_transcript_lines(text),
         TranscriptEntry::Progress(text) => vec![Line::from(vec![
@@ -3712,8 +3689,7 @@ fn user_transcript_lines(text: &str, inner_width: u16) -> Vec<Line<'static>> {
     }
     let style = Style::default().fg(COLOR_TEXT).bg(COLOR_USER_BUBBLE);
     let padding_line = Line::styled(" ".repeat(width), style);
-    let mut lines = Vec::with_capacity(content_lines.len().saturating_add(4));
-    lines.push(padding_line.clone());
+    let mut lines = Vec::with_capacity(content_lines.len().saturating_add(2));
     lines.push(padding_line.clone());
     for line in content_lines {
         let padding = content_width.saturating_sub(UnicodeWidthStr::width(line.as_str()));
@@ -3727,7 +3703,6 @@ fn user_transcript_lines(text: &str, inner_width: u16) -> Vec<Line<'static>> {
             style,
         ));
     }
-    lines.push(padding_line.clone());
     lines.push(padding_line);
     lines
 }
@@ -4736,8 +4711,10 @@ mod tests {
         terminal
             .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
             .expect("draw chat");
-        assert!(terminal_contains(&terminal, "provider-a/model-a"));
-        assert!(terminal_contains(&terminal, "effort:high"));
+        assert!(terminal_contains(
+            &terminal,
+            "provider-a/model-a high | auto"
+        ));
         assert!(terminal_contains(&terminal, "Ctrl-R sessions"));
     }
 
@@ -4863,7 +4840,7 @@ mod tests {
     #[test]
     fn user_message_fills_width_with_vertical_padding() {
         let lines = user_transcript_lines("hello", 20);
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 3);
         assert!(lines.iter().all(|line| line.width() == 20));
         assert!(
             lines
@@ -4871,10 +4848,8 @@ mod tests {
                 .all(|line| line.style.bg == Some(COLOR_USER_BUBBLE))
         );
         assert_eq!(lines[0].to_string(), " ".repeat(20));
-        assert_eq!(lines[1].to_string(), " ".repeat(20));
-        assert_eq!(lines[3].to_string(), " ".repeat(20));
-        assert_eq!(lines[4].to_string(), " ".repeat(20));
-        assert!(lines[2].to_string().contains("hello"));
+        assert!(lines[1].to_string().contains("hello"));
+        assert_eq!(lines[2].to_string(), " ".repeat(20));
     }
 
     #[test]
@@ -4886,6 +4861,18 @@ mod tests {
             .draw(|frame| draw_app(frame, &mut app))
             .expect("draw canvas");
         assert_eq!(terminal.backend().buffer().content()[0].bg, COLOR_CANVAS);
+    }
+
+    #[test]
+    fn empty_transcript_has_no_frame_or_placeholder() {
+        let mut view = ChatView::default();
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
+            .expect("draw empty transcript");
+        assert!(!terminal_contains(&terminal, "Transcript"));
+        assert!(!terminal_contains(&terminal, "No messages yet"));
     }
 
     #[test]
@@ -5111,7 +5098,6 @@ mod tests {
             .expect("draw composer");
         assert!(terminal_contains(&terminal, "first line"));
         assert!(terminal_contains(&terminal, "second line"));
-        assert!(terminal_contains(&terminal, "Composer"));
-        assert!(!terminal_contains(&terminal, "Ctrl-Enter newline"));
+        assert!(!terminal_contains(&terminal, "Composer"));
     }
 }

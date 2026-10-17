@@ -454,23 +454,25 @@ state after submission. A new chat is an in-memory draft until its first
 non-empty message is submitted; only then does the front call `session.create`
 and persist a session.
 
-The chat screen keeps the effective provider/model route and permission mode
-visible. `Ctrl-L` selects a configured provider/model, `Shift-Tab` cycles the
-model's configured reasoning effort, and `Ctrl-T` opens the effort picker.
-`/model`, `/effort`, and `/thinking` provide the same controls. Route
+The chat screen keeps the effective provider/model route, reasoning effort, and
+permission mode visible as `provider/model effort | mode`. `Ctrl-L` selects a
+configured provider/model, `Shift-Tab` cycles the model's configured reasoning
+effort, and `Ctrl-T` opens the effort picker. `/model`, `/effort`, and
+`/thinking` provide the same controls. Route
 changes apply to the next model step and are durable, so resuming a session
 restores the effective provider, model, and reasoning effort. Selecting a model
 also persists it as the provider instance's default model and default provider
 selection, so new sessions start from the same route. Thinking content is
 rendered separately from assistant text without role prefixes, and assistant
 Markdown supports GFM tables. User messages are rendered as full-width
-dark-gray bands with two rows of padding above and below on a near-black blue
-canvas. Messages and slash commands share one multiline composer with visible
-command and argument completions. `Enter` sends, `Ctrl-Enter` inserts a
-newline, and cursor editing supports arrows, `Home`, `End`, `Backspace`, and
-`Delete`. `Ctrl-R` opens a session manager that projects the first user message
-as a list preview, switches sessions entirely through keyboard UI, and deletes
-idle sessions after confirmation. Deletion is rejected while a session turn is
+dark-gray bands with one row of padding above and below on a near-black blue
+canvas. The transcript has no frame, title, or empty-state placeholder.
+Messages and slash commands share one multiline composer with visible command
+and argument completions. `Enter` sends, `Ctrl-Enter` inserts a newline, and
+cursor editing supports arrows, `Home`, `End`, `Backspace`, and `Delete`.
+`Ctrl-R` opens a session manager that projects the first user message as a list
+preview, switches sessions entirely through keyboard UI, and deletes idle
+sessions after confirmation. Deletion is rejected while a session turn is
 running.
 
 ### D26: Credential storage

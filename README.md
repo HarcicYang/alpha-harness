@@ -52,18 +52,18 @@ returned to the TUI. A session is created only when the first non-empty message
 is sent, so opening the TUI or starting a new draft does not create an empty
 stored session.
 
-The chat header always shows the effective provider, model, reasoning effort,
-and permission mode. `Ctrl-L` opens the model picker, `Shift-Tab` cycles
-reasoning effort, and `Ctrl-T` opens the effort picker. The equivalent commands
+The chat header shows `provider/model effort | mode`. `Ctrl-L` opens the model
+picker, `Shift-Tab` cycles reasoning effort, and `Ctrl-T` opens the effort
+picker. The equivalent commands
 are `/model`, `/thinking`, and `/effort`. Route changes are recorded in the
 session log and restored when the session is resumed. Model selection also
 becomes the persisted default for new sessions, and model pickers prefer the
 provider's live `/models` catalog over bundled fallback metadata.
 
 The transcript renders assistant text and reasoning without role prefixes. User
-messages use a full-width dark-gray band with two rows of vertical padding,
-and the full terminal canvas uses a near-black blue background for consistent
-contrast.
+messages use a full-width dark-gray band with one row of vertical padding.
+The transcript has no frame or title, and the full terminal canvas uses a
+near-black blue background for consistent contrast.
 
 Messages and slash commands share one multiline composer. `Enter` sends,
 `Ctrl-Enter` inserts a line break, and `Tab` accepts the visible command or
