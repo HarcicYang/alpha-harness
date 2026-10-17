@@ -50,9 +50,9 @@ credential entry, validation, schema-guided JSON configuration editing, and
 refresh. Secrets are written to the platform keyring by the core and are never
 returned to the TUI.
 
-The chat header always shows the effective provider, model, thinking level, and
-permission mode. `Ctrl-L` opens the model picker, `Shift-Tab` cycles thinking
-levels, and `Ctrl-T` opens the thinking-level picker. The equivalent commands
+The chat header always shows the effective provider, model, reasoning effort,
+and permission mode. `Ctrl-L` opens the model picker, `Shift-Tab` cycles
+reasoning effort, and `Ctrl-T` opens the effort picker. The equivalent commands
 are `/model`, `/thinking`, and `/effort`. Route changes are recorded in the
 session log and restored when the session is resumed. Model selection also
 becomes the persisted default for new sessions, and model pickers prefer the

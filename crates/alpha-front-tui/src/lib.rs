@@ -656,7 +656,7 @@ impl ChatView {
         self.model = model;
         self.reasoning = reasoning;
         self.status = Some(format!(
-            "route: {}/{}  think:{}",
+            "route: {}/{}  effort:{}",
             self.provider, self.model, self.reasoning
         ));
         Ok(())
@@ -884,7 +884,7 @@ impl ChatView {
                     self.reasoning = reasoning;
                 }
                 self.status = Some(format!(
-                    "route: {}/{}  think:{}",
+                    "route: {}/{}  effort:{}",
                     self.provider, self.model, self.reasoning
                 ));
             }
@@ -3000,7 +3000,7 @@ fn execute_command(
                 .unwrap_or(app.chat.reasoning);
             if parts.next().is_some() {
                 return Err(TuiError::Protocol(
-                    "usage: /model <model> [thinking-level]".to_owned(),
+                    "usage: /model <model> [effort]".to_owned(),
                 ));
             }
             app.providers.refresh(supervisor)?;
@@ -3038,7 +3038,7 @@ fn execute_command(
             let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
             if !levels.contains(&level) {
                 return Err(TuiError::Protocol(format!(
-                    "thinking level `{level}` is not available for this model"
+                    "reasoning effort `{level}` is not available for this model"
                 )));
             }
             app.chat.set_route(
@@ -3279,7 +3279,7 @@ fn open_thinking_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Resul
     let choices = model_choices(&app.providers);
     let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
     if levels.len() <= 1 {
-        app.chat.status = Some("current model has no thinking-level controls".to_owned());
+        app.chat.status = Some("current model has no reasoning-effort controls".to_owned());
         return Ok(());
     }
     let selected = levels
@@ -3340,7 +3340,7 @@ fn cycle_thinking_level(app: &mut App, supervisor: &mut CoreSupervisor) -> Resul
     let choices = model_choices(&app.providers);
     let levels = supported_reasoning_levels(&choices, &app.chat.provider, &app.chat.model);
     if levels.len() <= 1 {
-        app.chat.status = Some("current model has no thinking-level controls".to_owned());
+        app.chat.status = Some("current model has no reasoning-effort controls".to_owned());
         return Ok(());
     }
     let current = levels
@@ -3448,7 +3448,7 @@ fn draw_chat_screen(
                 format!("{provider}/{model}"),
                 Style::default().fg(COLOR_TEXT),
             ),
-            Span::styled("  think:", Style::default().fg(COLOR_MUTED)),
+            Span::styled("  effort:", Style::default().fg(COLOR_MUTED)),
             Span::styled(
                 view.reasoning.to_string(),
                 Style::default().fg(COLOR_SUCCESS),
@@ -3692,7 +3692,7 @@ fn thinking_transcript_lines(text: &str) -> Vec<Line<'static>> {
         .add_modifier(Modifier::ITALIC);
     let mut lines = Vec::new();
     for (index, part) in text.lines().enumerate() {
-        let prefix = if index == 0 { "think: " } else { "       " };
+        let prefix = if index == 0 { "effort: " } else { "        " };
         lines.push(Line::from(vec![
             Span::styled(
                 prefix,
@@ -3704,7 +3704,7 @@ fn thinking_transcript_lines(text: &str) -> Vec<Line<'static>> {
         ]));
     }
     if lines.is_empty() {
-        lines.push(Line::styled("think:", Style::default().fg(COLOR_BRAND)));
+        lines.push(Line::styled("effort:", Style::default().fg(COLOR_BRAND)));
     }
     lines
 }
@@ -3846,7 +3846,7 @@ fn draw_model_picker(frame: &mut ratatui::Frame<'_>, picker: &ModelPicker, chat:
                 ),
                 Span::styled(choice.model_name.clone(), model_style),
                 Span::styled(
-                    format!("  {}  think:{}", choice.model, levels),
+                    format!("  {}  effort:{}", choice.model, levels),
                     Style::default().fg(COLOR_MUTED),
                 ),
             ]))
@@ -3943,7 +3943,7 @@ fn draw_thinking_picker(frame: &mut ratatui::Frame<'_>, picker: &ThinkingPicker)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(COLOR_MUTED))
                 .title(Span::styled(
-                    "Thinking level",
+                    "Reasoning effort",
                     Style::default().fg(COLOR_BRAND),
                 )),
         ),
@@ -3977,8 +3977,8 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from(""),
         Line::from("/provider [ID]   open provider manager or select provider"),
         Line::from("/model [MODEL] [LEVEL]  open the picker or switch the route"),
-        Line::from("/thinking LEVEL  set auto, off, minimal, low, medium, high, xhigh, or max"),
-        Line::from("/effort LEVEL    alias for /thinking"),
+        Line::from("/effort LEVEL    set auto, off, minimal, low, medium, high, xhigh, or max"),
+        Line::from("/thinking LEVEL  alias for /effort"),
         Line::from("/mode MODE       set read, auto, reviewed, or free"),
         Line::from("/confirm         run pending steers"),
         Line::from("/discard         discard pending steers"),
@@ -3991,10 +3991,10 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("/quit            exit"),
         Line::from(""),
         Line::from("Ctrl-L           open model picker"),
-        Line::from("Ctrl-T           open thinking picker"),
+        Line::from("Ctrl-T           open effort picker"),
         Line::from("Ctrl-R           open session manager"),
         Line::from("Ctrl-Enter       insert newline"),
-        Line::from("Shift-Tab        cycle thinking level"),
+        Line::from("Shift-Tab        cycle reasoning effort"),
         Line::from("Wheel/PgUp/PgDn  scroll transcript"),
         Line::from(""),
         Line::from("Esc deny/cancel   Ctrl-P providers   Ctrl-C quit"),
@@ -4663,8 +4663,23 @@ mod tests {
             .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
             .expect("draw chat");
         assert!(terminal_contains(&terminal, "provider-a/model-a"));
-        assert!(terminal_contains(&terminal, "think:high"));
+        assert!(terminal_contains(&terminal, "effort:high"));
         assert!(terminal_contains(&terminal, "Ctrl-R sessions"));
+    }
+
+    #[test]
+    fn reasoning_transcript_uses_the_effort_label() {
+        let lines = thinking_transcript_lines("plan\ndetail");
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, vec!["effort: plan", "        detail"]);
     }
 
     #[test]

@@ -454,10 +454,10 @@ state after submission.
 
 The chat screen keeps the effective provider/model route and permission mode
 visible. `Ctrl-L` selects a configured provider/model, `Shift-Tab` cycles the
-model's configured thinking levels, and `Ctrl-T` opens the thinking-level
-picker. `/model`, `/thinking`, and `/effort` provide the same controls. Route
+model's configured reasoning effort, and `Ctrl-T` opens the effort picker.
+`/model`, `/effort`, and `/thinking` provide the same controls. Route
 changes apply to the next model step and are durable, so resuming a session
-restores the effective provider, model, and thinking level. Selecting a model
+restores the effective provider, model, and reasoning effort. Selecting a model
 also persists it as the provider instance's default model and default provider
 selection, so new sessions start from the same route. Thinking content is
 rendered separately from assistant text, and assistant Markdown supports GFM
