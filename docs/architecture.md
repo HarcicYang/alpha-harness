@@ -467,6 +467,9 @@ rendered separately from assistant text without role prefixes, and assistant
 Markdown supports GFM tables. User messages are rendered as full-width
 dark-gray bands with one row of padding above and below on a near-black blue
 canvas. The transcript has no frame, title, or empty-state placeholder.
+Dragging over transcript text highlights the current selection and uses OSC 52
+to copy it to the terminal host clipboard on release, after which the selection
+is cleared.
 Messages and slash commands share one multiline composer with visible command
 and argument completions. `Enter` sends, `Ctrl-Enter` inserts a newline, and
 cursor editing supports arrows, `Home`, `End`, `Backspace`, and `Delete`.

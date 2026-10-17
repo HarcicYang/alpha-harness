@@ -14,9 +14,10 @@ use alpha_provider_api::{
     ModelDescriptor, ProviderDescriptor, ProviderInstance, ReasoningLevel, effective_models,
 };
 use alpha_schema::PermissionMode;
+use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -27,7 +28,8 @@ use crossterm::terminal::{
 use pulldown_cmark::{Event as MarkdownEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -38,6 +40,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const COLOR_CANVAS: Color = Color::Rgb(9, 12, 18);
 const COLOR_USER_BUBBLE: Color = Color::Rgb(43, 48, 59);
+const COLOR_SELECTION: Color = Color::Rgb(62, 86, 116);
 const COLOR_BRAND: Color = Color::Rgb(90, 221, 225);
 const COLOR_ACCENT: Color = Color::Rgb(97, 192, 224);
 const COLOR_BRIGHT: Color = Color::Rgb(184, 255, 254);
@@ -204,6 +207,10 @@ pub struct ChatView {
     transcript_cache_dirty: bool,
     /// Cached rendered transcript for the current width.
     transcript_cache: Option<TranscriptCache>,
+    /// Current mouse text selection.
+    selection: Option<TextSelection>,
+    /// Rendered transcript rows used for text selection.
+    transcript_surface: TranscriptSurface,
 }
 
 /// Multiline composer with a character-boundary cursor.
@@ -211,6 +218,18 @@ pub struct ChatView {
 pub struct Composer {
     text: String,
     cursor: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TextSelection {
+    anchor: Position,
+    cursor: Position,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TranscriptSurface {
+    area: Rect,
+    rows: Vec<String>,
 }
 
 impl Composer {
@@ -352,6 +371,85 @@ impl Composer {
             .find('\n')
             .map_or(self.text.len(), |index| self.cursor + index)
     }
+}
+
+impl TranscriptSurface {
+    fn contains(&self, position: Position) -> bool {
+        self.area.contains(position)
+    }
+
+    fn clamp(&self, position: Position) -> Position {
+        if self.area.is_empty() {
+            return position;
+        }
+        Position::new(
+            position
+                .x
+                .clamp(self.area.x, self.area.right().saturating_sub(1)),
+            position
+                .y
+                .clamp(self.area.y, self.area.bottom().saturating_sub(1)),
+        )
+    }
+
+    fn selected_text(&self, selection: TextSelection) -> String {
+        if self.area.is_empty() || self.rows.is_empty() {
+            return String::new();
+        }
+        let (start, end) = normalized_selection(selection);
+        let start = self.clamp(start);
+        let end = self.clamp(end);
+        let mut lines = Vec::new();
+        for row in start.y..=end.y {
+            let Some(text) = self.rows.get(usize::from(row.saturating_sub(self.area.y))) else {
+                continue;
+            };
+            let row_start = if row == start.y {
+                usize::from(start.x.saturating_sub(self.area.x))
+            } else {
+                0
+            };
+            let row_end = if row == end.y {
+                usize::from(end.x.saturating_sub(self.area.x)).saturating_add(1)
+            } else {
+                usize::from(self.area.width)
+            };
+            lines.push(slice_display_columns(text, row_start, row_end));
+        }
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+}
+
+fn normalized_selection(selection: TextSelection) -> (Position, Position) {
+    if (selection.anchor.y, selection.anchor.x) <= (selection.cursor.y, selection.cursor.x) {
+        (selection.anchor, selection.cursor)
+    } else {
+        (selection.cursor, selection.anchor)
+    }
+}
+
+fn slice_display_columns(text: &str, start: usize, end: usize) -> String {
+    if end <= start {
+        return String::new();
+    }
+    let mut column = 0usize;
+    let mut selected = String::new();
+    for character in text.chars() {
+        if column >= end {
+            break;
+        }
+        let width = UnicodeWidthChar::width(character)
+            .unwrap_or_default()
+            .max(1);
+        if column.saturating_add(width) > start {
+            selected.push(character);
+        }
+        column = column.saturating_add(width);
+    }
+    selected
 }
 
 fn char_column_offset(text: &str, start: usize, end: usize, column: usize) -> usize {
@@ -562,6 +660,8 @@ impl ChatView {
         self.interaction = None;
         self.tool_names.clear();
         self.pending_provider_tools = None;
+        self.selection = None;
+        self.transcript_surface = TranscriptSurface::default();
         self.transcript_scroll_back = 0;
         self.reset_completion();
         self.status = Some("new session".to_owned());
@@ -607,6 +707,8 @@ impl ChatView {
         self.running_turn = None;
         self.tool_names.clear();
         self.pending_provider_tools = None;
+        self.selection = None;
+        self.transcript_surface = TranscriptSurface::default();
         self.transcript_scroll_back = 0;
         self.reset_completion();
         supervisor
@@ -2435,7 +2537,7 @@ fn run_loop(
                 }
                 Event::Resize(_, _) => redraw = true,
                 Event::Mouse(mouse) => {
-                    handle_mouse_event(app, mouse.kind);
+                    handle_mouse_event(app, mouse)?;
                     redraw = true;
                 }
                 _ => {}
@@ -2933,7 +3035,7 @@ fn completion_token(text: &str, cursor: usize) -> (usize, usize) {
     (start, end)
 }
 
-fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
+fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Result<(), TuiError> {
     if app.screen != Screen::Chat
         || app.help
         || app.session_picker.is_some()
@@ -2941,13 +3043,45 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
         || app.thinking_picker.is_some()
         || app.chat.interaction.is_some()
     {
-        return;
+        return Ok(());
     }
-    match kind {
-        MouseEventKind::ScrollUp => app.chat.scroll_transcript_up(3),
-        MouseEventKind::ScrollDown => app.chat.scroll_transcript_down(3),
+    let position = Position::new(mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left)
+            if app.chat.transcript_surface.contains(position) =>
+        {
+            let position = app.chat.transcript_surface.clamp(position);
+            app.chat.selection = Some(TextSelection {
+                anchor: position,
+                cursor: position,
+            });
+        }
+        MouseEventKind::Down(MouseButton::Left) => app.chat.selection = None,
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(selection) = &mut app.chat.selection {
+                selection.cursor = app.chat.transcript_surface.clamp(position);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if let Some(selection) = app.chat.selection.take() {
+                let text = app.chat.transcript_surface.selected_text(selection);
+                if !text.is_empty() {
+                    execute!(io::stdout(), CopyToClipboard::to_clipboard_from(text))?;
+                    app.chat.status = Some("copied selection".to_owned());
+                }
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            app.chat.selection = None;
+            app.chat.scroll_transcript_up(3);
+        }
+        MouseEventKind::ScrollDown => {
+            app.chat.selection = None;
+            app.chat.scroll_transcript_down(3);
+        }
         _ => {}
     }
+    Ok(())
 }
 
 fn execute_command(
@@ -3502,6 +3636,10 @@ fn draw_chat_screen(
         transcript_widget.scroll((entry_scroll.min(u16::MAX as usize) as u16, 0)),
         layout[1],
     );
+    view.transcript_surface = capture_transcript_surface(frame.buffer_mut(), layout[1]);
+    if let Some(selection) = view.selection {
+        render_transcript_selection(frame, &view.transcript_surface, selection);
+    }
     if !completions.is_empty() {
         draw_command_completions(frame, layout[2], completions, view.completion_selected);
     }
@@ -3551,6 +3689,51 @@ fn draw_chat_screen(
         }),
         layout[4],
     );
+}
+
+fn capture_transcript_surface(buffer: &Buffer, area: Rect) -> TranscriptSurface {
+    let mut rows = Vec::with_capacity(usize::from(area.height));
+    for y in area.y..area.bottom() {
+        let mut row = String::new();
+        let mut x = area.x;
+        while x < area.right() {
+            let symbol = buffer[(x, y)].symbol();
+            let width = UnicodeWidthStr::width(symbol).max(1);
+            row.push_str(symbol);
+            x = x.saturating_add(u16::try_from(width).unwrap_or(1));
+        }
+        rows.push(row.trim_end_matches(' ').to_owned());
+    }
+    TranscriptSurface { area, rows }
+}
+
+fn render_transcript_selection(
+    frame: &mut ratatui::Frame<'_>,
+    surface: &TranscriptSurface,
+    selection: TextSelection,
+) {
+    if surface.area.is_empty() {
+        return;
+    }
+    let (start, end) = normalized_selection(selection);
+    let start = surface.clamp(start);
+    let end = surface.clamp(end);
+    let buffer = frame.buffer_mut();
+    for y in start.y..=end.y {
+        let left = if y == start.y {
+            start.x
+        } else {
+            surface.area.x
+        };
+        let right = if y == end.y {
+            end.x
+        } else {
+            surface.area.right().saturating_sub(1)
+        };
+        for x in left..=right {
+            buffer[(x, y)].set_bg(COLOR_SELECTION);
+        }
+    }
 }
 
 fn short_session_id(session: &str) -> &str {
@@ -4850,6 +5033,36 @@ mod tests {
         assert_eq!(lines[0].to_string(), " ".repeat(20));
         assert!(lines[1].to_string().contains("hello"));
         assert_eq!(lines[2].to_string(), " ".repeat(20));
+    }
+
+    #[test]
+    fn transcript_surface_reconstructs_wide_characters() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 1));
+        buffer.set_string(0, 0, "你 好", Style::default());
+        let surface = capture_transcript_surface(&buffer, Rect::new(0, 0, 12, 1));
+        assert_eq!(surface.rows, vec!["你 好"]);
+    }
+
+    #[test]
+    fn selection_extracts_multiline_text_and_wide_characters() {
+        let surface = TranscriptSurface {
+            area: Rect::new(2, 3, 10, 3),
+            rows: vec!["alpha".to_owned(), "你 好".to_owned(), "omega".to_owned()],
+        };
+        assert_eq!(
+            surface.selected_text(TextSelection {
+                anchor: Position::new(2, 3),
+                cursor: Position::new(5, 4),
+            }),
+            "alpha\n你 好"
+        );
+        assert_eq!(
+            surface.selected_text(TextSelection {
+                anchor: Position::new(3, 4),
+                cursor: Position::new(2, 4),
+            }),
+            "你"
+        );
     }
 
     #[test]

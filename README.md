@@ -63,7 +63,9 @@ provider's live `/models` catalog over bundled fallback metadata.
 The transcript renders assistant text and reasoning without role prefixes. User
 messages use a full-width dark-gray band with one row of vertical padding.
 The transcript has no frame or title, and the full terminal canvas uses a
-near-black blue background for consistent contrast.
+near-black blue background for consistent contrast. Dragging over transcript
+text highlights the selection, copies it to the terminal host clipboard when
+released, and clears the selection.
 
 Messages and slash commands share one multiline composer. `Enter` sends,
 `Ctrl-Enter` inserts a line break, and `Tab` accepts the visible command or
