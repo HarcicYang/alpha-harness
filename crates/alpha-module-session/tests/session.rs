@@ -337,3 +337,54 @@ fn list_returns_headers_newest_first() {
     assert_eq!(headers[0].id, newer.id);
     assert_eq!(headers[1].id, older.id);
 }
+
+#[test]
+fn list_entries_includes_the_first_user_message() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let id = header.id;
+
+    {
+        let writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: "inspect this repository".to_owned(),
+            })
+            .expect("append first user message");
+        writer
+            .append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: "second message".to_owned(),
+            })
+            .expect("append second user message");
+    }
+
+    let entries = store.list_entries().expect("list entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].header.id, id);
+    assert_eq!(
+        entries[0].first_message.as_deref(),
+        Some("inspect this repository")
+    );
+}
+
+#[test]
+fn delete_rejects_active_writers_and_removes_idle_sessions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let id = header.id;
+    let writer = store.create(header).expect("create");
+
+    assert!(matches!(
+        store.delete(id),
+        Err(SessionError::WriterBusy { .. })
+    ));
+    drop(writer);
+
+    store.delete(id).expect("delete");
+    assert!(!store.session_dir(id).exists());
+    assert!(matches!(store.delete(id), Err(SessionError::NotFound(_))));
+}

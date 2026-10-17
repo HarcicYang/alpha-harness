@@ -27,7 +27,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState as RatatuiListState, Paragraph, Wrap,
+};
 use serde_json::{Value, json};
 
 const COLOR_BRAND: Color = Color::Rgb(90, 221, 225);
@@ -1531,8 +1533,76 @@ struct App {
 }
 
 struct SessionPicker {
-    sessions: Vec<Value>,
+    sessions: Vec<SessionEntry>,
     selected: usize,
+    confirm_delete: Option<SessionEntry>,
+    status: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SessionEntry {
+    id: String,
+    mode: String,
+    workspace: String,
+    provider: String,
+    model: String,
+    first_message: Option<String>,
+}
+
+impl SessionEntry {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            id: value.get("id")?.as_str()?.to_owned(),
+            mode: value
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_owned(),
+            workspace: value
+                .get("workspace")
+                .and_then(|workspace| workspace.get("root"))
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_owned(),
+            provider: value
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned(),
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("unset")
+                .to_owned(),
+            first_message: value
+                .get("firstMessage")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+}
+
+fn load_sessions(supervisor: &mut CoreSupervisor) -> Result<Vec<SessionEntry>, TuiError> {
+    let sessions = supervisor
+        .request("session.list", None)
+        .map_err(|error| TuiError::Protocol(error.to_string()))?;
+    Ok(sessions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(SessionEntry::from_value)
+        .collect())
+}
+
+fn open_session_picker(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    let sessions = load_sessions(supervisor)?;
+    app.session_picker = Some(SessionPicker {
+        sessions,
+        selected: 0,
+        confirm_delete: None,
+        status: None,
+    });
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -2196,6 +2266,11 @@ fn handle_chat_key(
                 app.providers.status = Some(error.to_string());
             }
         }
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Err(error) = open_session_picker(app, supervisor) {
+                app.chat.status = Some(error.to_string());
+            }
+        }
         KeyCode::Enter => {
             if let Err(error) = app.chat.submit(supervisor) {
                 app.chat.status = Some(error.to_string());
@@ -2397,14 +2472,7 @@ fn execute_palette_command(
             app.screen = Screen::Chat;
         }
         "sessions" => {
-            let sessions = supervisor
-                .request("session.list", None)
-                .map_err(|error| TuiError::Protocol(error.to_string()))?;
-            let sessions = sessions.as_array().cloned().unwrap_or_default();
-            app.session_picker = Some(SessionPicker {
-                sessions,
-                selected: 0,
-            });
+            open_session_picker(app, supervisor)?;
         }
         "diagnostics" => {
             let info = supervisor.info();
@@ -2429,26 +2497,85 @@ fn handle_session_picker_key(
     let Some(picker) = &mut app.session_picker else {
         return Ok(());
     };
+    if picker.confirm_delete.is_some() {
+        match code {
+            KeyCode::Char('y') => {
+                let Some(session) = picker.confirm_delete.take() else {
+                    return Ok(());
+                };
+                if let Err(error) = delete_session(app, supervisor, &session.id) {
+                    if let Some(picker) = &mut app.session_picker {
+                        picker.status = Some(error.to_string());
+                    }
+                } else {
+                    let sessions = load_sessions(supervisor)?;
+                    if let Some(picker) = &mut app.session_picker {
+                        picker.sessions = sessions;
+                        picker.selected =
+                            picker.selected.min(picker.sessions.len().saturating_sub(1));
+                        picker.status = Some(format!("deleted {}", short_session_id(&session.id)));
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => picker.confirm_delete = None,
+            _ => {}
+        }
+        return Ok(());
+    }
     match code {
         KeyCode::Esc => app.session_picker = None,
-        KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
-        KeyCode::Down => {
+        KeyCode::Up | KeyCode::Char('k') => {
+            picker.selected = picker.selected.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
             picker.selected = picker
                 .selected
                 .saturating_add(1)
                 .min(picker.sessions.len().saturating_sub(1));
         }
+        KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(10),
+        KeyCode::PageDown => {
+            picker.selected = picker
+                .selected
+                .saturating_add(10)
+                .min(picker.sessions.len().saturating_sub(1));
+        }
         KeyCode::Enter => {
             let selected = picker.sessions.get(picker.selected).cloned();
             if let Some(session) = selected {
-                if let Some(id) = session.get("id").and_then(Value::as_str) {
-                    app.chat.resume_session(supervisor, id)?;
-                    app.screen = Screen::Chat;
-                }
+                app.chat.resume_session(supervisor, &session.id)?;
+                app.screen = Screen::Chat;
             }
             app.session_picker = None;
         }
+        KeyCode::Char('n') => {
+            app.chat.new_session(supervisor)?;
+            app.screen = Screen::Chat;
+            app.session_picker = None;
+        }
+        KeyCode::Char('d') => {
+            picker.confirm_delete = picker.sessions.get(picker.selected).cloned();
+        }
+        KeyCode::Char('r') => {
+            picker.status = None;
+            picker.sessions = load_sessions(supervisor)?;
+            picker.selected = picker.selected.min(picker.sessions.len().saturating_sub(1));
+        }
         _ => {}
+    }
+    Ok(())
+}
+
+fn delete_session(
+    app: &mut App,
+    supervisor: &mut CoreSupervisor,
+    session_id: &str,
+) -> Result<(), TuiError> {
+    supervisor
+        .request("session.delete", Some(json!({ "sessionId": session_id })))
+        .map_err(|error| TuiError::Protocol(error.to_string()))?;
+    if app.chat.session_id.as_deref() == Some(session_id) {
+        app.chat.new_session(supervisor)?;
     }
     Ok(())
 }
@@ -2939,31 +3066,91 @@ fn thinking_transcript_lines(text: &str) -> Vec<Line<'static>> {
 }
 
 fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
-    let area = centered_rect(80, 18, frame.area());
+    let area = centered_rect(90, 22, frame.area());
     frame.render_widget(Clear, area);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(4), Constraint::Length(2)])
+        .split(area);
     let items: Vec<ListItem<'_>> = if picker.sessions.is_empty() {
         vec![ListItem::new("No stored sessions")]
     } else {
         picker
             .sessions
             .iter()
-            .enumerate()
-            .map(|(index, session)| {
-                let marker = if index == picker.selected { ">" } else { " " };
-                let id = session.get("id").and_then(Value::as_str).unwrap_or("?");
-                let workspace = session
-                    .get("workspace")
-                    .and_then(|workspace| workspace.get("root"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
-                ListItem::new(format!("{marker} {id}  {workspace}"))
+            .map(|session| {
+                let route = if session.provider.is_empty() && session.model.is_empty() {
+                    "default".to_owned()
+                } else {
+                    format!("{}/{}", session.provider, session.model)
+                };
+                let preview = session
+                    .first_message
+                    .as_deref()
+                    .map(|text| {
+                        truncate_summary(&text.split_whitespace().collect::<Vec<_>>().join(" "), 96)
+                    })
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| "(empty session)".to_owned());
+                ListItem::new(Text::from(vec![
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{}  ", short_session_id(&session.id)),
+                            Style::default()
+                                .fg(COLOR_BRIGHT)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{}  {}  {}", session.mode, route, session.workspace),
+                            Style::default().fg(COLOR_MUTED),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  ", Style::default().fg(COLOR_MUTED)),
+                        Span::styled(preview, Style::default().fg(COLOR_TEXT)),
+                    ]),
+                ]))
             })
             .collect()
     };
-    frame.render_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title("Sessions")),
-        area,
+    let mut state = RatatuiListState::default().with_selected(Some(picker.selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(
+                Style::default()
+                    .fg(COLOR_BRAND)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLOR_MUTED))
+                    .title(Span::styled(
+                        format!("Sessions ({})", picker.sessions.len()),
+                        Style::default().fg(COLOR_BRAND),
+                    )),
+            ),
+        layout[0],
+        &mut state,
     );
+    let footer = picker
+        .status
+        .as_deref()
+        .unwrap_or("Enter switch   n new   d delete   r refresh   Up/Down move   Esc back");
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(if picker.status.is_some() {
+                Style::default().fg(COLOR_ERROR)
+            } else {
+                Style::default().fg(COLOR_MUTED)
+            })
+            .wrap(Wrap { trim: false }),
+        layout[1],
+    );
+    if let Some(session) = &picker.confirm_delete {
+        draw_session_delete_confirmation(frame, session);
+    }
 }
 
 fn draw_model_picker(frame: &mut ratatui::Frame<'_>, picker: &ModelPicker, chat: &ChatView) {
@@ -3037,6 +3224,35 @@ fn draw_model_picker(frame: &mut ratatui::Frame<'_>, picker: &ModelPicker, chat:
         Paragraph::new("Enter apply   Up/Down move   Esc cancel")
             .style(Style::default().fg(COLOR_MUTED)),
         layout[1],
+    );
+}
+
+fn draw_session_delete_confirmation(frame: &mut ratatui::Frame<'_>, session: &SessionEntry) {
+    let area = centered_rect(62, 8, frame.area());
+    frame.render_widget(Clear, area);
+    let preview = session
+        .first_message
+        .as_deref()
+        .map(|text| truncate_summary(&text.split_whitespace().collect::<Vec<_>>().join(" "), 80))
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "(empty session)".to_owned());
+    let text = Text::from(vec![
+        Line::from(format!("Delete session {}?", short_session_id(&session.id))),
+        Line::from(""),
+        Line::from(preview),
+        Line::from(""),
+        Line::from("y confirm   n cancel"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLOR_ERROR))
+                    .title(Span::styled("Confirm", Style::default().fg(COLOR_ERROR))),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
     );
 }
 
@@ -3909,5 +4125,29 @@ mod tests {
         view.begin_config_edit().expect("begin edit");
         let editor = view.config_editor.expect("editor");
         assert!(editor.text.contains("https://example.test"));
+    }
+
+    #[test]
+    fn session_picker_renders_a_first_message_preview() {
+        let picker = SessionPicker {
+            sessions: vec![SessionEntry {
+                id: "01900000-0000-7000-8000-000000000000".to_owned(),
+                mode: "auto".to_owned(),
+                workspace: "/tmp/workspace".to_owned(),
+                provider: "openai".to_owned(),
+                model: "gpt".to_owned(),
+                first_message: Some("fix the failing parser test".to_owned()),
+            }],
+            selected: 0,
+            confirm_delete: None,
+            status: None,
+        };
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_session_picker(frame, &picker))
+            .expect("draw session picker");
+        assert!(terminal_contains(&terminal, "fix the failing parser test"));
+        assert!(terminal_contains(&terminal, "Enter switch"));
     }
 }

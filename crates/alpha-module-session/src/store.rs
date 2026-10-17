@@ -6,10 +6,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use alpha_schema::{Seq, SessionId};
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::header::{HEADER_SCHEMA, SessionHeader};
 use crate::reader::{SessionReader, read_generation};
+use crate::state::MessageRecord;
 use crate::writer::{self, Lease, SessionWriter};
 
 /// Session lock file name.
@@ -78,6 +80,18 @@ fn holder_suffix(pid: Option<u32>) -> String {
 #[derive(Clone, Debug)]
 pub struct SessionStore {
     root: PathBuf,
+}
+
+/// One session listing enriched with an automatically derived preview.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListEntry {
+    /// Durable session header.
+    #[serde(flatten)]
+    pub header: SessionHeader,
+    /// First user message in the durable log, when one exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<String>,
 }
 
 impl SessionStore {
@@ -209,6 +223,44 @@ impl SessionStore {
             right.created_at.cmp(&left.created_at)
         });
         Ok(headers)
+    }
+
+    /// List sessions with the first user message projected from each log.
+    pub fn list_entries(&self) -> Result<Vec<SessionListEntry>, SessionError> {
+        self.list()?
+            .into_iter()
+            .map(|header| {
+                let first_message = self.open_read(header.id).ok().and_then(|reader| {
+                    reader
+                        .state()
+                        .messages
+                        .into_iter()
+                        .find_map(|message| match message {
+                            MessageRecord::User { text, .. } => Some(text),
+                            _ => None,
+                        })
+                });
+                Ok(SessionListEntry {
+                    header,
+                    first_message,
+                })
+            })
+            .collect()
+    }
+
+    /// Delete one stored session after rejecting active writers.
+    pub fn delete(&self, id: SessionId) -> Result<(), SessionError> {
+        let dir = self.session_dir(id);
+        if !dir.exists() {
+            return Err(SessionError::NotFound(id));
+        }
+        let lease = Lease::acquire(&dir.join(LOCK_FILE))?;
+        if let Err(error) = fs::remove_dir_all(&dir) {
+            drop(lease);
+            return fs::remove_dir_all(&dir).map_err(|_| error.into());
+        }
+        drop(lease);
+        Ok(())
     }
 }
 

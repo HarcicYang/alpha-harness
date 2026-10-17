@@ -229,6 +229,9 @@ enum SessionCommand {
         route: ModelRoute,
         reply: oneshot::Sender<Result<(), AgentHostError>>,
     },
+    Delete {
+        reply: oneshot::Sender<Result<(), AgentHostError>>,
+    },
 }
 
 struct TurnCompletion {
@@ -584,6 +587,22 @@ impl AgentHostService {
         self.actor(session_id)
             .map(|_| ())
             .ok_or(AgentHostError::SessionNotFound(session_id))
+    }
+
+    /// Stop one idle session actor and delete its durable data.
+    pub async fn delete_session(&self, session_id: SessionId) -> Result<(), AgentHostError> {
+        if let Some(actor) = self.actor(session_id) {
+            let (reply, receiver) = oneshot::channel();
+            actor
+                .tx
+                .send(SessionCommand::Delete { reply })
+                .map_err(|_| AgentHostError::ActorStopped(session_id))?;
+            receiver
+                .await
+                .map_err(|_| AgentHostError::ActorStopped(session_id))??;
+        }
+        self.store.delete(session_id)?;
+        Ok(())
     }
 
     fn actor(&self, session_id: SessionId) -> Option<Arc<SessionActor>> {
@@ -953,6 +972,7 @@ async fn actor_loop(
     let (completion_tx, mut completions) = mpsc::unbounded_channel();
     let mut cancel: Option<CancellationToken> = None;
     let mut active_turn: Option<TurnId> = None;
+    let mut delete_reply = None;
     loop {
         tokio::select! {
             command = commands.recv() => {
@@ -1107,6 +1127,14 @@ async fn actor_loop(
                             });
                         let _ = reply.send(result);
                     }
+                    SessionCommand::Delete { reply } => {
+                        if active_turn.is_some() {
+                            let _ = reply.send(Err(AgentHostError::SessionBusy(session_id)));
+                        } else {
+                            delete_reply = Some(reply);
+                            break;
+                        }
+                    }
                 }
             }
             completion = completions.recv() => {
@@ -1149,6 +1177,17 @@ async fn actor_loop(
                 break;
             }
         }
+    }
+    if let Some(reply) = delete_reply {
+        drop(writer);
+        if let Some(actors) = actors.upgrade() {
+            actors
+                .lock()
+                .expect("agent host lock poisoned")
+                .remove(&session_id);
+        }
+        let _ = reply.send(Ok(()));
+        return;
     }
     if let Some(actors) = actors.upgrade() {
         actors

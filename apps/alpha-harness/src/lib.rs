@@ -1166,11 +1166,25 @@ fn build_router_with_transport(
             move |_params: Value| {
                 let store = store.clone();
                 async move {
-                    let headers = store
-                        .list()
+                    let sessions = store
+                        .list_entries()
                         .map_err(|error| RpcError::internal(error.to_string()))?;
-                    serde_json::to_value(headers)
+                    serde_json::to_value(sessions)
                         .map_err(|error| RpcError::internal(error.to_string()))
+                }
+            }
+        })
+        .method("session.delete", {
+            let store = store.clone();
+            move |params: Value| {
+                let store = store.clone();
+                async move {
+                    let params: SessionIdParams = serde_json::from_value(params)
+                        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                    store
+                        .delete(params.session_id)
+                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                    Ok(json!({ "ok": true }))
                 }
             }
         })
@@ -1713,6 +1727,20 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                 let params: SessionIdParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 host.detach(params.session_id)
+                    .map_err(agent_host_rpc_error)?;
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let router = router.method("session.delete", {
+        let host = host.clone();
+        move |params: Value| {
+            let host = host.clone();
+            async move {
+                let params: SessionIdParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+                host.delete_session(params.session_id)
+                    .await
                     .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "ok": true }))
             }

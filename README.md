@@ -58,6 +58,10 @@ session log and restored when the session is resumed. Model selection also
 becomes the persisted default for new sessions, and model pickers prefer the
 provider's live `/models` catalog over bundled fallback metadata.
 
+`Ctrl-R` opens the session manager. It lists stored sessions with an automatic
+preview of the first user message, switches sessions with `Enter`, creates a
+new session with `n`, and deletes an idle session with `d` after confirmation.
+
 ## Prompting and context
 
 - `AGENTS.md` and `.alpha/AGENTS.md` files are discovered from the workspace

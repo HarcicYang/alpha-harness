@@ -160,3 +160,68 @@ fn resume_repairs_interrupted_work_and_reports_state() {
     let reader = store.open_read(id).expect("open read");
     assert_eq!(reader.events().len(), 4);
 }
+
+#[test]
+fn session_list_includes_first_message_preview() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = SessionHeader::new(
+        SessionId::new(),
+        PermissionMode::Auto,
+        WorkspaceRef {
+            root: "/tmp/workspace".to_owned(),
+            cwd: "/tmp/workspace".to_owned(),
+        },
+    );
+    {
+        let writer = store.create(header).expect("create");
+        writer
+            .append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: "fix the first failing test".to_owned(),
+            })
+            .expect("append user message");
+    }
+
+    let mut reader = Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.list\"}\n");
+    let mut output = Vec::new();
+    serve_with(&mut reader, &mut output, store).expect("serve");
+
+    let message = read_message(&mut Cursor::new(output))
+        .expect("read list")
+        .expect("list response");
+    let result = result_of(message);
+    assert_eq!(
+        result[0]["firstMessage"],
+        json!("fix the first failing test")
+    );
+}
+
+#[test]
+fn session_delete_removes_stored_data() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = SessionHeader::new(
+        SessionId::new(),
+        PermissionMode::Auto,
+        WorkspaceRef {
+            root: "/tmp/workspace".to_owned(),
+            cwd: "/tmp/workspace".to_owned(),
+        },
+    );
+    let id = header.id;
+    drop(store.create(header).expect("create"));
+
+    let input = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session.delete\",\"params\":{{\"sessionId\":\"{id}\"}}}}\n"
+    );
+    let mut reader = Cursor::new(input.into_bytes());
+    let mut output = Vec::new();
+    serve_with(&mut reader, &mut output, store.clone()).expect("serve");
+
+    let message = read_message(&mut Cursor::new(output))
+        .expect("read delete")
+        .expect("delete response");
+    assert_eq!(result_of(message), json!({ "ok": true }));
+    assert!(!store.session_dir(id).exists());
+}

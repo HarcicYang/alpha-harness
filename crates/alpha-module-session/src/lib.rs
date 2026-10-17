@@ -20,7 +20,7 @@ pub use event::{SessionEvent, ToolStatus, TurnEndReason};
 pub use header::{HEADER_SCHEMA, SessionHeader, WorkspaceRef};
 pub use reader::{SessionReader, TailDamage};
 pub use state::{CompactionRecord, MessageRecord, SessionState};
-pub use store::{SessionError, SessionStore};
+pub use store::{SessionError, SessionListEntry, SessionStore};
 pub use writer::{SessionEventObserver, SessionWriter};
 
 /// Event payload schema version written by this build.
