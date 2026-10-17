@@ -450,7 +450,9 @@ credential module, validate an instance, edit the opaque provider config as
 schema-guided JSON, refresh provider state, and confirm destructive removal.
 It uses a full-screen alternate terminal and starts and stops its own core
 process. Secrets are never returned by provider reads and never enter front
-state after submission.
+state after submission. A new chat is an in-memory draft until its first
+non-empty message is submitted; only then does the front call `session.create`
+and persist a session.
 
 The chat screen keeps the effective provider/model route and permission mode
 visible. `Ctrl-L` selects a configured provider/model, `Shift-Tab` cycles the

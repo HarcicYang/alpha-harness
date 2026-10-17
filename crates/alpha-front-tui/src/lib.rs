@@ -186,6 +186,8 @@ pub struct ChatView {
     pub reasoning: ReasoningLevel,
     /// Effective permission mode.
     pub mode: PermissionMode,
+    /// Provider-native tools waiting for the next session creation.
+    pending_provider_tools: Option<Vec<String>>,
     /// Tool names keyed by durable call identity.
     tool_names: BTreeMap<String, String>,
     /// Distance from the transcript bottom after manual scrolling.
@@ -498,7 +500,7 @@ impl ChatView {
                 Some(json!({
                     "workspace": workspace,
                     "cwd": workspace,
-                    "mode": "auto",
+                    "mode": self.mode,
                     "provider": self.provider,
                     "model": self.model,
                     "reasoning": self.reasoning,
@@ -534,11 +536,22 @@ impl ChatView {
         {
             self.mode = mode;
         }
+        if let Some(provider_tools) = self.pending_provider_tools.clone() {
+            supervisor
+                .request(
+                    "session.set_capabilities",
+                    Some(json!({
+                        "sessionId": self.session_id,
+                        "providerTools": provider_tools,
+                    })),
+                )
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        }
         self.status = Some("session ready".to_owned());
         Ok(())
     }
 
-    fn new_session(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    fn new_session(&mut self) {
         self.session_id = None;
         self.transcript.clear();
         self.transcript_entry_revisions.clear();
@@ -548,9 +561,10 @@ impl ChatView {
         self.running_turn = None;
         self.interaction = None;
         self.tool_names.clear();
+        self.pending_provider_tools = None;
         self.transcript_scroll_back = 0;
         self.reset_completion();
-        self.ensure_session(supervisor)
+        self.status = Some("new session".to_owned());
     }
 
     fn resume_session(
@@ -592,6 +606,7 @@ impl ChatView {
         self.streaming_thinking = None;
         self.running_turn = None;
         self.tool_names.clear();
+        self.pending_provider_tools = None;
         self.transcript_scroll_back = 0;
         self.reset_completion();
         supervisor
@@ -615,15 +630,14 @@ impl ChatView {
         supervisor: &mut CoreSupervisor,
         mode: PermissionMode,
     ) -> Result<(), TuiError> {
-        let Some(session_id) = &self.session_id else {
-            return Err(TuiError::Protocol("no active session".to_owned()));
-        };
-        supervisor
-            .request(
-                "session.set_mode",
-                Some(json!({ "sessionId": session_id, "mode": mode })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        if let Some(session_id) = &self.session_id {
+            supervisor
+                .request(
+                    "session.set_mode",
+                    Some(json!({ "sessionId": session_id, "mode": mode })),
+                )
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        }
         self.mode = mode;
         self.status = Some(format!("mode: {mode}"));
         Ok(())
@@ -691,18 +705,18 @@ impl ChatView {
         supervisor: &mut CoreSupervisor,
         provider_tools: Vec<String>,
     ) -> Result<(), TuiError> {
-        let Some(session_id) = &self.session_id else {
-            return Err(TuiError::Protocol("no active session".to_owned()));
-        };
-        supervisor
-            .request(
-                "session.set_capabilities",
-                Some(json!({
-                    "sessionId": session_id,
-                    "providerTools": provider_tools,
-                })),
-            )
-            .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        if let Some(session_id) = &self.session_id {
+            supervisor
+                .request(
+                    "session.set_capabilities",
+                    Some(json!({
+                        "sessionId": session_id,
+                        "providerTools": provider_tools,
+                    })),
+                )
+                .map_err(|error| TuiError::Protocol(error.to_string()))?;
+        }
+        self.pending_provider_tools = Some(provider_tools);
         self.status = Some("provider capabilities updated".to_owned());
         Ok(())
     }
@@ -1667,7 +1681,7 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "new",
         usage: "/new",
-        description: "Create a new session",
+        description: "Start a new session draft",
         takes_argument: false,
     },
     CommandSpec {
@@ -2308,12 +2322,13 @@ pub fn run_tui() -> Result<(), TuiError> {
         quit: false,
     };
     app.providers.refresh(&mut supervisor)?;
-    if !app.providers.instances.is_empty() {
+    if app
+        .providers
+        .instances
+        .iter()
+        .any(|instance| !instance.disabled)
+    {
         app.screen = Screen::Chat;
-        if let Err(error) = app.chat.ensure_session(&mut supervisor) {
-            app.chat.status = Some(error.to_string());
-            app.screen = Screen::Providers;
-        }
     }
 
     let mut guard = TerminalGuard::enter()?;
@@ -2506,9 +2521,6 @@ fn handle_provider_key(
     match code {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.screen = Screen::Chat;
-            if let Err(error) = app.chat.ensure_session(supervisor) {
-                app.chat.status = Some(error.to_string());
-            }
         }
         KeyCode::Char('r') => {
             app.providers.status = None;
@@ -3058,7 +3070,7 @@ fn execute_command(
             app.chat.set_capabilities(supervisor, provider_tools)?;
         }
         "new" => {
-            app.chat.new_session(supervisor)?;
+            app.chat.new_session();
             app.screen = Screen::Chat;
         }
         "resume" if !argument.is_empty() => {
@@ -3156,7 +3168,7 @@ fn handle_session_picker_key(
             app.session_picker = None;
         }
         KeyCode::Char('n') => {
-            app.chat.new_session(supervisor)?;
+            app.chat.new_session();
             app.screen = Screen::Chat;
             app.session_picker = None;
         }
@@ -3182,7 +3194,7 @@ fn delete_session(
         .request("session.delete", Some(json!({ "sessionId": session_id })))
         .map_err(|error| TuiError::Protocol(error.to_string()))?;
     if app.chat.session_id.as_deref() == Some(session_id) {
-        app.chat.new_session(supervisor)?;
+        app.chat.new_session();
     }
     Ok(())
 }
@@ -4020,7 +4032,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("/confirm         run pending steers"),
         Line::from("/discard         discard pending steers"),
         Line::from("/capabilities T  set provider tools, for example web_search"),
-        Line::from("/new             create a new session"),
+        Line::from("/new             start a new session draft"),
         Line::from("/resume ID       resume a session"),
         Line::from("/sessions        open the session picker"),
         Line::from("/diagnostics     show core connection details"),
@@ -4668,6 +4680,23 @@ mod tests {
             "event": { "type": "text_delta", "text": "wrong" }
         }));
         assert!(view.transcript.is_empty());
+    }
+
+    #[test]
+    fn new_session_resets_to_an_unpersisted_draft() {
+        let mut view = ChatView {
+            session_id: Some("session-a".to_owned()),
+            transcript: vec![TranscriptEntry::User("hello".to_owned())],
+            running_turn: Some("turn-a".to_owned()),
+            pending_provider_tools: Some(vec!["web_search".to_owned()]),
+            ..ChatView::default()
+        };
+        view.new_session();
+        assert!(view.session_id.is_none());
+        assert!(view.transcript.is_empty());
+        assert!(view.running_turn.is_none());
+        assert!(view.pending_provider_tools.is_none());
+        assert_eq!(view.status.as_deref(), Some("new session"));
     }
 
     #[test]
