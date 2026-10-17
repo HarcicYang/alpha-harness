@@ -98,6 +98,39 @@ impl SessionRuntimeFactory for EchoFactory {
                 },
             )
             .expect("permission module");
+        let model_route = Arc::new(ModelRouteOverride::default());
+        ctx.provide::<ModelRouteOverride>(model_route.clone())
+            .expect("model route override");
+        let provider_tools_override = Arc::new(ProviderToolsOverride::default());
+        provider_tools_override.set(request.provider_tools_override);
+        ctx.provide::<ProviderToolsOverride>(provider_tools_override.clone())
+            .expect("provider tools override");
+        Ok(SessionRuntime {
+            ctx,
+            agent: Arc::new(EchoDriver),
+            provider_tools_override,
+            model_route,
+        })
+    }
+}
+
+struct RouteEchoFactory;
+
+impl SessionRuntimeFactory for RouteEchoFactory {
+    fn build(
+        &self,
+        request: SessionRuntimeRequest,
+    ) -> Result<SessionRuntime, alpha_module_agent_host::AgentHostError> {
+        let ctx = Ctx::root();
+        PermissionModule
+            .activate(
+                &ctx,
+                &PermissionConfig {
+                    mode: request.mode,
+                    ..PermissionConfig::default()
+                },
+            )
+            .expect("permission module");
         let model_route = Arc::new(ModelRouteOverride::new(ModelRoute::new(
             request.provider,
             request.model,
@@ -285,7 +318,7 @@ fn initial_reasoning_survives_actor_eviction() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SessionStore::new(dir.path());
         let transport = Arc::new(RecordingTransport::default());
-        let host = AgentHostService::new(store.clone(), transport, Arc::new(EchoFactory))
+        let host = AgentHostService::new(store.clone(), transport, Arc::new(RouteEchoFactory))
             .with_idle_timeout(Duration::from_millis(20));
         let created = host
             .create_session(CreateSessionRequest {
