@@ -1,12 +1,13 @@
 # alpha-harness
 
-A lightweight, everything-is-a-module coding agent harness. Design decisions
-live in [docs/architecture.md](docs/architecture.md).
+A lightweight coding agent harness built from a small kernel and replaceable
+modules. The design decisions live in
+[docs/architecture.md](docs/architecture.md).
 
 ## Layout
 
 - `apps/alpha-harness`: the `alpha` binary.
-- `crates/`: kernel, protocol, and modules.
+- `crates/`: the kernel, protocol, frontends, and modules.
 
 ## Build
 
@@ -16,81 +17,82 @@ cargo build --release
 
 The workspace requires Rust 1.88 or newer.
 
-## Run one prompt
+## Run a prompt
 
 ```sh
 alpha run --mode free "add a README section"
 ```
 
-- `--mode read|auto|reviewed|free` selects the permission mode (`auto` is the
-  default).
-- `--workspace <path>` selects the workspace root; it defaults to the current
-  directory.
-- `--provider <ID>` selects a configured provider instance; otherwise the
-  configured default is used.
-- `--model <MODEL>` selects a model; otherwise the provider catalog default is
-  used.
-- Provider credentials are stored in the platform keyring and configured from
-  `alpha tui`. Environment credentials are not used.
-- Interactive terminals get approval prompts in `auto` mode. Non-interactive
-  runs fail closed and need `--mode free` or explicit policy rules.
-- Shell commands run inside a bubblewrap sandbox when it is available.
-- Assistant output streams to stdout as the model produces it. Step, tool, and
-  error progress stays on stderr.
+The command accepts these options:
 
-## Terminal interface
+- `--mode read|auto|reviewed|free` sets the permission mode. The default is
+  `auto`.
+- `--workspace <path>` sets the workspace root. Without it, the current
+  directory is used.
+- `--provider <ID>` selects a configured provider instance. Otherwise the
+  configured default is used.
+- `--model <MODEL>` selects a model. Otherwise the provider catalog default is
+  used.
+
+Provider credentials are stored in the platform keyring and configured with
+`alpha tui`. The harness does not read credentials from environment variables.
+
+Interactive terminals show approval prompts in `auto` mode. Non-interactive
+runs fail closed unless you use `--mode free` or add explicit policy rules.
+Shell commands run in a bubblewrap sandbox when one is available.
+
+Assistant output goes to stdout as it arrives. Step, tool, and error progress
+goes to stderr.
+
+## Terminal frontends
 
 ```sh
 alpha chat
-```
-
-The chat profile uses the shared front runtime without the full-screen
-alternate terminal. The full-screen profile is available as:
-
-```sh
 alpha tui
 ```
 
-The terminal profiles start a managed core through the shared front runtime,
-discover provider kinds and persisted provider instances, and expose provider
-creation, removal, default selection, credential entry, validation,
-schema-guided JSON configuration editing, and refresh. Secrets are written to
-the platform keyring by the core and are never returned to the front. A session
-is created only when the first non-empty message is sent, so opening a front or
-starting a new draft does not create an empty stored session.
+Both commands run a managed core through the shared front runtime. `chat`
+stays in the current terminal, while `tui` uses the alternate screen. The
+runtime discovers provider kinds and stored provider instances, and supports
+creating, removing, and validating them, setting the default, entering
+credentials, editing the provider configuration as JSON, and refreshing
+provider state. The core writes secrets to the platform keyring and never
+sends them back to the front.
+
+The front creates a session only after the first non-empty message is sent.
+Opening a front or starting a new draft does not create an empty session.
 
 The chat header shows `provider/model effort | mode`. `Ctrl-L` opens the model
-picker, `Shift-Tab` cycles reasoning effort, and `Ctrl-T` opens the effort
-picker. The equivalent commands
-are `/model`, `/thinking`, and `/effort`. Route changes are recorded in the
-session log and restored when the session is resumed. Model selection also
-becomes the persisted default for new sessions, and model pickers prefer the
-provider's live `/models` catalog over bundled fallback metadata.
+picker, `Shift-Tab` cycles the reasoning effort, and `Ctrl-T` opens the effort
+picker. The same actions are available as `/model`, `/thinking`, and `/effort`.
+Route changes are written to the session log and restored on resume. Selecting
+a model also stores it as the default for new sessions. The model picker uses
+the provider's live `/models` catalog when available and falls back to bundled
+metadata.
 
-The transcript renders assistant text and reasoning without role prefixes. User
-messages use a full-width dark-gray band with one row of vertical padding.
-The transcript has no frame or title, and the full terminal canvas uses a
-near-black blue background for consistent contrast. Dragging over transcript
-text highlights the selection, copies it to the terminal host clipboard when
-released, and clears the selection.
+Assistant text and reasoning are rendered without role prefixes. User messages
+use a full-width dark-gray band with one row of padding above and below. The
+transcript has no frame or title, and the terminal canvas uses a near-black
+blue background. Dragging across transcript text highlights the selection,
+copies it to the terminal host clipboard on release, and clears the selection.
 
 Messages and slash commands share one multiline composer. `Enter` sends,
 `Ctrl-Enter` inserts a line break, and `Tab` accepts the visible command or
-argument completion. Arrow keys, `Home`, `End`, `Backspace`, and `Delete`
-edit text at the current cursor position.
+argument completion. The arrow keys, `Home`, `End`, `Backspace`, and `Delete`
+edit text at the cursor.
 
-`Ctrl-R` opens the session manager. It lists stored sessions with an automatic
-preview of the first user message, switches sessions with `Enter`, creates a
-new session with `n`, and deletes an idle session with `d` after confirmation.
+`Ctrl-R` opens the session manager. It lists stored sessions with a preview of
+the first user message. Press `Enter` to switch sessions, `n` to create one, or
+`d` to delete an idle session after confirmation.
 
 ## Prompting and context
 
-- `AGENTS.md` and `.alpha/AGENTS.md` files are discovered from the workspace
-  root through the fixed cwd and added to the system prompt.
-- The complete prompt is recorded in the session log and replayed on resume.
+- The workspace root and fixed cwd are searched for `AGENTS.md` and
+  `.alpha/AGENTS.md`. Their contents are added to the system prompt.
+- The complete prompt is stored in the session log and replayed on resume.
 - Long histories are compacted into a durable summary before the configured
-  context budget is exhausted. Compaction failures leave the original history
-  untouched.
+  context budget runs out. If compaction fails, the original history is left
+  unchanged.
 
 ## Sessions
 
