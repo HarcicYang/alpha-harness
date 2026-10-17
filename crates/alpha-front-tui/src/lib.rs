@@ -15,11 +15,14 @@ use alpha_provider_api::{
 };
 use alpha_schema::PermissionMode;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use pulldown_cmark::{Event as MarkdownEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::Terminal;
@@ -31,6 +34,7 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState as RatatuiListState, Paragraph, Wrap,
 };
 use serde_json::{Value, json};
+use unicode_width::UnicodeWidthChar;
 
 const COLOR_BRAND: Color = Color::Rgb(90, 221, 225);
 const COLOR_ACCENT: Color = Color::Rgb(97, 192, 224);
@@ -161,7 +165,11 @@ pub struct ChatView {
     /// Index of the in-progress thinking line.
     pub streaming_thinking: Option<usize>,
     /// Composer input.
-    pub composer: String,
+    pub composer: Composer,
+    /// Selected slash-command completion.
+    completion_selected: usize,
+    /// Whether the user dismissed the current completion list.
+    completion_dismissed: bool,
     /// Status or error line.
     pub status: Option<String>,
     /// Current running turn id.
@@ -192,6 +200,232 @@ pub struct ChatView {
     transcript_cache_dirty: bool,
     /// Cached rendered transcript for the current width.
     transcript_cache: Option<TranscriptCache>,
+}
+
+/// Multiline composer with a character-boundary cursor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Composer {
+    text: String,
+    cursor: usize,
+}
+
+impl Composer {
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
+    fn insert_char(&mut self, character: char) {
+        self.text.insert(self.cursor, character);
+        self.cursor += character.len_utf8();
+    }
+
+    fn insert_newline(&mut self) {
+        self.insert_char('\n');
+    }
+
+    fn backspace(&mut self) {
+        let previous = self.previous_boundary();
+        if previous == self.cursor {
+            return;
+        }
+        self.text.replace_range(previous..self.cursor, "");
+        self.cursor = previous;
+    }
+
+    fn delete(&mut self) {
+        let next = self.next_boundary();
+        if next == self.cursor {
+            return;
+        }
+        self.text.replace_range(self.cursor..next, "");
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = self.previous_boundary();
+    }
+
+    fn move_right(&mut self) {
+        self.cursor = self.next_boundary();
+    }
+
+    fn move_up(&mut self) {
+        let line_start = self.line_start();
+        if line_start == 0 {
+            return;
+        }
+        let previous_end = line_start - 1;
+        let previous_start = self.text[..previous_end]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        self.cursor = char_column_offset(
+            &self.text,
+            previous_start,
+            previous_end,
+            self.text[line_start..self.cursor].chars().count(),
+        );
+    }
+
+    fn move_down(&mut self) {
+        let line_end = self.line_end();
+        if line_end == self.text.len() {
+            return;
+        }
+        let next_start = line_end + 1;
+        let next_end = self.text[next_start..]
+            .find('\n')
+            .map_or(self.text.len(), |index| next_start + index);
+        let line_start = self.line_start();
+        self.cursor = char_column_offset(
+            &self.text,
+            next_start,
+            next_end,
+            self.text[line_start..self.cursor].chars().count(),
+        );
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = self.line_start();
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.line_end();
+    }
+
+    fn delete_to_line_start(&mut self) {
+        let start = self.line_start();
+        self.text.replace_range(start..self.cursor, "");
+        self.cursor = start;
+    }
+
+    fn delete_to_line_end(&mut self) {
+        let end = self.line_end();
+        self.text.replace_range(self.cursor..end, "");
+    }
+
+    fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
+        if start > end
+            || end > self.text.len()
+            || !self.text.is_char_boundary(start)
+            || !self.text.is_char_boundary(end)
+        {
+            return;
+        }
+        self.text.replace_range(start..end, replacement);
+        self.cursor = start + replacement.len();
+    }
+
+    fn previous_boundary(&self) -> usize {
+        self.text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(index, _)| index)
+    }
+
+    fn next_boundary(&self) -> usize {
+        self.text[self.cursor..]
+            .chars()
+            .next()
+            .map_or(self.cursor, |character| self.cursor + character.len_utf8())
+    }
+
+    fn line_start(&self) -> usize {
+        self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1)
+    }
+
+    fn line_end(&self) -> usize {
+        self.text[self.cursor..]
+            .find('\n')
+            .map_or(self.text.len(), |index| self.cursor + index)
+    }
+}
+
+fn char_column_offset(text: &str, start: usize, end: usize, column: usize) -> usize {
+    text[start..end]
+        .char_indices()
+        .nth(column)
+        .map_or(end, |(index, _)| start + index)
+}
+
+struct ComposerVisual {
+    lines: Vec<Line<'static>>,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
+fn composer_visual(composer: &Composer, inner_width: u16) -> ComposerVisual {
+    let width = usize::from(inner_width.max(1));
+    let mut rows = vec!["> ".to_owned()];
+    let mut used = 2usize;
+    let mut cursor = None;
+    if composer.cursor == 0 {
+        cursor = Some((0, used));
+    }
+    for (index, character) in composer.text.char_indices() {
+        if index == composer.cursor {
+            cursor = Some((rows.len() - 1, used));
+        }
+        if character == '\n' {
+            rows.push("  ".to_owned());
+            used = 2;
+        } else {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or_default();
+            if used > 2 && used.saturating_add(character_width) > width {
+                rows.push("  ".to_owned());
+                used = 2;
+            }
+            if let Some(row) = rows.last_mut() {
+                row.push(character);
+            }
+            used = used.saturating_add(character_width);
+        }
+        if index + character.len_utf8() == composer.cursor {
+            cursor = Some((rows.len() - 1, used));
+        }
+    }
+    if composer.cursor == composer.text.len() {
+        cursor = Some((rows.len() - 1, used));
+    }
+    let lines = rows
+        .into_iter()
+        .map(|row| {
+            let (prefix, content) = row.split_at(2.min(row.len()));
+            Line::from(vec![
+                Span::styled(
+                    prefix.to_owned(),
+                    Style::default()
+                        .fg(COLOR_BRAND)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(content.to_owned(), Style::default().fg(COLOR_TEXT)),
+            ])
+        })
+        .collect();
+    let (cursor_row, cursor_col) = cursor.unwrap_or((0, 2));
+    ComposerVisual {
+        lines,
+        cursor_row,
+        cursor_col,
+    }
+}
+
+fn composer_height(composer: &Composer, width: u16) -> u16 {
+    let inner_width = width.saturating_sub(2);
+    let rows = composer_visual(composer, inner_width).lines.len();
+    u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .clamp(1, 6)
+        .saturating_add(2)
 }
 
 #[derive(Clone, Debug)]
@@ -313,6 +547,7 @@ impl ChatView {
         self.interaction = None;
         self.tool_names.clear();
         self.transcript_scroll_back = 0;
+        self.reset_completion();
         self.ensure_session(supervisor)
     }
 
@@ -356,6 +591,7 @@ impl ChatView {
         self.running_turn = None;
         self.tool_names.clear();
         self.transcript_scroll_back = 0;
+        self.reset_completion();
         supervisor
             .request(
                 "session.attach",
@@ -470,7 +706,7 @@ impl ChatView {
     }
 
     fn submit(&mut self, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
-        let prompt = self.composer.trim().to_owned();
+        let prompt = self.composer.text().trim().to_owned();
         if prompt.is_empty() {
             return Ok(());
         }
@@ -501,8 +737,14 @@ impl ChatView {
             self.status = Some("turn started".to_owned());
         }
         self.composer.clear();
+        self.reset_completion();
         self.transcript_scroll_back = 0;
         Ok(())
+    }
+
+    fn reset_completion(&mut self) {
+        self.completion_selected = 0;
+        self.completion_dismissed = false;
     }
 
     fn scroll_transcript_up(&mut self, lines: u16) {
@@ -1374,6 +1616,110 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     output
 }
 
+#[derive(Clone, Copy)]
+struct CommandSpec {
+    name: &'static str,
+    usage: &'static str,
+    description: &'static str,
+    takes_argument: bool,
+}
+
+const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "provider",
+        usage: "/provider [ID]",
+        description: "Open the provider manager or switch provider",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "model",
+        usage: "/model [MODEL] [EFFORT]",
+        description: "Open the model picker or switch the route",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "thinking",
+        usage: "/thinking LEVEL",
+        description: "Open the effort picker or set effort",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "effort",
+        usage: "/effort LEVEL",
+        description: "Set the reasoning effort",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "mode",
+        usage: "/mode MODE",
+        description: "Set read, auto, reviewed, or free",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "confirm",
+        usage: "/confirm",
+        description: "Run pending steers",
+        takes_argument: false,
+    },
+    CommandSpec {
+        name: "discard",
+        usage: "/discard",
+        description: "Discard pending steers",
+        takes_argument: false,
+    },
+    CommandSpec {
+        name: "capabilities",
+        usage: "/capabilities TOOLS",
+        description: "Set provider-native tools",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "new",
+        usage: "/new",
+        description: "Create a new session",
+        takes_argument: false,
+    },
+    CommandSpec {
+        name: "resume",
+        usage: "/resume ID",
+        description: "Resume a session",
+        takes_argument: true,
+    },
+    CommandSpec {
+        name: "sessions",
+        usage: "/sessions",
+        description: "Open the session manager",
+        takes_argument: false,
+    },
+    CommandSpec {
+        name: "diagnostics",
+        usage: "/diagnostics",
+        description: "Show core connection details",
+        takes_argument: false,
+    },
+    CommandSpec {
+        name: "help",
+        usage: "/help",
+        description: "Show help",
+        takes_argument: false,
+    },
+    CommandSpec {
+        name: "quit",
+        usage: "/quit",
+        description: "Exit the TUI",
+        takes_argument: false,
+    },
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommandCompletion {
+    start: usize,
+    end: usize,
+    label: String,
+    insert: String,
+    description: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Chat,
@@ -1524,7 +1870,6 @@ struct App {
     chat: ChatView,
     providers: ProviderView,
     screen: Screen,
-    palette: Option<String>,
     session_picker: Option<SessionPicker>,
     model_picker: Option<ModelPicker>,
     thinking_picker: Option<ThinkingPicker>,
@@ -1965,7 +2310,6 @@ pub fn run_tui() -> Result<(), TuiError> {
         chat: ChatView::default(),
         providers: ProviderView::default(),
         screen: Screen::Providers,
-        palette: None,
         session_picker: None,
         model_picker: None,
         thinking_picker: None,
@@ -2043,7 +2387,13 @@ fn run_loop(
         };
         if event::poll(wait)? {
             match event::read()? {
-                Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                Event::Key(key)
+                    if matches!(
+                        key.kind,
+                        crossterm::event::KeyEventKind::Press
+                            | crossterm::event::KeyEventKind::Repeat
+                    ) =>
+                {
                     redraw = true;
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c'))
@@ -2066,10 +2416,6 @@ fn run_loop(
                     }
                     if app.thinking_picker.is_some() {
                         handle_thinking_picker_key(app, supervisor, key.code)?;
-                        continue;
-                    }
-                    if app.palette.is_some() {
-                        handle_palette_key(app, supervisor, key.code, key.modifiers)?;
                         continue;
                     }
                     if app.screen == Screen::Providers {
@@ -2243,7 +2589,15 @@ fn handle_chat_key(
         }
         return Ok(());
     }
+    let completions = command_completions(app);
+    let completion_visible = !completions.is_empty() && !app.chat.completion_dismissed;
     match code {
+        KeyCode::Tab if completion_visible => {
+            accept_completion(app);
+        }
+        KeyCode::BackTab if completion_visible => {
+            select_completion(app, -1);
+        }
         KeyCode::BackTab => {
             if let Err(error) = cycle_thinking_level(app, supervisor) {
                 app.chat.status = Some(error.to_string());
@@ -2271,32 +2625,309 @@ fn handle_chat_key(
                 app.chat.status = Some(error.to_string());
             }
         }
+        KeyCode::Enter if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.insert_newline();
+            app.chat.reset_completion();
+        }
+        KeyCode::Char('j') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.insert_newline();
+            app.chat.reset_completion();
+        }
         KeyCode::Enter => {
-            if let Err(error) = app.chat.submit(supervisor) {
+            if let Err(error) = submit_composer(app, supervisor) {
                 app.chat.status = Some(error.to_string());
             }
         }
         KeyCode::Esc => {
-            if let Err(error) = app.chat.cancel(supervisor) {
+            if completion_visible {
+                app.chat.completion_dismissed = true;
+            } else if let Err(error) = app.chat.cancel(supervisor) {
                 app.chat.status = Some(error.to_string());
             }
         }
         KeyCode::PageUp => app.chat.scroll_transcript_up(10),
         KeyCode::PageDown => app.chat.scroll_transcript_down(10),
-        KeyCode::Home => app.chat.scroll_transcript_up(u16::MAX),
-        KeyCode::End => app.chat.scroll_transcript_down(u16::MAX),
-        KeyCode::Backspace => {
-            app.chat.composer.pop();
+        KeyCode::Home if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.scroll_transcript_up(u16::MAX);
         }
-        KeyCode::Char(':') | KeyCode::Char('/') => {
-            app.palette = Some(String::new());
+        KeyCode::End if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.scroll_transcript_down(u16::MAX);
+        }
+        KeyCode::Home | KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.move_home();
+        }
+        KeyCode::End | KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.move_end();
+        }
+        KeyCode::Home => app.chat.composer.move_home(),
+        KeyCode::End => app.chat.composer.move_end(),
+        KeyCode::Left => app.chat.composer.move_left(),
+        KeyCode::Right => app.chat.composer.move_right(),
+        KeyCode::Up if completion_visible => {
+            select_completion(app, -1);
+        }
+        KeyCode::Down if completion_visible => {
+            select_completion(app, 1);
+        }
+        KeyCode::Up => app.chat.composer.move_up(),
+        KeyCode::Down => app.chat.composer.move_down(),
+        KeyCode::Delete => {
+            app.chat.composer.delete();
+        }
+        KeyCode::Backspace => app.chat.composer.backspace(),
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.delete_to_line_start();
+        }
+        KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.chat.composer.delete_to_line_end();
         }
         KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
-            app.chat.composer.push(character);
+            app.chat.composer.insert_char(character);
+            app.chat.reset_completion();
         }
         _ => {}
     }
     Ok(())
+}
+
+fn submit_composer(app: &mut App, supervisor: &mut CoreSupervisor) -> Result<(), TuiError> {
+    if completion_accepts_enter(app) {
+        accept_completion(app);
+        return Ok(());
+    }
+    let input = app.chat.composer.text().trim().to_owned();
+    if input.is_empty() {
+        return Ok(());
+    }
+    if input.starts_with('/') {
+        app.chat.composer.clear();
+        app.chat.reset_completion();
+        execute_command(app, supervisor, &input)
+    } else {
+        app.chat.submit(supervisor)
+    }
+}
+
+fn completion_accepts_enter(app: &App) -> bool {
+    if app.chat.completion_dismissed {
+        return false;
+    }
+    let completions = command_completions(app);
+    let Some((start, end, completion)) = selected_completion(&completions, app) else {
+        return false;
+    };
+    &app.chat.composer.text()[start..end] != completion.insert.trim_end()
+}
+
+fn accept_completion(app: &mut App) {
+    let completions = command_completions(app);
+    let Some((start, end, completion)) = selected_completion_owned(&completions, app) else {
+        return;
+    };
+    app.chat
+        .composer
+        .replace_range(start, end, &completion.insert);
+    app.chat.reset_completion();
+}
+
+fn select_completion(app: &mut App, delta: isize) {
+    let completions = command_completions(app);
+    if completions.is_empty() {
+        return;
+    }
+    let current = app.chat.completion_selected.min(completions.len() - 1);
+    app.chat.completion_selected = if delta < 0 {
+        current.saturating_sub(1)
+    } else {
+        current.saturating_add(1).min(completions.len() - 1)
+    };
+}
+
+fn selected_completion<'a>(
+    completions: &'a [CommandCompletion],
+    app: &App,
+) -> Option<(usize, usize, &'a CommandCompletion)> {
+    let completion = completions.get(
+        app.chat
+            .completion_selected
+            .min(completions.len().saturating_sub(1)),
+    )?;
+    Some((completion.start, completion.end, completion))
+}
+
+fn selected_completion_owned(
+    completions: &[CommandCompletion],
+    app: &App,
+) -> Option<(usize, usize, CommandCompletion)> {
+    let (start, end, completion) = selected_completion(completions, app)?;
+    Some((start, end, completion.clone()))
+}
+
+fn visible_completions(app: &mut App) -> Vec<CommandCompletion> {
+    if app.screen != Screen::Chat
+        || app.help
+        || app.session_picker.is_some()
+        || app.model_picker.is_some()
+        || app.thinking_picker.is_some()
+        || app.chat.interaction.is_some()
+        || app.chat.completion_dismissed
+    {
+        return Vec::new();
+    }
+    let completions = command_completions(app);
+    if !completions.is_empty() {
+        app.chat.completion_selected = app
+            .chat
+            .completion_selected
+            .min(completions.len().saturating_sub(1));
+    }
+    completions
+}
+
+fn command_completions(app: &App) -> Vec<CommandCompletion> {
+    let text = app.chat.composer.text();
+    let cursor = app.chat.composer.cursor();
+    let Some(command_start) = text
+        .char_indices()
+        .find(|(_, character)| !character.is_whitespace())
+        .map(|(index, _)| index)
+    else {
+        return Vec::new();
+    };
+    if !text[command_start..].starts_with('/') || cursor < command_start {
+        return Vec::new();
+    }
+    let command_end = text[command_start..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |index| command_start + index);
+    if cursor <= command_end {
+        let (start, end) = completion_token(text, cursor);
+        let prefix = &text[start..cursor];
+        if !prefix.starts_with('/') {
+            return Vec::new();
+        }
+        let prefix = &prefix[1..];
+        return COMMANDS
+            .iter()
+            .filter(|command| command.name.starts_with(prefix))
+            .map(|command| {
+                let insert = if command.takes_argument {
+                    format!("/{} ", command.name)
+                } else {
+                    format!("/{}", command.name)
+                };
+                CommandCompletion {
+                    start,
+                    end,
+                    label: command.usage.to_owned(),
+                    insert,
+                    description: command.description.to_owned(),
+                }
+            })
+            .collect();
+    }
+
+    let command = text[command_start..command_end]
+        .strip_prefix('/')
+        .unwrap_or(&text[command_start..command_end]);
+    let (start, end) = completion_token(text, cursor);
+    let prefix = &text[start..cursor];
+    let mut values = Vec::new();
+    match command {
+        "mode" => {
+            values.extend(
+                ["read", "auto", "reviewed", "free"]
+                    .into_iter()
+                    .map(|value| {
+                        (
+                            value.to_owned(),
+                            value.to_owned(),
+                            format!("permission mode {value}"),
+                        )
+                    }),
+            );
+        }
+        "thinking" | "effort" => {
+            values.extend(ReasoningLevel::ALL.into_iter().map(|level| {
+                (
+                    level.as_str().to_owned(),
+                    level.as_str().to_owned(),
+                    reasoning_description(level).to_owned(),
+                )
+            }));
+        }
+        "provider" => {
+            values.extend(app.providers.instances.iter().map(|instance| {
+                (
+                    instance.id.clone(),
+                    instance.id.clone(),
+                    format!("provider kind {}", instance.kind),
+                )
+            }));
+        }
+        "model" => {
+            let argument_count = text[command_end..cursor].split_whitespace().count();
+            if argument_count >= 2 {
+                values.extend(ReasoningLevel::ALL.into_iter().map(|level| {
+                    (
+                        level.as_str().to_owned(),
+                        level.as_str().to_owned(),
+                        reasoning_description(level).to_owned(),
+                    )
+                }));
+            } else {
+                values.extend(model_choices(&app.providers).into_iter().map(|choice| {
+                    let label = format!("{}/{}", choice.provider, choice.model);
+                    (label.clone(), label, choice.model_name)
+                }));
+                if values.is_empty() && !app.chat.model.is_empty() {
+                    values.push((
+                        app.chat.model.clone(),
+                        app.chat.model.clone(),
+                        app.chat.model.clone(),
+                    ));
+                }
+            }
+        }
+        "capabilities" => {
+            let mut tools = BTreeMap::new();
+            for kind in &app.providers.kinds {
+                for model in &kind.models {
+                    for tool in &model.provider_tools {
+                        tools.insert(tool.clone(), kind.name.clone());
+                    }
+                }
+            }
+            values.extend(
+                tools
+                    .into_iter()
+                    .map(|(tool, provider)| (tool.clone(), tool, provider)),
+            );
+        }
+        _ => {}
+    }
+    let prefix = prefix.to_ascii_lowercase();
+    values
+        .into_iter()
+        .filter(|(value, _, _)| value.to_ascii_lowercase().starts_with(&prefix))
+        .map(|(label, insert, description)| CommandCompletion {
+            start,
+            end,
+            label,
+            insert,
+            description,
+        })
+        .collect()
+}
+
+fn completion_token(text: &str, cursor: usize) -> (usize, usize) {
+    let start = text[..cursor]
+        .rfind(char::is_whitespace)
+        .map_or(0, |index| index + 1);
+    let end = text[cursor..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |index| cursor + index);
+    (start, end)
 }
 
 fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
@@ -2305,7 +2936,6 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
         || app.session_picker.is_some()
         || app.model_picker.is_some()
         || app.thinking_picker.is_some()
-        || app.palette.is_some()
         || app.chat.interaction.is_some()
     {
         return;
@@ -2317,36 +2947,7 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind) {
     }
 }
 
-fn handle_palette_key(
-    app: &mut App,
-    supervisor: &mut CoreSupervisor,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) -> Result<(), TuiError> {
-    match code {
-        KeyCode::Esc => app.palette = None,
-        KeyCode::Enter => {
-            let command = app.palette.take().unwrap_or_default();
-            if let Err(error) = execute_palette_command(app, supervisor, &command) {
-                app.chat.status = Some(error.to_string());
-            }
-        }
-        KeyCode::Backspace => {
-            if let Some(palette) = &mut app.palette {
-                palette.pop();
-            }
-        }
-        KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Some(palette) = &mut app.palette {
-                palette.push(character);
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn execute_palette_command(
+fn execute_command(
     app: &mut App,
     supervisor: &mut CoreSupervisor,
     command: &str,
@@ -2756,8 +3357,17 @@ fn cycle_thinking_level(app: &mut App, supervisor: &mut CoreSupervisor) -> Resul
 }
 
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
+    let completions = visible_completions(app);
+    let show_composer_cursor = app.screen == Screen::Chat
+        && !app.help
+        && app.session_picker.is_none()
+        && app.model_picker.is_none()
+        && app.thinking_picker.is_none()
+        && app.chat.interaction.is_none();
     match app.screen {
-        Screen::Chat => draw_chat_screen(frame, &mut app.chat),
+        Screen::Chat => {
+            draw_chat_screen(frame, &mut app.chat, &completions, show_composer_cursor);
+        }
         Screen::Providers => draw_provider_screen(frame, &app.providers),
     }
     if let Some(picker) = &app.session_picker {
@@ -2772,22 +3382,33 @@ fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     if app.help {
         draw_help(frame);
     }
-    if let Some(palette) = &app.palette {
-        draw_palette(frame, palette);
-    }
     if let Some(prompt) = &app.chat.interaction {
         draw_interaction_prompt(frame, prompt);
     }
 }
 
-fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
+fn draw_chat_screen(
+    frame: &mut ratatui::Frame<'_>,
+    view: &mut ChatView,
+    completions: &[CommandCompletion],
+    show_cursor: bool,
+) {
     let area = frame.area();
+    let completion_height = if completions.is_empty() {
+        0
+    } else {
+        u16::try_from(completions.len().min(5))
+            .unwrap_or(5)
+            .saturating_add(2)
+    };
+    let composer_height = composer_height(&view.composer, area.width);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(completion_height),
+            Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
         .split(area);
@@ -2873,35 +3494,58 @@ fn draw_chat_screen(frame: &mut ratatui::Frame<'_>, view: &mut ChatView) {
         transcript_widget.scroll((entry_scroll.min(u16::MAX as usize) as u16, 0)),
         layout[1],
     );
+    if !completions.is_empty() {
+        draw_command_completions(frame, layout[2], completions, view.completion_selected);
+    }
+    let composer_area = layout[3];
+    let visual = composer_visual(&view.composer, composer_area.width.saturating_sub(2));
+    let visible_rows = usize::from(composer_area.height.saturating_sub(2)).max(1);
+    let scroll = visual
+        .cursor_row
+        .saturating_sub(visible_rows.saturating_sub(1));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "> ",
-                Style::default()
-                    .fg(COLOR_BRAND)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(view.composer.clone(), Style::default().fg(COLOR_TEXT)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(COLOR_MUTED))
-                .title(Span::styled("Composer", Style::default().fg(COLOR_BRAND))),
-        )
-        .wrap(Wrap { trim: false }),
-        layout[2],
+        Paragraph::new(Text::from(visual.lines))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLOR_MUTED))
+                    .title(Span::styled(
+                        "Composer  Ctrl-Enter newline",
+                        Style::default().fg(COLOR_BRAND),
+                    )),
+            )
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0)),
+        composer_area,
     );
-    let status = view.status.as_deref().unwrap_or(
-        "Enter send  Ctrl-L model  Shift-Tab thinking  Ctrl-T levels  Ctrl-P providers  / commands",
-    );
+    if show_cursor {
+        let cursor_x = composer_area
+            .x
+            .saturating_add(1)
+            .saturating_add(visual.cursor_col.min(u16::MAX as usize) as u16)
+            .min(composer_area.right().saturating_sub(2));
+        let cursor_y = composer_area
+            .y
+            .saturating_add(1)
+            .saturating_add(
+                visual
+                    .cursor_row
+                    .saturating_sub(scroll)
+                    .min(u16::MAX as usize) as u16,
+            )
+            .min(composer_area.bottom().saturating_sub(2));
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+    let status = view
+        .status
+        .as_deref()
+        .unwrap_or("Enter send  Ctrl-Enter newline  Tab complete  Ctrl-R sessions  / commands");
     frame.render_widget(
         Paragraph::new(status).style(if view.status.is_some() {
             Style::default().fg(COLOR_WARNING)
         } else {
             Style::default().fg(COLOR_MUTED)
         }),
-        layout[3],
+        layout[4],
     );
 }
 
@@ -3348,6 +3992,8 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from(""),
         Line::from("Ctrl-L           open model picker"),
         Line::from("Ctrl-T           open thinking picker"),
+        Line::from("Ctrl-R           open session manager"),
+        Line::from("Ctrl-Enter       insert newline"),
         Line::from("Shift-Tab        cycle thinking level"),
         Line::from("Wheel/PgUp/PgDn  scroll transcript"),
         Line::from(""),
@@ -3366,13 +4012,56 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
     );
 }
 
-fn draw_palette(frame: &mut ratatui::Frame<'_>, palette: &str) {
-    let area = centered_rect(70, 3, frame.area());
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(format!("/{palette}"))
-            .block(Block::default().borders(Borders::ALL).title("Command")),
+fn draw_command_completions(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    completions: &[CommandCompletion],
+    selected: usize,
+) {
+    if area.is_empty() {
+        return;
+    }
+    let items = completions
+        .iter()
+        .map(|completion| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:<28}", completion.label),
+                    Style::default().fg(COLOR_TEXT),
+                ),
+                Span::styled(
+                    completion.description.clone(),
+                    Style::default().fg(COLOR_MUTED),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let capacity = usize::from(area.height.saturating_sub(2)).max(1);
+    let start = selected
+        .saturating_sub(capacity / 2)
+        .min(completions.len().saturating_sub(capacity));
+    let visible = items
+        .into_iter()
+        .skip(start)
+        .take(capacity)
+        .collect::<Vec<_>>();
+    let mut state = RatatuiListState::default().with_selected(Some(selected.saturating_sub(start)));
+    frame.render_stateful_widget(
+        List::new(visible)
+            .highlight_style(
+                Style::default()
+                    .fg(COLOR_BRAND)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(COLOR_MUTED))
+                    .title(Span::styled("Commands", Style::default().fg(COLOR_BRAND))),
+            ),
         area,
+        &mut state,
     );
 }
 
@@ -3645,21 +4334,40 @@ fn kind_details(kind: Option<&ProviderDescriptor>) -> Text<'static> {
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    keyboard_enhancement: bool,
 }
 
 impl TerminalGuard {
     fn enter() -> Result<Self, TuiError> {
         enable_raw_mode()?;
         let mut output = stdout();
+        let keyboard_enhancement = matches!(supports_keyboard_enhancement(), Ok(true));
+        if keyboard_enhancement {
+            execute!(
+                output,
+                PushKeyboardEnhancementFlags(
+                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                )
+            )?;
+        }
         execute!(output, EnterAlternateScreen, EnableMouseCapture)?;
         let terminal = Terminal::new(CrosstermBackend::new(output))?;
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            keyboard_enhancement,
+        })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
+        if self.keyboard_enhancement {
+            let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
+        }
         let _ = execute!(
             self.terminal.backend_mut(),
             DisableMouseCapture,
@@ -3673,6 +4381,30 @@ impl Drop for TerminalGuard {
 mod tests {
     use super::*;
     use alpha_provider_api::{AdapterRequirement, AuthMethodDescriptor, ModelDescriptor};
+
+    fn composer(text: &str) -> Composer {
+        let mut composer = Composer::default();
+        for character in text.chars() {
+            composer.insert_char(character);
+        }
+        composer
+    }
+
+    fn app_with_composer(text: &str) -> App {
+        App {
+            chat: ChatView {
+                composer: composer(text),
+                ..ChatView::default()
+            },
+            providers: ProviderView::default(),
+            screen: Screen::Chat,
+            session_picker: None,
+            model_picker: None,
+            thinking_picker: None,
+            help: false,
+            quit: false,
+        }
+    }
 
     fn descriptor() -> ProviderDescriptor {
         ProviderDescriptor {
@@ -3928,11 +4660,11 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(100, 20);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
             .expect("draw chat");
         assert!(terminal_contains(&terminal, "provider-a/model-a"));
         assert!(terminal_contains(&terminal, "think:high"));
-        assert!(terminal_contains(&terminal, "Ctrl-L model"));
+        assert!(terminal_contains(&terminal, "Ctrl-R sessions"));
     }
 
     #[test]
@@ -4068,19 +4800,19 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(40, 12);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
             .expect("draw transcript");
         assert!(terminal_contains(&terminal, "line 79"));
 
         view.scroll_transcript_up(u16::MAX);
         terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
             .expect("draw transcript top");
         assert!(terminal_contains(&terminal, "line 0"));
 
         view.scroll_transcript_down(u16::MAX);
         terminal
-            .draw(|frame| draw_chat_screen(frame, &mut view))
+            .draw(|frame| draw_chat_screen(frame, &mut view, &[], true))
             .expect("draw transcript bottom");
         assert!(terminal_contains(&terminal, "line 79"));
     }
@@ -4149,5 +4881,78 @@ mod tests {
             .expect("draw session picker");
         assert!(terminal_contains(&terminal, "fix the failing parser test"));
         assert!(terminal_contains(&terminal, "Enter switch"));
+    }
+
+    #[test]
+    fn composer_edits_at_the_cursor_and_preserves_unicode_boundaries() {
+        let mut composer = composer("a界b");
+        composer.move_left();
+        assert_eq!(composer.cursor(), "a界".len());
+        composer.backspace();
+        assert_eq!(composer.text(), "ab");
+        composer.insert_char('x');
+        assert_eq!(composer.text(), "axb");
+        composer.move_home();
+        composer.delete();
+        assert_eq!(composer.text(), "xb");
+    }
+
+    #[test]
+    fn composer_moves_between_lines_and_inserts_at_the_target() {
+        let mut composer = composer("one\ntwo");
+        composer.move_up();
+        composer.insert_char('!');
+        assert_eq!(composer.text(), "one!\ntwo");
+        composer.move_down();
+        composer.move_end();
+        composer.insert_char('?');
+        assert_eq!(composer.text(), "one!\ntwo?");
+        composer.insert_newline();
+        assert_eq!(composer.text(), "one!\ntwo?\n");
+    }
+
+    #[test]
+    fn slash_command_completion_filters_and_accepts() {
+        let mut app = app_with_composer("/mo");
+        let completions = command_completions(&app);
+        assert_eq!(completions.len(), 2);
+        assert!(
+            completions
+                .iter()
+                .any(|completion| completion.label == "/model [MODEL] [EFFORT]")
+        );
+        assert!(completion_accepts_enter(&app));
+
+        accept_completion(&mut app);
+        assert_eq!(app.chat.composer.text(), "/model ");
+        assert!(!completion_accepts_enter(&app));
+    }
+
+    #[test]
+    fn command_completions_include_argument_values() {
+        let app = app_with_composer("/mode ");
+        let completions = command_completions(&app);
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.insert.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read", "auto", "reviewed", "free"]
+        );
+    }
+
+    #[test]
+    fn multiline_composer_renders_all_lines() {
+        let mut app = app_with_composer("first line\nsecond line");
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                draw_chat_screen(frame, &mut app.chat, &[], true);
+            })
+            .expect("draw composer");
+        assert!(terminal_contains(&terminal, "first line"));
+        assert!(terminal_contains(&terminal, "second line"));
+        assert!(terminal_contains(&terminal, "Ctrl-Enter newline"));
     }
 }

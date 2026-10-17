@@ -461,7 +461,10 @@ restores the effective provider, model, and thinking level. Selecting a model
 also persists it as the provider instance's default model and default provider
 selection, so new sessions start from the same route. Thinking content is
 rendered separately from assistant text, and assistant Markdown supports GFM
-tables. `Ctrl-R` opens a session manager that projects the first user message
+tables. Messages and slash commands share one multiline composer with visible
+command and argument completions. `Enter` sends, `Ctrl-Enter` inserts a
+newline, and cursor editing supports arrows, `Home`, `End`, `Backspace`, and
+`Delete`. `Ctrl-R` opens a session manager that projects the first user message
 as a list preview, switches sessions entirely through keyboard UI, and deletes
 idle sessions after confirmation. Deletion is rejected while a session turn is
 running.

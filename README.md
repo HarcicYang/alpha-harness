@@ -58,6 +58,11 @@ session log and restored when the session is resumed. Model selection also
 becomes the persisted default for new sessions, and model pickers prefer the
 provider's live `/models` catalog over bundled fallback metadata.
 
+Messages and slash commands share one multiline composer. `Enter` sends,
+`Ctrl-Enter` inserts a line break, and `Tab` accepts the visible command or
+argument completion. Arrow keys, `Home`, `End`, `Backspace`, and `Delete`
+edit text at the current cursor position.
+
 `Ctrl-R` opens the session manager. It lists stored sessions with an automatic
 preview of the first user message, switches sessions with `Enter`, creates a
 new session with `n`, and deletes an idle session with `d` after confirmation.
