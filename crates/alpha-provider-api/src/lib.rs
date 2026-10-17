@@ -19,7 +19,7 @@ use serde_json::Value;
 
 pub use alpha_schema::{
     AdapterRequirement, AuthMethodDescriptor, ModelDescriptor, ProviderDescriptor,
-    ProviderInstance, ReasoningLevel,
+    ProviderInstance, ReasoningLevel, effective_models,
 };
 
 /// Stable module key used by the generated composition table.
@@ -632,69 +632,6 @@ pub fn effective_model_catalog(
     kind: &dyn ProviderKind,
 ) -> Vec<ModelDescriptor> {
     effective_models(instance, &kind.descriptor().models)
-}
-
-/// Apply user metadata overrides to a model list.
-pub fn effective_models(
-    instance: &ProviderInstance,
-    models: &[ModelDescriptor],
-) -> Vec<ModelDescriptor> {
-    let overrides = instance.model_overrides.as_object();
-    models
-        .iter()
-        .cloned()
-        .map(|mut model| {
-            let Some(override_value) = overrides
-                .and_then(|overrides| overrides.get(&model.id))
-                .and_then(Value::as_object)
-            else {
-                return model;
-            };
-            if let Some(name) = override_value.get("name").and_then(Value::as_str) {
-                model.name = name.to_owned();
-            }
-            if let Some(adapter) = override_value.get("adapter").and_then(Value::as_str) {
-                model.adapter = adapter.to_owned();
-            }
-            if let Some(context_window) =
-                override_value.get("context_window").and_then(Value::as_u64)
-            {
-                model.context_window = context_window;
-            }
-            if let Some(max_tokens) = override_value.get("max_tokens").and_then(Value::as_u64) {
-                model.max_tokens = max_tokens;
-            }
-            let explicit_reasoning = override_value.get("reasoning").and_then(Value::as_bool);
-            if let Some(reasoning) = explicit_reasoning {
-                model.reasoning = reasoning;
-                if reasoning && model.reasoning_levels.as_slice() == [ReasoningLevel::Auto] {
-                    model.reasoning_levels = ReasoningLevel::ALL.to_vec();
-                }
-            }
-            if let Some(levels) = override_value
-                .get("reasoning_levels")
-                .or_else(|| override_value.get("thinking_levels"))
-                .cloned()
-                .and_then(|value| serde_json::from_value::<Vec<ReasoningLevel>>(value).ok())
-            {
-                if explicit_reasoning.is_none() {
-                    model.reasoning = levels.iter().any(|level| *level != ReasoningLevel::Auto);
-                }
-                model.reasoning_levels = levels;
-            }
-            if let Some(tools) = override_value
-                .get("provider_tools")
-                .and_then(Value::as_array)
-            {
-                model.provider_tools = tools
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect();
-            }
-            model
-        })
-        .collect()
 }
 
 /// Select the default model after applying user overrides.

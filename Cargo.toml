@@ -31,6 +31,7 @@ alpha-module-tools = { path = "crates/alpha-module-tools", version = "0.1.0" }
 alpha-module-provider-openai = { path = "crates/alpha-module-provider-openai", version = "0.1.0" }
 alpha-bundle-default = { path = "crates/alpha-bundle-default", version = "0.1.0" }
 alpha-front-client = { path = "crates/alpha-front-client", version = "0.1.0" }
+alpha-front-runtime = { path = "crates/alpha-front-runtime", version = "0.1.0" }
 alpha-front-supervisor = { path = "crates/alpha-front-supervisor", version = "0.1.0" }
 alpha-front-tui = { path = "crates/alpha-front-tui", version = "0.1.0" }
 alpha-provider-api = { path = "crates/alpha-provider-api", version = "0.1.0" }

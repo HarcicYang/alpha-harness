@@ -171,6 +171,18 @@ pub struct TurnStarted {
     pub turn_id: TurnId,
 }
 
+/// Parameters of one server-initiated interaction request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionRequest {
+    /// Session that needs an interaction response.
+    pub session_id: SessionId,
+    /// Interaction kind such as `permission`.
+    pub kind: String,
+    /// Interaction-specific payload.
+    pub prompt: Value,
+}
+
 /// Result of reading a provider model catalog.
 pub type ProviderModelList = Vec<crate::ModelDescriptor>;
 

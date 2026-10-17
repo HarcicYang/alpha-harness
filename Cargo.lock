@@ -131,6 +131,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-front-runtime"
+version = "0.1.0"
+dependencies = [
+ "alpha-front-client",
+ "alpha-front-supervisor",
+ "alpha-protocol",
+ "alpha-schema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "alpha-front-supervisor"
 version = "0.1.0"
 dependencies = [

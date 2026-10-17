@@ -16,14 +16,15 @@ pub mod time;
 pub use content::AssistantContentBlock;
 pub use event::EventEnvelope;
 pub use front::{
-    LiveAgentEvent, ProviderInstanceResponse, ProviderModelList, SessionAttached, SessionCreated,
-    SessionEventNotification, SessionListEntry, SessionResumed, TurnStarted,
+    InteractionRequest, LiveAgentEvent, ProviderInstanceResponse, ProviderModelList,
+    SessionAttached, SessionCreated, SessionEventNotification, SessionListEntry, SessionResumed,
+    TurnStarted,
 };
 pub use id::{MessageId, SessionId, ToolCallId, TurnId};
 pub use permission::PermissionMode;
 pub use provider::{
     AdapterRequirement, AuthMethodDescriptor, CredentialBackendStatus, CredentialStatus,
-    ModelDescriptor, ProviderDescriptor, ProviderInstance,
+    ModelDescriptor, ProviderDescriptor, ProviderInstance, default_model_id, effective_models,
 };
 pub use reasoning::ReasoningLevel;
 pub use session::{SessionEvent, ToolStatus, TurnEndReason, WorkspaceRef};
