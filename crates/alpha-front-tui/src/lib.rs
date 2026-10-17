@@ -2952,10 +2952,7 @@ fn execute_command(
     supervisor: &mut CoreSupervisor,
     command: &str,
 ) -> Result<(), TuiError> {
-    let command = command.trim();
-    let (name, argument) = command
-        .split_once(char::is_whitespace)
-        .map_or((command, ""), |(name, argument)| (name, argument.trim()));
+    let (name, argument) = split_command(command);
     match name {
         "provider" if argument.is_empty() => {
             app.screen = Screen::Providers;
@@ -3048,6 +3045,11 @@ fn execute_command(
                 level,
             )?;
         }
+        "mode" if argument.is_empty() => {
+            return Err(TuiError::Protocol(
+                "usage: /mode <read|auto|reviewed|free>".to_owned(),
+            ));
+        }
         "mode" => {
             let mode = argument
                 .parse::<PermissionMode>()
@@ -3072,6 +3074,9 @@ fn execute_command(
             app.chat.resume_session(supervisor, argument)?;
             app.screen = Screen::Chat;
         }
+        "resume" => {
+            return Err(TuiError::Protocol("usage: /resume <SESSION_ID>".to_owned()));
+        }
         "sessions" => {
             open_session_picker(app, supervisor)?;
         }
@@ -3088,6 +3093,16 @@ fn execute_command(
         other => app.chat.status = Some(format!("unknown command: {other}")),
     }
     Ok(())
+}
+
+fn split_command(command: &str) -> (&str, &str) {
+    let command = command
+        .trim()
+        .strip_prefix('/')
+        .unwrap_or_else(|| command.trim());
+    command
+        .split_once(char::is_whitespace)
+        .map_or((command, ""), |(name, argument)| (name, argument.trim()))
 }
 
 fn handle_session_picker_key(
@@ -3509,10 +3524,7 @@ fn draw_chat_screen(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(COLOR_MUTED))
-                    .title(Span::styled(
-                        "Composer  Ctrl-Enter newline",
-                        Style::default().fg(COLOR_BRAND),
-                    )),
+                    .title(Span::styled("Composer", Style::default().fg(COLOR_BRAND))),
             )
             .scroll((scroll.min(u16::MAX as usize) as u16, 0)),
         composer_area,
@@ -3538,7 +3550,7 @@ fn draw_chat_screen(
     let status = view
         .status
         .as_deref()
-        .unwrap_or("Enter send  Ctrl-Enter newline  Tab complete  Ctrl-R sessions  / commands");
+        .unwrap_or("Enter send  Tab complete  Ctrl-R sessions  / commands");
     frame.render_widget(
         Paragraph::new(status).style(if view.status.is_some() {
             Style::default().fg(COLOR_WARNING)
@@ -4957,6 +4969,16 @@ mod tests {
     }
 
     #[test]
+    fn command_parser_accepts_the_composer_slash_prefix() {
+        assert_eq!(split_command("/mode"), ("mode", ""));
+        assert_eq!(split_command("/mode reviewed"), ("mode", "reviewed"));
+        assert_eq!(
+            split_command("/resume session-id"),
+            ("resume", "session-id")
+        );
+    }
+
+    #[test]
     fn multiline_composer_renders_all_lines() {
         let mut app = app_with_composer("first line\nsecond line");
         let backend = ratatui::backend::TestBackend::new(80, 20);
@@ -4968,6 +4990,7 @@ mod tests {
             .expect("draw composer");
         assert!(terminal_contains(&terminal, "first line"));
         assert!(terminal_contains(&terminal, "second line"));
-        assert!(terminal_contains(&terminal, "Ctrl-Enter newline"));
+        assert!(terminal_contains(&terminal, "Composer"));
+        assert!(!terminal_contains(&terminal, "Ctrl-Enter newline"));
     }
 }
