@@ -34,8 +34,10 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState as RatatuiListState, Paragraph, Wrap,
 };
 use serde_json::{Value, json};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+const COLOR_CANVAS: Color = Color::Rgb(9, 12, 18);
+const COLOR_USER_BUBBLE: Color = Color::Rgb(32, 37, 47);
 const COLOR_BRAND: Color = Color::Rgb(90, 221, 225);
 const COLOR_ACCENT: Color = Color::Rgb(97, 192, 224);
 const COLOR_BRIGHT: Color = Color::Rgb(184, 255, 254);
@@ -1549,18 +1551,7 @@ fn render_markdown(text: &str) -> Vec<Line<'static>> {
 }
 
 fn assistant_transcript_lines(text: &str) -> Vec<Line<'static>> {
-    let mut lines = render_markdown(text);
-    if let Some(first) = lines.first_mut() {
-        let mut spans = vec![Span::styled(
-            "alpha: ",
-            Style::default()
-                .fg(COLOR_BRAND)
-                .add_modifier(Modifier::BOLD),
-        )];
-        spans.append(&mut first.spans);
-        *first = Line::from(spans);
-    }
-    lines
+    render_markdown(text)
 }
 
 fn tool_call_summary(name: &str, input: &Value) -> String {
@@ -3372,6 +3363,10 @@ fn cycle_thinking_level(app: &mut App, supervisor: &mut CoreSupervisor) -> Resul
 }
 
 fn draw_app(frame: &mut ratatui::Frame<'_>, app: &mut App) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(COLOR_CANVAS)),
+        frame.area(),
+    );
     let completions = visible_completions(app);
     let show_composer_cursor = app.screen == Screen::Chat
         && !app.help
@@ -3615,23 +3610,19 @@ fn rebuild_transcript_cache(view: &mut ChatView, width: u16) {
         let revision = view.transcript_entry_revisions[index];
         let previous = previous_entries.get(index);
         let previous_len = previous.map_or(0, |cache_entry| cache_entry.line_len);
-        let reusable = previous.filter(|cache_entry| cache_entry.revision == revision);
+        let reusable =
+            previous.filter(|cache_entry| cache_entry.revision == revision && !width_changed);
         let (entry_lines, entry_line_count) = if let Some(previous) = reusable {
             let entry_lines = previous_lines
                 .as_mut()
                 .map(|lines| lines.by_ref().take(previous_len).collect::<Vec<_>>())
                 .unwrap_or_default();
-            let entry_line_count = if width_changed {
-                wrapped_line_count(&entry_lines, width)
-            } else {
-                previous.line_count
-            };
-            (entry_lines, entry_line_count)
+            (entry_lines, previous.line_count)
         } else {
             if let Some(lines) = previous_lines.as_mut() {
                 lines.by_ref().take(previous_len).for_each(drop);
             }
-            let entry_lines = build_transcript_entry_lines(entry);
+            let entry_lines = build_transcript_entry_lines(entry, width);
             let entry_line_count = wrapped_line_count(&entry_lines, width);
             (entry_lines, entry_line_count)
         };
@@ -3669,17 +3660,9 @@ fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
         .line_count(width.saturating_sub(2))
 }
 
-fn build_transcript_entry_lines(entry: &TranscriptEntry) -> Vec<Line<'static>> {
+fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line<'static>> {
     match entry {
-        TranscriptEntry::User(text) => vec![Line::from(vec![
-            Span::styled(
-                "you: ",
-                Style::default()
-                    .fg(COLOR_ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(text.clone(), Style::default().fg(COLOR_TEXT)),
-        ])],
+        TranscriptEntry::User(text) => user_transcript_lines(text, width.saturating_sub(2)),
         TranscriptEntry::Assistant(text) => assistant_transcript_lines(text),
         TranscriptEntry::Thinking(text) => thinking_transcript_lines(text),
         TranscriptEntry::Progress(text) => vec![Line::from(vec![
@@ -3698,32 +3681,68 @@ fn build_transcript_entry_lines(entry: &TranscriptEntry) -> Vec<Line<'static>> {
     }
 }
 
+fn user_transcript_lines(text: &str, inner_width: u16) -> Vec<Line<'static>> {
+    let available = usize::from(inner_width);
+    let logical_lines = text.lines().collect::<Vec<_>>();
+    let max_line_width = logical_lines
+        .iter()
+        .map(|line| UnicodeWidthStr::width(*line))
+        .max()
+        .unwrap_or_default();
+    let bubble_width = max_line_width
+        .saturating_add(2)
+        .max(3)
+        .min(available.saturating_sub(1).max(1));
+    let content_width = bubble_width.saturating_sub(2).max(1);
+    let mut content_lines = logical_lines
+        .into_iter()
+        .flat_map(|line| wrap_bubble_line(line, content_width))
+        .collect::<Vec<_>>();
+    if content_lines.is_empty() {
+        content_lines.push(String::new());
+    }
+    let style = Style::default().fg(COLOR_TEXT).bg(COLOR_USER_BUBBLE);
+    content_lines
+        .into_iter()
+        .map(|line| {
+            let padding = content_width.saturating_sub(UnicodeWidthStr::width(line.as_str()));
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(format!(" {line}{} ", " ".repeat(padding)), style),
+            ])
+        })
+        .collect()
+}
+
+fn wrap_bubble_line(line: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+    for character in line.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or_default();
+        if !current.is_empty() && used.saturating_add(character_width) > width {
+            rows.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        current.push(character);
+        used = used.saturating_add(character_width);
+    }
+    rows.push(current);
+    rows
+}
+
 fn thinking_transcript_lines(text: &str) -> Vec<Line<'static>> {
     let style = Style::default()
         .fg(COLOR_MUTED)
         .add_modifier(Modifier::ITALIC);
-    let mut lines = Vec::new();
-    for (index, part) in text.lines().enumerate() {
-        let prefix = if index == 0 { "effort: " } else { "        " };
-        lines.push(Line::from(vec![
-            Span::styled(
-                prefix,
-                Style::default()
-                    .fg(COLOR_BRAND)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-            Span::styled(part.to_owned(), style),
-        ]));
-    }
-    if lines.is_empty() {
-        lines.push(Line::styled("effort:", Style::default().fg(COLOR_BRAND)));
-    }
-    lines
+    text.lines()
+        .map(|part| Line::styled(part.to_owned(), style))
+        .collect()
 }
 
 fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
     let area = centered_rect(90, 22, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(4), Constraint::Length(2)])
@@ -3811,7 +3830,7 @@ fn draw_session_picker(frame: &mut ratatui::Frame<'_>, picker: &SessionPicker) {
 
 fn draw_model_picker(frame: &mut ratatui::Frame<'_>, picker: &ModelPicker, chat: &ChatView) {
     let area = centered_rect(78, 20, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
@@ -3885,7 +3904,7 @@ fn draw_model_picker(frame: &mut ratatui::Frame<'_>, picker: &ModelPicker, chat:
 
 fn draw_session_delete_confirmation(frame: &mut ratatui::Frame<'_>, session: &SessionEntry) {
     let area = centered_rect(62, 8, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let preview = session
         .first_message
         .as_deref()
@@ -3914,7 +3933,7 @@ fn draw_session_delete_confirmation(frame: &mut ratatui::Frame<'_>, session: &Se
 
 fn draw_thinking_picker(frame: &mut ratatui::Frame<'_>, picker: &ThinkingPicker) {
     let area = centered_rect(58, 14, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
@@ -3983,7 +4002,7 @@ fn reasoning_description(level: ReasoningLevel) -> &'static str {
 
 fn draw_help(frame: &mut ratatui::Frame<'_>) {
     let area = centered_rect(70, 20, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let text = Text::from(vec![
         Line::from("Commands"),
         Line::from(""),
@@ -4079,7 +4098,7 @@ fn draw_command_completions(
 
 fn draw_interaction_prompt(frame: &mut ratatui::Frame<'_>, prompt: &InteractionPrompt) {
     let area = centered_rect(70, 12, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let text = Text::from(vec![
         Line::from(prompt.title.clone()),
         Line::from(""),
@@ -4227,7 +4246,7 @@ fn draw_provider_screen(frame: &mut ratatui::Frame<'_>, view: &ProviderView) {
 
 fn draw_auth_prompt(frame: &mut ratatui::Frame<'_>, prompt: &AuthPrompt) {
     let area = centered_rect(60, 5, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let masked = "*".repeat(prompt.input.chars().count());
     let text = Text::from(vec![
         Line::from(format!("Provider: {}", prompt.instance_id)),
@@ -4244,7 +4263,7 @@ fn draw_auth_prompt(frame: &mut ratatui::Frame<'_>, prompt: &AuthPrompt) {
 
 fn draw_config_editor(frame: &mut ratatui::Frame<'_>, editor: &ConfigEditor) {
     let area = centered_rect(80, 22, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let mut lines = vec![
         Line::from(format!("Provider: {}", editor.instance.id)),
         Line::from(""),
@@ -4268,7 +4287,7 @@ fn draw_config_editor(frame: &mut ratatui::Frame<'_>, editor: &ConfigEditor) {
 
 fn draw_remove_confirmation(frame: &mut ratatui::Frame<'_>, instance_id: &str) {
     let area = centered_rect(60, 7, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_background(frame, area);
     let text = Text::from(vec![
         Line::from(format!("Remove provider instance `{instance_id}`?")),
         Line::from(""),
@@ -4278,6 +4297,14 @@ fn draw_remove_confirmation(frame: &mut ratatui::Frame<'_>, instance_id: &str) {
         Paragraph::new(text)
             .block(Block::default().borders(Borders::ALL).title("Confirm"))
             .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn clear_with_background(frame: &mut ratatui::Frame<'_>, area: Rect) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(COLOR_CANVAS)),
         area,
     );
 }
@@ -4554,7 +4581,7 @@ mod tests {
             ..ChatView::default()
         };
         ensure_transcript_cache(&mut view, 40);
-        let stable_before = view.transcript_cache.as_ref().expect("cache").lines[0].spans[1]
+        let stable_before = view.transcript_cache.as_ref().expect("cache").lines[0].spans[0]
             .content
             .as_ptr();
 
@@ -4565,7 +4592,7 @@ mod tests {
         ensure_transcript_cache(&mut view, 40);
 
         let cache = view.transcript_cache.as_ref().expect("cache");
-        assert_eq!(cache.lines[0].spans[1].content.as_ptr(), stable_before);
+        assert_eq!(cache.lines[0].spans[0].content.as_ptr(), stable_before);
         let rendered = cache
             .lines
             .iter()
@@ -4680,7 +4707,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_transcript_uses_the_effort_label() {
+    fn reasoning_transcript_omits_the_label() {
         let lines = thinking_transcript_lines("plan\ndetail");
         let rendered = lines
             .iter()
@@ -4691,7 +4718,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert_eq!(rendered, vec!["effort: plan", "        detail"]);
+        assert_eq!(rendered, vec!["plan", "detail"]);
     }
 
     #[test]
@@ -4747,7 +4774,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert!(rendered.iter().any(|line| line == "alpha: Title"));
+        assert!(rendered.iter().any(|line| line == "Title"));
         assert!(rendered.iter().any(|line| line == "Hello world and code."));
         assert!(rendered.iter().any(|line| line == "- one"));
         assert!(rendered.iter().any(|line| line == "- two"));
@@ -4765,6 +4792,48 @@ mod tests {
             .find(|span| span.content == "code")
             .expect("code span");
         assert_eq!(code.style.fg, Some(COLOR_SUCCESS));
+    }
+
+    #[test]
+    fn transcript_uses_unlabeled_message_styles() {
+        let mut app = app_with_composer("");
+        app.chat.transcript = vec![
+            TranscriptEntry::User("你好".to_owned()),
+            TranscriptEntry::Thinking("plan".to_owned()),
+            TranscriptEntry::Assistant("answer".to_owned()),
+        ];
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_app(frame, &mut app))
+            .expect("draw transcript");
+        assert!(terminal_contains(&terminal, "你"));
+        assert!(terminal_contains(&terminal, "好"));
+        assert!(terminal_contains(&terminal, "plan"));
+        assert!(terminal_contains(&terminal, "answer"));
+        assert!(!terminal_contains(&terminal, "you:"));
+        assert!(!terminal_contains(&terminal, "effort: plan"));
+        assert!(!terminal_contains(&terminal, "alpha: answer"));
+
+        let user_background = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "你")
+            .map(|cell| cell.bg);
+        assert_eq!(user_background, Some(COLOR_USER_BUBBLE));
+    }
+
+    #[test]
+    fn tui_uses_the_canvas_background() {
+        let mut app = app_with_composer("");
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_app(frame, &mut app))
+            .expect("draw canvas");
+        assert_eq!(terminal.backend().buffer().content()[0].bg, COLOR_CANVAS);
     }
 
     #[test]
