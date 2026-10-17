@@ -66,12 +66,13 @@ impl PromptSectionProvider for PermissionModesSection {
     fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
         Ok(Some(format!(
             "# Permission Presets\n\n\
-             - `read`: read-only workspace access with network disabled. Mutations and shell execution are denied.\n\
-             - `auto`: the Codex-compatible default. It uses a workspace-write sandbox with network disabled. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require approval.\n\
-             - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final.\n\
+             The session runs in one of four modes. Modes are switched by the user, never by you.\n\
+             - `read`: read-only workspace access with network disabled. Reads and searches work; mutations, shell execution, and protected operations are denied without prompting.\n\
+             - `auto`: the Codex-compatible default. It uses a workspace-write sandbox with network disabled and keeps protected paths such as `.git` read-only. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require user approval.\n\
+             - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final. Protected operations require user approval.\n\
              - `free`: full local filesystem and process access with network enabled and no approval prompts.\n\
-             - Protected operations still require approval outside `free` mode.\n\
-             - Current mode: `{}`. Do not attempt to bypass the active mode, sandbox, or approval decision.",
+             Approval prompts offer deny, allow once, and allow for this session; there is no always-allow option, and session grants expire with the session. Never auto-approved: critical-path deletions, credential files, policy and sandbox configuration, push and publish/deploy operations, and cross-session messaging.\n\
+             Current mode: `{}`. Do not attempt to bypass the active mode, the sandbox, or an approval decision.",
             request.state.mode
         )))
     }
