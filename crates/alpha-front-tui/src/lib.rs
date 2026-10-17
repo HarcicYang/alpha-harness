@@ -2704,15 +2704,7 @@ fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line
         TranscriptEntry::ThinkingDelta { text } => thinking_transcript_lines(text),
         TranscriptEntry::AssistantMessage { blocks } => blocks
             .iter()
-            .flat_map(|block| match block {
-                alpha_schema::AssistantContentBlock::Text { text } => {
-                    assistant_transcript_lines(text)
-                }
-                alpha_schema::AssistantContentBlock::Thinking { text, .. } => {
-                    thinking_transcript_lines(text)
-                }
-                other => vec![Line::from(format!("{other:?}"))],
-            })
+            .flat_map(assistant_content_block_lines)
             .collect(),
         TranscriptEntry::ToolCall { name, input, .. } => vec![Line::from(vec![
             Span::styled("... ", Style::default().fg(COLOR_WARNING)),
@@ -2743,6 +2735,44 @@ fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line
             Span::styled(message.clone(), Style::default().fg(COLOR_TEXT)),
         ])],
     }
+}
+
+fn assistant_content_block_lines(
+    block: &alpha_schema::AssistantContentBlock,
+) -> Vec<Line<'static>> {
+    match block {
+        alpha_schema::AssistantContentBlock::Text { text } => assistant_transcript_lines(text),
+        alpha_schema::AssistantContentBlock::Thinking { text, .. } => {
+            thinking_transcript_lines(text)
+        }
+        alpha_schema::AssistantContentBlock::LocalToolCall { .. } => Vec::new(),
+        alpha_schema::AssistantContentBlock::ProviderToolCall { name, input, .. } => {
+            vec![Line::from(format!(
+                "provider tool {name}: {}",
+                summarize_json(input)
+            ))]
+        }
+        alpha_schema::AssistantContentBlock::ProviderToolResult { name, content, .. } => {
+            vec![Line::from(format!(
+                "provider tool {name}: {}",
+                summarize_json(content)
+            ))]
+        }
+        alpha_schema::AssistantContentBlock::Citation {
+            url,
+            title,
+            snippet,
+        } => {
+            let label = title.as_deref().unwrap_or("citation");
+            let detail = url.as_deref().or(snippet.as_deref()).unwrap_or_default();
+            vec![Line::from(format!("{label}: {detail}"))]
+        }
+    }
+}
+
+fn summarize_json(value: &Value) -> String {
+    let text = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
+    truncate_summary(&text.replace(['\n', '\r'], " "), 160)
 }
 
 fn tool_status_label(status: alpha_schema::ToolStatus) -> &'static str {
@@ -3690,6 +3720,43 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         assert_eq!(rendered, vec!["reasoning", "first", "second"]);
+    }
+
+    #[test]
+    fn assistant_content_never_renders_raw_tool_call_debug() {
+        let entry = TranscriptEntry::AssistantMessage {
+            blocks: vec![
+                AssistantContentBlock::Text {
+                    text: "checking the file".to_owned(),
+                },
+                AssistantContentBlock::LocalToolCall {
+                    id: "call-1".to_owned(),
+                    name: "read".to_owned(),
+                    arguments: json!({ "path": "/tmp/file" }),
+                },
+                AssistantContentBlock::ProviderToolCall {
+                    id: "provider-1".to_owned(),
+                    name: "web_search".to_owned(),
+                    input: json!({ "query": "rust" }),
+                },
+            ],
+        };
+        let rendered = build_transcript_entry_lines(&entry, 80)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line == "checking the file"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("provider tool web_search"))
+        );
+        assert!(rendered.iter().all(|line| !line.contains("LocalToolCall")));
+        assert!(
+            rendered
+                .iter()
+                .all(|line| !line.contains("AssistantContentBlock"))
+        );
     }
 
     #[test]
