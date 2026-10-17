@@ -315,7 +315,14 @@ impl AgentHostService {
             steer_queue: steer_queue.clone(),
         })?;
         let route = runtime.model_route.get();
-        self.spawn_actor(header, writer, runtime, steer_queue, Vec::new())?;
+        let route_event = writer.append(SessionEvent::RouteChanged {
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            reasoning: route.reasoning,
+        })?;
+        let mut state = SessionState::new(&header);
+        state.apply(&route_event);
+        self.spawn_actor_with_state(header, writer, runtime, state, steer_queue, Vec::new())?;
         Ok(SessionCreated {
             session_id,
             mode,
@@ -617,25 +624,6 @@ impl AgentHostService {
             .expect("agent host lock poisoned")
             .get(&session_id)
             .cloned()
-    }
-
-    fn spawn_actor(
-        &self,
-        header: SessionHeader,
-        writer: SessionWriter,
-        runtime: SessionRuntime,
-        steer_queue: Arc<ActorSteerQueue>,
-        recovered_steers: Vec<SteerMessage>,
-    ) -> Result<(), AgentHostError> {
-        let state = SessionState::new(&header);
-        self.spawn_actor_with_state(
-            header,
-            writer,
-            runtime,
-            state,
-            steer_queue,
-            recovered_steers,
-        )
     }
 
     fn spawn_actor_with_state(

@@ -98,7 +98,11 @@ impl SessionRuntimeFactory for EchoFactory {
                 },
             )
             .expect("permission module");
-        let model_route = Arc::new(ModelRouteOverride::default());
+        let model_route = Arc::new(ModelRouteOverride::new(ModelRoute::new(
+            request.provider,
+            request.model,
+            request.reasoning,
+        )));
         ctx.provide::<ModelRouteOverride>(model_route.clone())
             .expect("model route override");
         let provider_tools_override = Arc::new(ProviderToolsOverride::default());
@@ -268,6 +272,52 @@ fn actor_streams_durable_events_and_completes_a_turn() {
             .resume_session(created.session_id)
             .expect("resume after eviction");
         assert_eq!(resumed.messages, 2);
+    });
+}
+
+#[test]
+fn initial_reasoning_survives_actor_eviction() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let transport = Arc::new(RecordingTransport::default());
+        let host = AgentHostService::new(store.clone(), transport, Arc::new(EchoFactory))
+            .with_idle_timeout(Duration::from_millis(20));
+        let created = host
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+                reasoning: ReasoningLevel::Max,
+            })
+            .expect("create");
+        assert_eq!(created.reasoning, ReasoningLevel::Max);
+
+        let reader = store.open_read(created.session_id).expect("read");
+        assert!(reader.events().iter().any(|event| {
+            matches!(
+                &event.payload,
+                SessionEvent::RouteChanged {
+                    provider,
+                    model,
+                    reasoning,
+                } if provider == "test" && model == "test" && *reasoning == ReasoningLevel::Max
+            )
+        }));
+        drop(reader);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(host.session_count(), 0);
+        let resumed = host
+            .resume_session(created.session_id)
+            .expect("resume after eviction");
+        assert_eq!(resumed.reasoning, ReasoningLevel::Max);
     });
 }
 
