@@ -16,9 +16,9 @@ pub mod time;
 pub use content::AssistantContentBlock;
 pub use event::EventEnvelope;
 pub use front::{
-    InteractionRequest, LiveAgentEvent, ProviderInstanceResponse, ProviderModelList,
-    SessionAttached, SessionCreated, SessionEventNotification, SessionListEntry, SessionResumed,
-    TurnStarted,
+    DiscardedSteer, DiscardedSteers, InteractionRequest, LiveAgentEvent, ProviderInstanceResponse,
+    ProviderModelList, SessionAttached, SessionCreated, SessionEventNotification, SessionListEntry,
+    SessionResumed, TurnStarted,
 };
 pub use id::{MessageId, SessionId, ToolCallId, TurnId};
 pub use permission::PermissionMode;

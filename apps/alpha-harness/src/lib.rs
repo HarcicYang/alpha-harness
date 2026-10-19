@@ -1697,10 +1697,11 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
             async move {
                 let params: ConfirmSteersParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-                host.confirm_steers(params.session_id, params.accept)
+                let discarded = host
+                    .confirm_steers(params.session_id, params.accept)
                     .await
                     .map_err(agent_host_rpc_error)?;
-                Ok(json!({ "ok": true }))
+                Ok(json!({ "ok": true, "steers": discarded }))
             }
         }
     });

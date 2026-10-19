@@ -20,8 +20,8 @@ use alpha_module_session::{
 };
 use alpha_protocol::{OutboundTransport, RpcError};
 use alpha_schema::{
-    LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel, SessionEventNotification, SessionId,
-    TurnId,
+    DiscardedSteer, LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel,
+    SessionEventNotification, SessionId, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -183,13 +183,6 @@ impl ActorSteerQueue {
         queue.push_back(message);
         Ok(())
     }
-
-    fn clear(&self) {
-        self.queue
-            .lock()
-            .expect("steer queue lock poisoned")
-            .clear();
-    }
 }
 
 impl SteerQueue for ActorSteerQueue {
@@ -221,7 +214,7 @@ enum SessionCommand {
     },
     ConfirmSteers {
         accept: bool,
-        reply: oneshot::Sender<Result<(), AgentHostError>>,
+        reply: oneshot::Sender<Result<Vec<DiscardedSteer>, AgentHostError>>,
     },
     SetCapabilities {
         provider_tools: Vec<String>,
@@ -498,12 +491,12 @@ impl AgentHostService {
             .map_err(|_| AgentHostError::ActorStopped(session_id))?
     }
 
-    /// Confirm or discard steers waiting outside an active turn.
+    /// Confirm pending steers or discard queued steers.
     pub async fn confirm_steers(
         &self,
         session_id: SessionId,
         accept: bool,
-    ) -> Result<(), AgentHostError> {
+    ) -> Result<Vec<DiscardedSteer>, AgentHostError> {
         let actor = self
             .actor(session_id)
             .ok_or(AgentHostError::SessionNotFound(session_id))?;
@@ -1047,25 +1040,28 @@ async fn actor_loop(
                         let _ = reply.send(result);
                     }
                     SessionCommand::ConfirmSteers { accept, reply } => {
-                        if active_turn.is_some() {
+                        if active_turn.is_some() && accept {
                             let _ = reply.send(Err(AgentHostError::Invalid(
                                 "cannot confirm steers during an active turn".to_owned(),
                             )));
                             continue;
                         }
                         if !accept {
-                            for steer in recovered_steers.drain(..) {
-                                let _ = writer.append(SessionEvent::SteerDiscarded {
-                                    steer_id: steer.steer_id,
-                                });
-                            }
-                            for steer in steer_queue.drain() {
-                                let _ = writer.append(SessionEvent::SteerDiscarded {
-                                    steer_id: steer.steer_id,
-                                });
-                            }
-                            steer_queue.clear();
-                            let _ = reply.send(Ok(()));
+                            let mut queued = std::mem::take(&mut recovered_steers);
+                            queued.extend(steer_queue.drain());
+                            let discarded = queued
+                                .into_iter()
+                                .map(|steer| {
+                                    let _ = writer.append(SessionEvent::SteerDiscarded {
+                                        steer_id: steer.steer_id,
+                                    });
+                                    DiscardedSteer {
+                                        steer_id: steer.steer_id,
+                                        text: steer.text,
+                                    }
+                                })
+                                .collect();
+                            let _ = reply.send(Ok(discarded));
                             continue;
                         }
                         let queued = if recovered_steers.is_empty() {
@@ -1074,7 +1070,7 @@ async fn actor_loop(
                             std::mem::take(&mut recovered_steers)
                         };
                         if queued.is_empty() {
-                            let _ = reply.send(Ok(()));
+                            let _ = reply.send(Ok(Vec::new()));
                             continue;
                         }
                         for steer in &queued {
@@ -1100,7 +1096,7 @@ async fn actor_loop(
                             &mut cancel,
                             &mut active_turn,
                         );
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.send(Ok(Vec::new()));
                     }
                     SessionCommand::SetCapabilities {
                         provider_tools,

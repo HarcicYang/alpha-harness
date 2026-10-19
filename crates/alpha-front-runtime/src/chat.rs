@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use alpha_protocol::Id;
 use alpha_schema::{
-    AssistantContentBlock, EventEnvelope, LiveAgentEvent, PermissionMode, ReasoningLevel, Seq,
-    SessionEvent, SessionEventNotification, SessionId, ToolCallId, ToolStatus, TurnEndReason,
-    TurnId,
+    AssistantContentBlock, EventEnvelope, LiveAgentEvent, MessageId, PermissionMode,
+    ReasoningLevel, Seq, SessionEvent, SessionEventNotification, SessionId, ToolCallId, ToolStatus,
+    TurnEndReason, TurnId,
 };
 use serde_json::Value;
 
@@ -15,6 +15,13 @@ pub enum TranscriptItem {
     /// A durable user message.
     User {
         /// Message text.
+        text: String,
+    },
+    /// A steer message waiting in the bounded queue.
+    QueuedSteer {
+        /// Stable steer identity.
+        id: MessageId,
+        /// Steer text.
         text: String,
     },
     /// A live assistant text stream.
@@ -213,6 +220,7 @@ impl ChatState {
     pub fn item_text(item: &TranscriptItem) -> Option<&str> {
         match item {
             TranscriptItem::User { text }
+            | TranscriptItem::QueuedSteer { text, .. }
             | TranscriptItem::AssistantDelta { text }
             | TranscriptItem::ThinkingDelta { text } => Some(text),
             TranscriptItem::AssistantMessage { blocks } => {
@@ -222,6 +230,17 @@ impl ChatState {
             | TranscriptItem::ToolResult { .. }
             | TranscriptItem::Error { .. } => None,
         }
+    }
+
+    /// Remove queued steer items after the core confirms their discard.
+    pub(crate) fn discard_steers(&mut self, steer_ids: &[MessageId]) {
+        let steer_ids = steer_ids.iter().copied().collect::<BTreeSet<_>>();
+        self.transcript.retain(|item| {
+            !matches!(
+                item,
+                TranscriptItem::QueuedSteer { id, .. } if steer_ids.contains(id)
+            )
+        });
     }
 
     fn apply_durable(&mut self, envelope: &EventEnvelope<SessionEvent>) -> Vec<ChatUpdate> {
@@ -294,8 +313,33 @@ impl ChatState {
                 self.mode = *mode;
                 Some(format!("mode: {mode}"))
             }
-            SessionEvent::SteerQueued { .. } => Some("steer queued".to_owned()),
-            SessionEvent::SteerInjected { .. } => Some("steer injected".to_owned()),
+            SessionEvent::SteerQueued { steer_id, text, .. } => {
+                self.transcript.push(TranscriptItem::QueuedSteer {
+                    id: *steer_id,
+                    text: text.clone(),
+                });
+                Some("steer queued".to_owned())
+            }
+            SessionEvent::SteerInjected { steer_id, text, .. } => {
+                self.transcript.retain(|item| {
+                    !matches!(
+                        item,
+                        TranscriptItem::QueuedSteer { id, .. } if id == steer_id
+                    )
+                });
+                self.transcript
+                    .push(TranscriptItem::User { text: text.clone() });
+                Some("steer injected".to_owned())
+            }
+            SessionEvent::SteerDiscarded { steer_id } => {
+                self.transcript.retain(|item| {
+                    !matches!(
+                        item,
+                        TranscriptItem::QueuedSteer { id, .. } if id == steer_id
+                    )
+                });
+                Some("steer discarded".to_owned())
+            }
             SessionEvent::CapabilitiesSet { provider_tools } => {
                 self.pending_provider_tools = Some(provider_tools.clone());
                 Some("provider capabilities updated".to_owned())
@@ -379,7 +423,7 @@ pub enum ChatUpdate {
 mod tests {
     use alpha_schema::{
         EventEnvelope, LiveAgentEvent, MessageId, Seq, SessionEvent, SessionEventNotification,
-        SessionId, Timestamp, ToolStatus,
+        SessionId, Timestamp, ToolStatus, TurnId,
     };
     use serde_json::json;
 
@@ -481,5 +525,74 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn queued_steers_are_visible_until_they_settle() {
+        let session_id = SessionId::new();
+        let mut state = ChatState {
+            session_id: Some(session_id),
+            ..ChatState::default()
+        };
+        let injected_id = MessageId::new();
+        let turn_id = TurnId::new();
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(1),
+                Timestamp::from_millis(1),
+                SessionEvent::SteerQueued {
+                    steer_id: injected_id,
+                    turn_id,
+                    text: "adjust direction".to_owned(),
+                },
+            ),
+        });
+        assert_eq!(
+            state.transcript,
+            vec![TranscriptItem::QueuedSteer {
+                id: injected_id,
+                text: "adjust direction".to_owned(),
+            }]
+        );
+
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(2),
+                Timestamp::from_millis(2),
+                SessionEvent::SteerInjected {
+                    steer_id: injected_id,
+                    turn_id,
+                    message_id: MessageId::new(),
+                    text: "adjust direction".to_owned(),
+                },
+            ),
+        });
+        assert_eq!(
+            state.transcript,
+            vec![TranscriptItem::User {
+                text: "adjust direction".to_owned(),
+            }]
+        );
+
+        let discarded_id = MessageId::new();
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(3),
+                Timestamp::from_millis(3),
+                SessionEvent::SteerQueued {
+                    steer_id: discarded_id,
+                    turn_id,
+                    text: "undo this".to_owned(),
+                },
+            ),
+        });
+        state.discard_steers(&[discarded_id]);
+        assert!(state.transcript.iter().all(|item| !matches!(
+            item,
+            TranscriptItem::QueuedSteer { id, .. } if *id == discarded_id
+        )));
     }
 }

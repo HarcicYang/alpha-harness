@@ -610,7 +610,9 @@ Steers sent outside an active turn remain pending until
 turn. Discarded steers are removed without entering model history. The pending
 steer queue is bounded and rejects overflow. Queued and settled steer
 identities are durable, so a resumed actor rebuilds the pending set from the
-log and waits for confirmation before executing anything.
+log and waits for confirmation before executing anything. Discarding returns
+the removed messages to the frontend, allowing an active queued steer to be
+restored to the composer instead of being injected.
 
 ## 4. Runtime contract sketch
 

@@ -309,6 +309,17 @@ impl Composer {
         self.cursor = start + replacement.len();
     }
 
+    fn restore_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.text.push('\n');
+        }
+        self.text.push_str(text);
+        self.cursor = self.text.len();
+    }
+
     fn previous_boundary(&self) -> usize {
         self.text[..self.cursor]
             .char_indices()
@@ -1732,6 +1743,10 @@ fn handle_chat_key(
         KeyCode::Esc => {
             if completion_visible {
                 app.chat.completion_dismissed = true;
+            } else if let Some(text) = runtime.recall_queued_steers()? {
+                app.chat.composer.restore_text(&text);
+                app.chat.reset_completion();
+                app.chat.transcript_scroll_back = 0;
             } else if let Err(error) = runtime.cancel() {
                 app.chat.status = Some(error.to_string());
             }
@@ -2699,7 +2714,9 @@ fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
 
 fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line<'static>> {
     match entry {
-        TranscriptEntry::User { text } => user_transcript_lines(text, width),
+        TranscriptEntry::User { text } | TranscriptEntry::QueuedSteer { text, .. } => {
+            user_transcript_lines(text, width)
+        }
         TranscriptEntry::AssistantDelta { text } => assistant_transcript_lines(text),
         TranscriptEntry::ThinkingDelta { text } => thinking_transcript_lines(text),
         TranscriptEntry::AssistantMessage { blocks } => blocks
@@ -3137,7 +3154,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("Shift-Tab        cycle reasoning effort"),
         Line::from("Wheel/PgUp/PgDn  scroll transcript"),
         Line::from(""),
-        Line::from("Esc deny/cancel   Ctrl-P providers   Ctrl-C quit"),
+        Line::from("Esc recall/cancel   Ctrl-P providers   Ctrl-C quit"),
     ]);
     frame.render_widget(
         Paragraph::new(text)
@@ -3542,9 +3559,9 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use alpha_schema::{
-        AdapterRequirement, AssistantContentBlock, AuthMethodDescriptor, ModelDescriptor,
-        PermissionMode, ProviderDescriptor, ProviderInstance, ReasoningLevel, SessionId, Timestamp,
-        ToolCallId, ToolStatus, WorkspaceRef,
+        AdapterRequirement, AssistantContentBlock, AuthMethodDescriptor, MessageId,
+        ModelDescriptor, PermissionMode, ProviderDescriptor, ProviderInstance, ReasoningLevel,
+        SessionId, Timestamp, ToolCallId, ToolStatus, WorkspaceRef,
     };
     use serde_json::json;
 
@@ -3639,6 +3656,14 @@ mod tests {
     }
 
     #[test]
+    fn recalled_steers_are_appended_to_the_composer() {
+        let mut composer = composer("draft");
+        composer.restore_text("first steer\nsecond steer");
+        assert_eq!(composer.text(), "draft\nfirst steer\nsecond steer");
+        assert_eq!(composer.cursor(), composer.text().len());
+    }
+
+    #[test]
     fn provider_selection_stays_in_bounds() {
         let mut view = ProviderView {
             state: ProviderState {
@@ -3697,6 +3722,21 @@ mod tests {
             80,
         );
         assert!(lines[0].to_string().contains("shell: completed"));
+    }
+
+    #[test]
+    fn queued_steers_render_as_user_messages() {
+        let rendered = build_transcript_entry_lines(
+            &TranscriptEntry::QueuedSteer {
+                id: MessageId::new(),
+                text: "queued steer".to_owned(),
+            },
+            40,
+        )
+        .iter()
+        .map(ToString::to_string)
+        .collect::<String>();
+        assert!(rendered.contains("queued steer"));
     }
 
     #[test]

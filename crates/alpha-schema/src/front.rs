@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    EventEnvelope, PermissionMode, ProviderInstance, ReasoningLevel, SessionEvent, SessionId,
-    Timestamp, ToolStatus, TurnId, WorkspaceRef,
+    EventEnvelope, MessageId, PermissionMode, ProviderInstance, ReasoningLevel, SessionEvent,
+    SessionId, Timestamp, ToolStatus, TurnId, WorkspaceRef,
 };
 
 /// One `session.event` notification.
@@ -181,6 +181,24 @@ pub struct InteractionRequest {
     pub kind: String,
     /// Interaction-specific payload.
     pub prompt: Value,
+}
+
+/// One steer message removed from a pending queue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardedSteer {
+    /// Stable steer identity.
+    pub steer_id: MessageId,
+    /// Steer text.
+    pub text: String,
+}
+
+/// Pending steers removed by one operation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardedSteers {
+    /// Discarded messages in queue order.
+    pub steers: Vec<DiscardedSteer>,
 }
 
 /// Result of reading a provider model catalog.

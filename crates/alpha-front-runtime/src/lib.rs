@@ -13,8 +13,9 @@ use std::time::Duration;
 use alpha_front_client::{ConnectionEvent, CoreInfo};
 use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
 use alpha_schema::{
-    InteractionRequest, PermissionMode, ReasoningLevel, SessionAttached, SessionCreated,
-    SessionEventNotification, SessionId, SessionListEntry, SessionResumed, TurnStarted,
+    DiscardedSteers, InteractionRequest, PermissionMode, ReasoningLevel, SessionAttached,
+    SessionCreated, SessionEventNotification, SessionId, SessionListEntry, SessionResumed,
+    TurnStarted,
 };
 use serde_json::{Value, json};
 
@@ -447,16 +448,52 @@ impl FrontRuntime {
             .chat
             .session_id
             .ok_or_else(|| FrontError::Protocol("no active session".to_owned()))?;
-        self.supervisor.request(
+        let response: DiscardedSteers = parse_response(self.supervisor.request(
             "session.confirm_steers",
             Some(json!({ "sessionId": session_id, "accept": accept })),
-        )?;
+        )?)?;
+        if !accept {
+            let steer_ids = response
+                .steers
+                .iter()
+                .map(|steer| steer.steer_id)
+                .collect::<Vec<_>>();
+            self.chat.discard_steers(&steer_ids);
+        }
         self.chat.status = Some(if accept {
             "pending steers confirmed".to_owned()
         } else {
             "pending steers discarded".to_owned()
         });
         Ok(())
+    }
+
+    /// Discard queued steers and return their text for composer recovery.
+    pub fn recall_queued_steers(&mut self) -> Result<Option<String>, FrontError> {
+        let Some(session_id) = self.chat.session_id else {
+            return Ok(None);
+        };
+        let response: DiscardedSteers = parse_response(self.supervisor.request(
+            "session.confirm_steers",
+            Some(json!({ "sessionId": session_id, "accept": false })),
+        )?)?;
+        if response.steers.is_empty() {
+            return Ok(None);
+        }
+        let steer_ids = response
+            .steers
+            .iter()
+            .map(|steer| steer.steer_id)
+            .collect::<Vec<_>>();
+        self.chat.discard_steers(&steer_ids);
+        let text = response
+            .steers
+            .into_iter()
+            .map(|steer| steer.text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.chat.status = Some("queued steers returned to input".to_owned());
+        Ok(Some(text))
     }
 
     /// Set provider-native tools.

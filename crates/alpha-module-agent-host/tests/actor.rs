@@ -541,10 +541,12 @@ fn pending_steers_require_confirmation() {
         host.steer(created.session_id, "confirmed".to_owned())
             .await
             .expect("queue steer");
-        assert!(matches!(
-            host.confirm_steers(created.session_id, false).await,
-            Ok(())
-        ));
+        let discarded = host
+            .confirm_steers(created.session_id, false)
+            .await
+            .expect("discard steer");
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].text, "confirmed");
         host.steer(created.session_id, "confirmed".to_owned())
             .await
             .expect("queue steer");
@@ -718,6 +720,82 @@ fn running_steer_starts_the_next_turn_after_completion() {
                 && params["kind"] == "durable"
                 && params["event"]["payload"]["type"] == "assistant_message"
                 && params["event"]["payload"]["blocks"][0]["text"] == "echo:steer"
+        }));
+    });
+}
+
+#[test]
+fn active_steer_can_be_discarded_before_injection() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let transport = Arc::new(RecordingTransport::default());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let host = AgentHostService::new(
+            SessionStore::new(dir.path()),
+            transport.clone(),
+            Arc::new(BlockingFactory {
+                started: started.clone(),
+                release: release.clone(),
+            }),
+        );
+        let created = host
+            .create_session(CreateSessionRequest {
+                workspace: dir.path().to_path_buf(),
+                cwd: None,
+                mode: PermissionMode::Auto,
+                provider: "test".to_owned(),
+                model: "test".to_owned(),
+                reasoning: Default::default(),
+            })
+            .expect("create");
+        host.submit(created.session_id, "first".to_owned())
+            .expect("submit");
+        started.notified().await;
+        host.steer(created.session_id, "undo me".to_owned())
+            .await
+            .expect("steer");
+        let discarded = host
+            .confirm_steers(created.session_id, false)
+            .await
+            .expect("discard active steer");
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].text, "undo me");
+        release.notify_one();
+        for _ in 0..50 {
+            let done = transport
+                .notifications
+                .lock()
+                .expect("notification lock poisoned")
+                .iter()
+                .any(|(method, params)| {
+                    method == "session.event"
+                        && params["kind"] == "durable"
+                        && params["event"]["payload"]["type"] == "turn_ended"
+                });
+            if done {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let notifications = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned");
+        assert!(notifications.iter().any(|(method, params)| {
+            method == "session.event"
+                && params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "steer_discarded"
+                && params["event"]["payload"]["steer_id"] == discarded[0].steer_id.to_string()
+        }));
+        assert!(notifications.iter().all(|(method, params)| {
+            method != "session.event"
+                || params["event"]["payload"]["type"] != "assistant_message"
+                || params["event"]["payload"]["blocks"][0]["text"] != "echo:undo me"
         }));
     });
 }
