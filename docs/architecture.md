@@ -385,7 +385,8 @@ The prompt module assembles one deterministic system prompt from ordered
 sections. Framework, policy, output, tool, project, capability, and persona
 sections have stable keys and priorities. Persona is rendered last. Tool
 schemas remain the canonical tool descriptions and are not copied into the
-prompt.
+prompt. Runtime values such as the permission mode and workspace binding are
+not rendered into the system prompt.
 
 Project instructions are discovered through the filesystem seam from
 `AGENTS.md` and `.alpha/AGENTS.md` between the workspace root and fixed cwd.
@@ -395,6 +396,13 @@ The complete prompt is recorded as a durable `system_prompt_set` event before
 the first turn that uses it. Resume and replay use that snapshot instead of
 rendering a new prompt in the background. Prompt changes therefore remain
 explicit session facts.
+
+Dynamic context sections render into `context_injected` user messages. The
+runtime section is injected before the first user message of a session and is
+re-injected only when its rendered content changes. The projection ignores an
+older context message when compaction hides it, causing the current snapshot to
+be injected again. This keeps the stable system prefix intact while making
+later environment changes explicit and append-only.
 
 ### D23: Context compaction
 
@@ -583,7 +591,7 @@ Provider-facing history therefore keeps the structured content exposed by the
 session log and frontends.
 
 Schema 1 assistant messages with a plain `text` field are migrated into a
-single text block when read. The current durable schema is version 6.
+single text block when read. The current durable schema is version 7.
 Provider-native tools, including Anthropic `web_search`, use provider tool
 blocks, so the transcript and replay path do not need provider-specific event
 types.
@@ -663,7 +671,7 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-build` | dependency-graph validation and module table generation |
 | `alpha-module-config` | layered TOML configuration and provenance |
 | `alpha-module-credential` | cross-platform keyring-backed credential storage |
-| `alpha-module-prompt` | deterministic system-prompt assembly and project instructions |
+| `alpha-module-prompt` | deterministic system-prompt assembly, project instructions, and dynamic context injection |
 | `alpha-module-compaction` | budget estimation and durable context compaction |
 | `alpha-module-session` | append-only session log, projections, migrations |
 | `alpha-module-loop` | default agent driver (replaceable) |

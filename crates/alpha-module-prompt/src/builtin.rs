@@ -5,8 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alpha_module_fs::{FileSystem, FsError};
+use alpha_module_permission::PermissionService;
 
-use crate::{PromptConfig, PromptError, PromptPriority, PromptRequest, PromptSectionProvider};
+use crate::{
+    ContextSectionProvider, PromptConfig, PromptError, PromptPriority, PromptRequest,
+    PromptSectionProvider,
+};
 
 pub(crate) fn sections(config: &PromptConfig) -> Vec<Arc<dyn PromptSectionProvider>> {
     let mut sections: Vec<Arc<dyn PromptSectionProvider>> = vec![
@@ -26,6 +30,10 @@ pub(crate) fn sections(config: &PromptConfig) -> Vec<Arc<dyn PromptSectionProvid
     sections
 }
 
+pub(crate) fn context_sections() -> Vec<Arc<dyn ContextSectionProvider>> {
+    vec![Arc::new(RuntimeContextSection)]
+}
+
 struct RuntimeSection;
 
 impl PromptSectionProvider for RuntimeSection {
@@ -38,15 +46,42 @@ impl PromptSectionProvider for RuntimeSection {
     }
 
     fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        Ok(Some(format!(
+        let _ = request;
+        Ok(Some(
             "# Your Runtime and Operating Model\n\n\
              - You are a coding agent running inside `alpha-harness`, responsible for understanding tasks, inspecting the workspace, making changes, and verifying results.\n\
-             - Current permission mode: `{}`.\n\
+             - The latest `alpha_context` message with key `runtime` is authoritative for the permission mode, workspace root, and fixed cwd.\n\
+             - You can read, search, and edit files and run commands through tools; when an action is required you must call a tool.\n\
+             - Every tool call is a real operation; before executing, confirm the target and the scope of impact."
+                .to_owned(),
+        ))
+    }
+}
+
+struct RuntimeContextSection;
+
+impl ContextSectionProvider for RuntimeContextSection {
+    fn key(&self) -> &'static str {
+        "runtime"
+    }
+
+    fn priority(&self) -> PromptPriority {
+        PromptPriority::Runtime
+    }
+
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
+        let mode = request
+            .ctx
+            .get::<dyn PermissionService>()
+            .map(|permission| permission.mode())
+            .unwrap_or(request.state.mode);
+        Ok(Some(format!(
+            "# Runtime Context\n\n\
+             - Permission mode: `{mode}`.\n\
              - Workspace root: `{}`.\n\
              - Fixed cwd: `{}`.\n\
-             - You can read, search, and edit files and run commands through tools; when an action is required you must call a tool.\n\
-             - Every tool call is a real operation; before executing, confirm the target and the scope of impact.",
-            request.state.mode, request.state.workspace.root, request.state.workspace.cwd
+             - This message supersedes earlier runtime context messages.",
+            request.state.workspace.root, request.state.workspace.cwd
         )))
     }
 }
@@ -64,7 +99,8 @@ impl PromptSectionProvider for PermissionModesSection {
     }
 
     fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        Ok(Some(format!(
+        let _ = request;
+        Ok(Some(
             "# Permission Presets\n\n\
              The session runs in one of four modes. Modes are switched by the user, never by you.\n\
              - `read`: read-only workspace access with network disabled. Reads and searches work; mutations, shell execution, and protected operations are denied without prompting.\n\
@@ -72,9 +108,9 @@ impl PromptSectionProvider for PermissionModesSection {
              - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final. Protected operations require user approval.\n\
              - `free`: full local filesystem and process access with network enabled and no approval prompts.\n\
              Approval prompts offer deny, allow once, and allow for this session; there is no always-allow option, and session grants expire with the session. Never auto-approved: critical-path deletions, credential files, policy and sandbox configuration, push and publish/deploy operations, and cross-session messaging.\n\
-             Current mode: `{}`. Do not attempt to bypass the active mode, the sandbox, or an approval decision.",
-            request.state.mode
-        )))
+             Do not attempt to bypass the active mode, the sandbox, or an approval decision."
+                .to_owned(),
+        ))
     }
 }
 

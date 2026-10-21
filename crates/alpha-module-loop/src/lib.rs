@@ -15,8 +15,8 @@ use serde::Deserialize;
 
 pub use agent::{
     AgentDriver, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta,
-    AgentToolFinished, AgentToolStarted, AgentTurnFinished, ContextError, ContextPreparer,
-    LoopError, SteerMessage, SteerQueue, TurnOutcome,
+    AgentToolFinished, AgentToolStarted, AgentTurnFinished, ContextError, ContextInjector,
+    ContextPreparer, LoopError, SteerMessage, SteerQueue, TurnOutcome,
 };
 pub use provider::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
@@ -86,6 +86,9 @@ impl Module for LoopModule {
         }
         if let Some(preparer) = ctx.get::<dyn ContextPreparer>() {
             agent = agent.with_context_preparer(preparer);
+        }
+        if let Some(injector) = ctx.get::<dyn ContextInjector>() {
+            agent = agent.with_context_injector(injector);
         }
         if let Some(queue) = ctx.get::<dyn SteerQueue>() {
             agent = agent.with_steer_queue(queue);

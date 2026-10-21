@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::time::{Seq, Timestamp};
 
 /// Schema version of the current durable payloads.
-pub const CURRENT_SCHEMA: u32 = 6;
+pub const CURRENT_SCHEMA: u32 = 7;
 
 /// One durable event in a session log.
 ///

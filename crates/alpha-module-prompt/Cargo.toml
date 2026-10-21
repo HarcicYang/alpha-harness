@@ -11,12 +11,15 @@ categories = ["development-tools"]
 [dependencies]
 alpha-kernel.workspace = true
 alpha-module-fs.workspace = true
+alpha-module-loop.workspace = true
+alpha-module-permission.workspace = true
 alpha-module-session.workspace = true
+alpha-schema.workspace = true
+futures.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-alpha-schema.workspace = true
 tempfile.workspace = true
 
 [package.metadata.alpha]
@@ -26,5 +29,7 @@ key = "prompt"
 provides = [
     { key = "prompt.assembler", kind = "singleton", scope = "location" },
     { key = "prompt.section", kind = "registry", scope = "location" },
+    { key = "prompt.context", kind = "registry", scope = "location" },
+    { key = "context.injector", kind = "singleton", scope = "location" },
 ]
 requires = ["fs"]

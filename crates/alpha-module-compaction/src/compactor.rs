@@ -62,9 +62,9 @@ impl DefaultContextCompactor {
 
     fn estimate_record(&self, record: &MessageRecord) -> usize {
         match record {
-            MessageRecord::User { text, .. } | MessageRecord::Assistant { text, .. } => {
-                self.estimator.estimate(text)
-            }
+            MessageRecord::User { text, .. }
+            | MessageRecord::Context { text, .. }
+            | MessageRecord::Assistant { text, .. } => self.estimator.estimate(text),
             MessageRecord::ToolCall { name, input, .. } => {
                 self.estimator.estimate(name) + self.estimator.estimate(&input.to_string())
             }
@@ -97,7 +97,10 @@ impl DefaultContextCompactor {
 
         let mut cut = None;
         for index in (1..=candidate).rev() {
-            if matches!(records[index], MessageRecord::User { .. }) {
+            if matches!(
+                records[index],
+                MessageRecord::User { .. } | MessageRecord::Context { .. }
+            ) {
                 cut = Some(index);
                 break;
             }
@@ -252,6 +255,7 @@ fn effective_records(state: &SessionState) -> Vec<&MessageRecord> {
 fn render_record(record: &MessageRecord) -> String {
     match record {
         MessageRecord::User { text, .. } => format!("user:\n{text}"),
+        MessageRecord::Context { key, text, .. } => format!("context {key}:\n{text}"),
         MessageRecord::Assistant { text, .. } => format!("assistant:\n{text}"),
         MessageRecord::ToolCall { name, input, .. } => {
             format!("tool_call {name}:\n{input}")

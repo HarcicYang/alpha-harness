@@ -172,6 +172,23 @@ async fn run_prompt_edits_a_file_end_to_end() {
     assert!(decided_sources(reader.events(), true).contains(&"default".to_owned()));
 
     let requests = provider.requests.lock().expect("request lock");
+    assert!(matches!(
+        &requests[0].messages[0],
+        ChatMessage::System(text)
+            if !text.contains("Current permission mode")
+                && !text.contains(&workspace.path().display().to_string())
+    ));
+    assert!(matches!(
+        &requests[0].messages[1],
+        ChatMessage::User(text)
+            if text.contains("key=\"runtime\"")
+                && text.contains("Permission mode: `free`")
+                && text.contains(&workspace.path().display().to_string())
+    ));
+    assert_eq!(
+        requests[0].messages[2],
+        ChatMessage::User("write a file".to_owned())
+    );
     assert!(requests[1].messages.iter().any(|message| matches!(
         message,
         ChatMessage::ToolResult { content, .. }
@@ -287,7 +304,7 @@ async fn resume_replays_history_and_runs_a_follow_up_turn() {
     .await
     .expect("idle resume");
     assert!(idle.assistant_text.is_none());
-    assert_eq!(idle.messages, 5);
+    assert_eq!(idle.messages, 6);
     assert_eq!(idle.repairs, 0);
 
     let resumed = resume_session(
@@ -301,7 +318,7 @@ async fn resume_replays_history_and_runs_a_follow_up_turn() {
     .await
     .expect("resume");
     assert_eq!(resumed.assistant_text.as_deref(), Some("second"));
-    assert_eq!(resumed.messages, 7);
+    assert_eq!(resumed.messages, 8);
     assert!(!resumed.turn_open);
 
     let requests = provider.requests.lock().expect("request lock");
@@ -378,10 +395,10 @@ async fn cassette_replay_reproduces_the_same_session_state() {
             .state()
             .messages
             .iter()
-            .map(|record| match record {
-                MessageRecord::User { text, .. } => format!("user:{text}"),
-                MessageRecord::Assistant { text, .. } => format!("assistant:{text}"),
-                _ => "other".to_owned(),
+            .filter_map(|record| match record {
+                MessageRecord::User { text, .. } => Some(format!("user:{text}")),
+                MessageRecord::Assistant { text, .. } => Some(format!("assistant:{text}")),
+                _ => None,
             })
             .collect();
         runs.push(messages);

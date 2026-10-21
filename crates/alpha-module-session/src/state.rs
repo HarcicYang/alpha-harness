@@ -22,6 +22,17 @@ pub enum MessageRecord {
         /// Message text.
         text: String,
     },
+    /// Injected dynamic context.
+    Context {
+        /// Durable sequence of the source event.
+        seq: Seq,
+        /// Message identity.
+        id: MessageId,
+        /// Stable context section key.
+        key: String,
+        /// Model-visible message.
+        text: String,
+    },
     /// An assistant message.
     Assistant {
         /// Durable sequence of the source event.
@@ -64,6 +75,7 @@ impl MessageRecord {
     pub fn seq(&self) -> Seq {
         match self {
             Self::User { seq, .. }
+            | Self::Context { seq, .. }
             | Self::Assistant { seq, .. }
             | Self::ToolCall { seq, .. }
             | Self::ToolResult { seq, .. } => *seq,
@@ -150,6 +162,14 @@ impl SessionState {
                 id: *id,
                 text: text.clone(),
             }),
+            SessionEvent::ContextInjected { id, key, text } => {
+                self.messages.push(MessageRecord::Context {
+                    seq: envelope.seq,
+                    id: *id,
+                    key: key.clone(),
+                    text: text.clone(),
+                });
+            }
             SessionEvent::SteerQueued { .. } => {}
             SessionEvent::SteerDiscarded { .. } => {}
             SessionEvent::SteerInjected {

@@ -93,6 +93,15 @@ pub enum SessionEvent {
         /// Full model-visible system prompt.
         text: String,
     },
+    /// Dynamic model-visible context injected as a user message.
+    ContextInjected {
+        /// Message identity used in model history.
+        id: MessageId,
+        /// Stable context section key.
+        key: String,
+        /// Fully rendered model-visible message.
+        text: String,
+    },
     /// Frozen request capabilities for one model step.
     RequestHeader {
         /// Provider instance id or provider kind.

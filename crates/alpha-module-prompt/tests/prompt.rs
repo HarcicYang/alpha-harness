@@ -2,8 +2,9 @@ use std::fs;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
+use alpha_module_loop::{ChatMessage, ContextInjector};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule, PromptPriority};
-use alpha_module_session::{SessionHeader, SessionState, WorkspaceRef};
+use alpha_module_session::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 use alpha_schema::{PermissionMode, SessionId};
 
 fn state() -> SessionState {
@@ -47,12 +48,68 @@ fn module_assembles_builtin_sections_in_stable_order() {
     assert!(output < tools);
     assert!(tools < stop);
     assert!(stop < persona);
-    assert!(prompt.contains("`auto`"));
-    assert!(prompt.contains("`/workspace/project`"));
+    assert!(!prompt.contains("Current permission mode"));
+    assert!(!prompt.contains("`/workspace/project`"));
     assert!(prompt.contains("Codex-compatible default"));
     assert!(prompt.contains("reviewer denial is final"));
     assert!(prompt.contains("GFM tables"));
     assert!(prompt.contains("fenced code blocks"));
+}
+
+#[test]
+fn runtime_context_is_injected_once_and_updated_as_new_messages() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = SessionHeader::new(
+        SessionId::new(),
+        PermissionMode::Auto,
+        WorkspaceRef {
+            root: "/workspace".to_owned(),
+            cwd: "/workspace/project".to_owned(),
+        },
+    );
+    let writer = store.create(header.clone()).expect("create");
+    let mut state = SessionState::new(&header);
+    let ctx = Ctx::root();
+    PromptModule
+        .activate(&ctx, &PromptConfig::default())
+        .expect("activate");
+    let injector = ctx
+        .require::<dyn ContextInjector>()
+        .expect("context injector");
+    let mut messages = Vec::new();
+
+    futures::executor::block_on(injector.inject(&ctx, &writer, &mut state, &mut messages))
+        .expect("inject initial context");
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(messages.len(), 1);
+    let ChatMessage::User(first) = &messages[0] else {
+        panic!("context must be a user message");
+    };
+    assert!(first.contains("key=\"runtime\""));
+    assert!(first.contains("Permission mode: `auto`"));
+    assert!(first.contains("`/workspace/project`"));
+    let first_seq = writer.last_seq();
+
+    futures::executor::block_on(injector.inject(&ctx, &writer, &mut state, &mut messages))
+        .expect("deduplicate context");
+    assert_eq!(writer.last_seq(), first_seq);
+    assert_eq!(messages.len(), 1);
+
+    let changed = writer
+        .append(SessionEvent::ModeChanged {
+            mode: PermissionMode::Free,
+        })
+        .expect("mode changed");
+    state.apply(&changed);
+    futures::executor::block_on(injector.inject(&ctx, &writer, &mut state, &mut messages))
+        .expect("inject changed context");
+    assert_eq!(messages.len(), 2);
+    let ChatMessage::User(second) = &messages[1] else {
+        panic!("context update must be a user message");
+    };
+    assert!(second.contains("Permission mode: `free`"));
+    assert_eq!(state.messages.len(), 2);
 }
 
 #[test]
@@ -69,6 +126,7 @@ fn sections_are_removed_when_the_context_is_disposed() {
 
     ctx.dispose();
     assert!(ctx.get::<dyn PromptAssembler>().is_none());
+    assert!(ctx.get::<dyn ContextInjector>().is_none());
 }
 
 #[test]

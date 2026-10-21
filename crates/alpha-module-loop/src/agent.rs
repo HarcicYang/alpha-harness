@@ -51,6 +51,9 @@ pub enum LoopError {
     /// Operational tool failure that ends the turn.
     #[error("tool failure: {0}")]
     Tool(String),
+    /// Dynamic context injection failed.
+    #[error(transparent)]
+    Context(#[from] ContextError),
     /// The turn exceeded the model step limit.
     #[error("turn exceeded {0} model steps")]
     StepLimit(usize),
@@ -72,6 +75,7 @@ pub struct AgentLoop {
     model: String,
     tools: Option<Arc<ToolRegistry>>,
     context_preparer: Option<Arc<dyn ContextPreparer>>,
+    context_injector: Option<Arc<dyn ContextInjector>>,
     steer_queue: Option<Arc<dyn SteerQueue>>,
     max_steps: usize,
 }
@@ -84,6 +88,7 @@ impl AgentLoop {
             model: model.into(),
             tools: None,
             context_preparer: None,
+            context_injector: None,
             steer_queue: None,
             max_steps: DEFAULT_MAX_STEPS,
         }
@@ -104,6 +109,12 @@ impl AgentLoop {
     /// Attach a context-preparation pipeline.
     pub fn with_context_preparer(mut self, preparer: Arc<dyn ContextPreparer>) -> Self {
         self.context_preparer = Some(preparer);
+        self
+    }
+
+    /// Attach a dynamic context injector.
+    pub fn with_context_injector(mut self, injector: Arc<dyn ContextInjector>) -> Self {
+        self.context_injector = Some(injector);
         self
     }
 
@@ -153,6 +164,12 @@ impl AgentLoop {
                 )
                 .await;
         }
+        let mut messages = HistoryBuilder::from_state(&effective_state);
+        if let Some(injector) = &self.context_injector {
+            injector
+                .inject(ctx, writer, &mut effective_state, &mut messages)
+                .await?;
+        }
         writer.append(SessionEvent::TurnStarted)?;
         let user_id = MessageId::new();
         writer.append(SessionEvent::UserMessage {
@@ -160,7 +177,6 @@ impl AgentLoop {
             text: prompt.to_owned(),
         })?;
 
-        let mut messages = HistoryBuilder::from_state(&effective_state);
         messages.push(ChatMessage::User(prompt.to_owned()));
 
         let tools = self.tool_definitions();
@@ -169,6 +185,11 @@ impl AgentLoop {
 
         for step in 0..self.max_steps {
             self.inject_steers(writer, &mut messages)?;
+            if let Some(injector) = &self.context_injector {
+                injector
+                    .inject(ctx, writer, &mut effective_state, &mut messages)
+                    .await?;
+            }
             let route = self.route(ctx);
             let provider_tools = self.provider_tools(ctx);
             writer.append(SessionEvent::RequestHeader {
@@ -692,6 +713,18 @@ pub trait ContextPreparer: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<(), ContextError>>;
 }
 
+/// Appends durable dynamic context messages when their rendered content changes.
+pub trait ContextInjector: Send + Sync + 'static {
+    /// Update the provider-facing history before one model request.
+    fn inject<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        state: &'a mut SessionState,
+        messages: &'a mut Vec<ChatMessage>,
+    ) -> BoxFuture<'a, Result<(), ContextError>>;
+}
+
 /// Replaceable driver contract for one agent turn.
 ///
 /// Consumers depend on this trait, so a composition can mount a different
@@ -782,6 +815,10 @@ impl HistoryBuilder {
     fn push(&mut self, record: &MessageRecord) {
         match record {
             MessageRecord::User { text, .. } => {
+                self.flush();
+                self.messages.push(ChatMessage::User(text.clone()));
+            }
+            MessageRecord::Context { text, .. } => {
                 self.flush();
                 self.messages.push(ChatMessage::User(text.clone()));
             }

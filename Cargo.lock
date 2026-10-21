@@ -352,8 +352,11 @@ version = "0.1.0"
 dependencies = [
  "alpha-kernel",
  "alpha-module-fs",
+ "alpha-module-loop",
+ "alpha-module-permission",
  "alpha-module-session",
  "alpha-schema",
+ "futures",
  "serde",
  "tempfile",
  "thiserror 2.0.21",

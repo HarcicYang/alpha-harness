@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Disposer, Module};
-use alpha_module_session::SessionState;
+use alpha_module_loop::{ChatMessage, ContextError, ContextInjector};
+use alpha_module_session::{MessageRecord, SessionEvent, SessionState, SessionWriter};
+use alpha_schema::MessageId;
+use futures::future::BoxFuture;
 use serde::Deserialize;
 
 mod builtin;
@@ -135,6 +138,163 @@ pub trait PromptAssembler: Send + Sync + 'static {
     fn assemble(&self, ctx: &Ctx, state: &SessionState) -> Result<String, PromptError>;
 }
 
+/// One dynamic context section rendered into durable user messages.
+pub trait ContextSectionProvider: Send + Sync + 'static {
+    /// Stable section key.
+    fn key(&self) -> &'static str;
+
+    /// Ordering tier.
+    fn priority(&self) -> PromptPriority;
+
+    /// Render the current section body.
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError>;
+}
+
+/// Registry of dynamic context sections.
+#[derive(Default)]
+pub struct ContextRegistry {
+    sections: Arc<RwLock<BTreeMap<String, Arc<dyn ContextSectionProvider>>>>,
+}
+
+impl ContextRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register one provider as a reversible effect of `ctx`.
+    pub fn register(
+        &self,
+        ctx: &Ctx,
+        provider: Arc<dyn ContextSectionProvider>,
+    ) -> Result<Disposer, PromptError> {
+        let key = provider.key().to_owned();
+        {
+            let mut sections = self.sections.write().expect("context lock poisoned");
+            if sections.contains_key(&key) {
+                return Err(PromptError::DuplicateSection(key));
+            }
+            sections.insert(key.clone(), provider);
+        }
+
+        let sections = self.sections.clone();
+        let cleanup_key = key.clone();
+        match ctx.scope().effect(move || {
+            sections
+                .write()
+                .expect("context lock poisoned")
+                .remove(&cleanup_key);
+        }) {
+            Ok(disposer) => Ok(disposer),
+            Err(error) => {
+                self.sections
+                    .write()
+                    .expect("context lock poisoned")
+                    .remove(&key);
+                Err(PromptError::Kernel(error.to_string()))
+            }
+        }
+    }
+
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Vec<(String, String)>, PromptError> {
+        let mut providers: Vec<Arc<dyn ContextSectionProvider>> = self
+            .sections
+            .read()
+            .expect("context lock poisoned")
+            .values()
+            .cloned()
+            .collect();
+        providers.sort_by(|left, right| {
+            left.priority()
+                .cmp(&right.priority())
+                .then_with(|| left.key().cmp(right.key()))
+        });
+
+        let mut output = Vec::new();
+        for provider in providers {
+            if let Some(section) = provider.render(request)? {
+                let section = section.trim();
+                if !section.is_empty() {
+                    output.push((provider.key().to_owned(), section.to_owned()));
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+/// Default injector over a dynamic context registry.
+pub struct PromptContextInjector {
+    registry: Arc<ContextRegistry>,
+}
+
+impl PromptContextInjector {
+    /// Create an injector over one registry.
+    pub fn new(registry: Arc<ContextRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl ContextInjector for PromptContextInjector {
+    fn inject<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        state: &'a mut SessionState,
+        messages: &'a mut Vec<ChatMessage>,
+    ) -> BoxFuture<'a, Result<(), ContextError>> {
+        Box::pin(async move {
+            let request = PromptRequest { ctx, state };
+            let sections = self
+                .registry
+                .render(&request)
+                .map_err(|error| ContextError::message(error.to_string()))?;
+            let visible = visible_context(state);
+            for (key, body) in sections {
+                let text = context_message(&key, &body);
+                if visible.get(&key) == Some(&text) {
+                    continue;
+                }
+                let id = MessageId::new();
+                let event = writer
+                    .append(SessionEvent::ContextInjected {
+                        id,
+                        key,
+                        text: text.clone(),
+                    })
+                    .map_err(|error| ContextError::message(error.to_string()))?;
+                state.apply(&event);
+                messages.push(ChatMessage::User(text));
+            }
+            Ok(())
+        })
+    }
+}
+
+fn visible_context(state: &SessionState) -> BTreeMap<String, String> {
+    let mut visible = BTreeMap::new();
+    for record in &state.messages {
+        if state
+            .compaction
+            .as_ref()
+            .is_some_and(|compaction| record.seq() <= compaction.through_seq)
+        {
+            continue;
+        }
+        if let MessageRecord::Context { key, text, .. } = record {
+            visible.insert(key.clone(), text.clone());
+        }
+    }
+    visible
+}
+
+fn context_message(key: &str, body: &str) -> String {
+    format!(
+        "<alpha_context key=\"{key}\">\n{}\n</alpha_context>",
+        body.trim()
+    )
+}
+
 /// Default prompt assembler over a section registry.
 pub struct DefaultPromptAssembler {
     registry: Arc<PromptRegistry>,
@@ -220,6 +380,8 @@ impl Module for PromptModule {
     const CAPABILITIES: &'static [CapabilitySpec] = &[
         CapabilitySpec::singleton("prompt.assembler", CapabilityScope::Location),
         CapabilitySpec::registry("prompt.section", CapabilityScope::Location),
+        CapabilitySpec::registry("prompt.context", CapabilityScope::Location),
+        CapabilitySpec::singleton("context.injector", CapabilityScope::Location),
     ];
 
     fn activate(&self, ctx: &Ctx, config: &Self::Config) -> Result<(), ActivateError> {
@@ -233,6 +395,19 @@ impl Module for PromptModule {
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         let assembler = Arc::new(DefaultPromptAssembler::new(registry));
         ctx.provide::<dyn PromptAssembler>(assembler)
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+
+        let context_registry = Arc::new(ContextRegistry::new());
+        for section in builtin::context_sections() {
+            context_registry
+                .register(ctx, section)
+                .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        }
+        ctx.provide::<ContextRegistry>(context_registry.clone())
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        let injector: Arc<dyn ContextInjector> =
+            Arc::new(PromptContextInjector::new(context_registry));
+        ctx.provide::<dyn ContextInjector>(injector)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())
     }
