@@ -16,7 +16,7 @@ pub const __ALPHA_MODULE__: &str = "compaction";
 /// Compaction thresholds and budgets.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CompactionConfig {
-    /// Estimated context window in tokens. Zero disables compaction.
+    /// Fallback context window when the provider does not report one. Zero disables compaction.
     #[serde(default = "default_context_window_tokens")]
     pub context_window_tokens: usize,
     /// Percentage of the context window that triggers compaction.
@@ -28,6 +28,23 @@ pub struct CompactionConfig {
     /// Maximum estimated tokens sent in one summarization call.
     #[serde(default = "default_max_summary_input_tokens")]
     pub max_summary_input_tokens: usize,
+    /// Maximum estimated tokens retained by deterministic fallback summaries.
+    #[serde(default = "default_fallback_summary_tokens")]
+    pub fallback_summary_tokens: usize,
+    /// Whether the trigger counts the full context or growth after the compacted prefix.
+    #[serde(default)]
+    pub scope: CompactionScope,
+}
+
+/// How the automatic compaction trigger counts context.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionScope {
+    /// Count the full active context.
+    Total,
+    /// Count growth after the stable system and compacted-history prefix.
+    #[default]
+    BodyAfterPrefix,
 }
 
 impl Default for CompactionConfig {
@@ -37,6 +54,8 @@ impl Default for CompactionConfig {
             threshold_percent: default_threshold_percent(),
             keep_recent_percent: default_keep_recent_percent(),
             max_summary_input_tokens: default_max_summary_input_tokens(),
+            fallback_summary_tokens: default_fallback_summary_tokens(),
+            scope: CompactionScope::default(),
         }
     }
 }
@@ -55,6 +74,10 @@ fn default_keep_recent_percent() -> u8 {
 
 fn default_max_summary_input_tokens() -> usize {
     32 * 1024
+}
+
+fn default_fallback_summary_tokens() -> usize {
+    2 * 1024
 }
 
 /// Registers automatic context compaction.
@@ -101,6 +124,9 @@ fn validate(config: &CompactionConfig) -> Result<(), &'static str> {
     }
     if config.max_summary_input_tokens == 0 {
         return Err("max_summary_input_tokens must be greater than zero");
+    }
+    if config.fallback_summary_tokens == 0 {
+        return Err("fallback_summary_tokens must be greater than zero");
     }
     Ok(())
 }

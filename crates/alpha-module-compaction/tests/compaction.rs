@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_compaction::{
-    CompactionConfig, CompactionModule, ConservativeTokenEstimator, DefaultContextCompactor,
-    TokenEstimator,
+    CompactionConfig, CompactionModule, CompactionScope, ConservativeTokenEstimator,
+    DefaultContextCompactor, TokenEstimator,
 };
 use alpha_module_loop::{
     CompletionRequest, CompletionResponse, ContextPreparer, ModelProvider, ProviderError,
@@ -15,6 +15,7 @@ use futures::future::BoxFuture;
 struct SummaryProvider {
     text: String,
     fail: bool,
+    context_window: Option<usize>,
     requests: Mutex<Vec<CompletionRequest>>,
 }
 
@@ -23,6 +24,7 @@ impl SummaryProvider {
         Self {
             text: text.to_owned(),
             fail: false,
+            context_window: None,
             requests: Mutex::new(Vec::new()),
         }
     }
@@ -31,12 +33,22 @@ impl SummaryProvider {
         Self {
             text: String::new(),
             fail: true,
+            context_window: None,
             requests: Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_context_window(mut self, context_window: usize) -> Self {
+        self.context_window = Some(context_window);
+        self
     }
 }
 
 impl ModelProvider for SummaryProvider {
+    fn context_window(&self, _model: &str) -> Option<usize> {
+        self.context_window
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,
@@ -101,6 +113,8 @@ fn config() -> CompactionConfig {
         threshold_percent: 50,
         keep_recent_percent: 10,
         max_summary_input_tokens: 100,
+        fallback_summary_tokens: 50,
+        scope: CompactionScope::Total,
     }
 }
 
@@ -153,7 +167,7 @@ async fn compaction_does_not_run_below_the_threshold() {
 }
 
 #[tokio::test]
-async fn failed_summarization_leaves_history_untouched() {
+async fn failed_summarization_commits_a_deterministic_fallback() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());
     let header = header();
@@ -163,7 +177,7 @@ async fn failed_summarization_leaves_history_untouched() {
     let provider = SummaryProvider::failing();
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
-    let error = compactor
+    compactor
         .prepare(
             &writer,
             &mut state,
@@ -172,19 +186,73 @@ async fn failed_summarization_leaves_history_untouched() {
             &"d".repeat(200),
         )
         .await
-        .expect_err("summary failure");
-    assert!(error.to_string().contains("summary failed"));
-    assert!(state.compaction.is_none());
-    assert_eq!(writer.last_seq().get(), 3);
+        .expect("fallback compaction");
+    let compaction = state.compaction.expect("fallback compaction");
+    assert!(compaction.summary.contains("# Fallback Compacted History"));
+    assert!(compaction.summary.contains("summary-model") || compaction.summary.contains("user:"));
+    assert_eq!(writer.last_seq().get(), 4);
     drop(writer);
 
     let reader = store.open_read(id).expect("read");
     assert!(
-        !reader
+        reader
             .events()
             .iter()
             .any(|event| matches!(event.payload, SessionEvent::ContextCompacted { .. }))
     );
+}
+
+#[tokio::test]
+async fn model_context_window_takes_precedence_over_the_fallback() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let writer = store.create(header).expect("create");
+    let mut state = append_history(&writer);
+    let provider = SummaryProvider::new("unused").with_context_window(1_000);
+    let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
+
+    compactor
+        .prepare(
+            &writer,
+            &mut state,
+            &provider,
+            "summary-model",
+            &"d".repeat(200),
+        )
+        .await
+        .expect("prepare");
+
+    assert!(state.compaction.is_none());
+    assert!(provider.requests.lock().expect("requests").is_empty());
+}
+
+#[tokio::test]
+async fn body_after_prefix_scope_ignores_the_carried_prefix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = header();
+    let writer = store.create(header).expect("create");
+    let mut state = append_history(&writer);
+    state.system_prompt = Some("s".repeat(4_000));
+    let provider = SummaryProvider::new("unused").with_context_window(2_000);
+    let mut compact = config();
+    compact.scope = CompactionScope::BodyAfterPrefix;
+    let compactor = DefaultContextCompactor::new(compact, Arc::new(ConservativeTokenEstimator));
+
+    compactor
+        .prepare(
+            &writer,
+            &mut state,
+            &provider,
+            "summary-model",
+            &"d".repeat(200),
+        )
+        .await
+        .expect("prepare");
+
+    assert!(state.compaction.is_none());
+    assert!(provider.requests.lock().expect("requests").is_empty());
 }
 
 #[test]

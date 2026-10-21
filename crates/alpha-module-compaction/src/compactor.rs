@@ -6,7 +6,9 @@ use alpha_module_loop::{
 use alpha_module_session::{MessageRecord, SessionEvent, SessionState, SessionWriter, ToolStatus};
 use futures::future::BoxFuture;
 
-use crate::CompactionConfig;
+use crate::{CompactionConfig, CompactionScope};
+
+const HARD_LIMIT_PERCENT: usize = 95;
 
 /// Estimates context size without a model-specific tokenizer.
 pub trait TokenEstimator: Send + Sync + 'static {
@@ -60,6 +62,17 @@ impl DefaultContextCompactor {
         total
     }
 
+    fn estimate_prefix(&self, state: &SessionState) -> usize {
+        let mut total = 0usize;
+        if let Some(prompt) = &state.system_prompt {
+            total += self.estimator.estimate(prompt);
+        }
+        if let Some(compaction) = &state.compaction {
+            total += self.estimator.estimate(&compaction.summary);
+        }
+        total
+    }
+
     fn estimate_record(&self, record: &MessageRecord) -> usize {
         match record {
             MessageRecord::User { text, .. }
@@ -72,16 +85,17 @@ impl DefaultContextCompactor {
         }
     }
 
-    fn select_prefix<'a>(&self, state: &'a SessionState) -> Option<Vec<&'a MessageRecord>> {
+    fn select_prefix<'a>(
+        &self,
+        state: &'a SessionState,
+        context_window: usize,
+    ) -> Option<Vec<&'a MessageRecord>> {
         let records = effective_records(state);
         if records.len() < 3 {
             return None;
         }
-        let keep_budget = self
-            .config
-            .context_window_tokens
-            .saturating_mul(usize::from(self.config.keep_recent_percent))
-            / 100;
+        let keep_budget =
+            context_window.saturating_mul(usize::from(self.config.keep_recent_percent)) / 100;
         let mut kept = 0usize;
         let mut candidate = records.len();
         for (index, record) in records.iter().enumerate().rev() {
@@ -106,6 +120,21 @@ impl DefaultContextCompactor {
             }
         }
         cut.map(|index| records[..index].to_vec())
+    }
+
+    fn should_compact(
+        &self,
+        total: usize,
+        body_after_prefix: usize,
+        context_window: usize,
+    ) -> bool {
+        let threshold =
+            context_window.saturating_mul(usize::from(self.config.threshold_percent)) / 100;
+        let hard_limit = context_window.saturating_mul(HARD_LIMIT_PERCENT) / 100;
+        match self.config.scope {
+            CompactionScope::Total => total > threshold,
+            CompactionScope::BodyAfterPrefix => body_after_prefix > threshold || total > hard_limit,
+        }
     }
 
     async fn summarize(
@@ -186,6 +215,24 @@ impl DefaultContextCompactor {
         }
         chunks
     }
+
+    fn fallback_summary(&self, records: &[&MessageRecord]) -> String {
+        let rendered = records
+            .iter()
+            .map(|record| render_record(record))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let excerpt = truncate_to_tokens(
+            &rendered,
+            self.config.fallback_summary_tokens,
+            self.estimator.as_ref(),
+        );
+        format!(
+            "# Fallback Compacted History\n\n\
+             Model-generated summarization was unavailable. This deterministic excerpt preserves \
+             the oldest replaced records:\n\n{excerpt}"
+        )
+    }
 }
 
 impl ContextPreparer for DefaultContextCompactor {
@@ -201,21 +248,22 @@ impl ContextPreparer for DefaultContextCompactor {
             if self.config.context_window_tokens == 0 {
                 return Ok(());
             }
-            let threshold = self
-                .config
-                .context_window_tokens
-                .saturating_mul(usize::from(self.config.threshold_percent))
-                / 100;
-            if self.estimate_state(state, prompt) <= threshold {
+            let context_window = provider
+                .context_window(model)
+                .filter(|window| *window > 0)
+                .unwrap_or(self.config.context_window_tokens);
+            let total = self.estimate_state(state, prompt);
+            let body_after_prefix = total.saturating_sub(self.estimate_prefix(state));
+            if !self.should_compact(total, body_after_prefix, context_window) {
                 return Ok(());
             }
-            let Some(records) = self.select_prefix(state) else {
+            let Some(records) = self.select_prefix(state, context_window) else {
                 return Ok(());
             };
             if records.is_empty() {
                 return Ok(());
             }
-            let summary = self
+            let summary = match self
                 .summarize(
                     provider,
                     model,
@@ -223,7 +271,11 @@ impl ContextPreparer for DefaultContextCompactor {
                     state,
                     &records,
                 )
-                .await?;
+                .await
+            {
+                Ok(summary) => summary,
+                Err(_) => self.fallback_summary(&records),
+            };
             let from_seq = records.first().expect("non-empty records").seq();
             let through_seq = records.last().expect("non-empty records").seq();
             let envelope = writer

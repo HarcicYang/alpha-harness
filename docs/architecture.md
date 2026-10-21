@@ -408,15 +408,21 @@ later environment changes explicit and append-only.
 
 The compaction module is an optional pre-turn context transformation. It uses a
 replaceable token estimator and conservative defaults because exact provider
-usage is not part of the event contract. When the configured threshold is
+usage is not part of the event contract. The active context window comes from
+provider model metadata when available; `context_window_tokens` is only the
+fallback for providers that do not report one. When the configured threshold is
 exceeded, it summarizes an older, complete turn prefix and keeps recent raw
 history.
 
-The summary is generated without tools and committed only if it succeeds.
-`context_compacted` records the summary and the durable sequence range it
-replaces. History rebuilding inserts the summary before records after that
-range. A failed summarization call appends nothing and leaves the full history
-unchanged.
+The default `body_after_prefix` scope counts growth after the stable system and
+compacted-history prefix, avoiding repeated rewrites when a large carried prefix
+is still below the model's hard limit. `total` counts the full active context.
+
+The model-generated summary is produced without tools. If summarization fails,
+the compactor commits a bounded deterministic excerpt instead of leaving an
+oversized history untouched. `context_compacted` records the resulting summary
+and the durable sequence range it replaces. History rebuilding inserts the
+summary before records after that range.
 
 ### D24: Streaming
 

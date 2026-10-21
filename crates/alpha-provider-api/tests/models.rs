@@ -1,12 +1,16 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use alpha_kernel::Ctx;
 use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse};
-use alpha_module_loop::{ChatMessage, CompletionChunk, CompletionRequest, ModelProvider};
+use alpha_module_loop::{
+    ChatMessage, CompletionChunk, CompletionRequest, ModelProvider, ModelRoute, ModelRouteOverride,
+};
 use alpha_provider_api::{
     AdapterCapabilities, AdapterProvider, AdapterRequest, ApiAdapter, AuthMethodDescriptor,
-    ModelDescriptor, ProviderBuildContext, ProviderDescriptor, ProviderInstance, ProviderKind,
-    ProviderKindError, ReasoningLevel, default_model_id, discover_models, effective_model_catalog,
+    DynamicProvider, ModelDescriptor, ProviderBuildContext, ProviderDescriptor, ProviderInstance,
+    ProviderInstanceRegistry, ProviderKind, ProviderKindError, ProviderKindRegistry,
+    ReasoningLevel, default_model_id, discover_models, effective_model_catalog,
 };
 use alpha_schema::AssistantContentBlock;
 use futures::future::BoxFuture;
@@ -186,6 +190,42 @@ fn user_overrides_change_catalog_metadata_and_default() {
         ]
     );
     assert_eq!(large.provider_tools, vec!["web_search".to_owned()]);
+}
+
+#[test]
+fn dynamic_provider_reports_effective_model_context_windows() {
+    let instance = ProviderInstance {
+        id: "test".to_owned(),
+        kind: "test".to_owned(),
+        config_version: 1,
+        config: json!({}),
+        auth_ref: None,
+        model_overrides: json!({
+            "large": {
+                "context_window": 999_999
+            }
+        }),
+        disabled: false,
+    };
+    let ctx = Ctx::root();
+    let kinds = Arc::new(ProviderKindRegistry::new());
+    kinds
+        .register(Arc::new(TestKind))
+        .expect("register provider kind");
+    let instances = Arc::new(ProviderInstanceRegistry::new());
+    instances.upsert(instance);
+    ctx.provide(kinds).expect("provide kinds");
+    ctx.provide(instances).expect("provide instances");
+    let route = Arc::new(ModelRouteOverride::new(ModelRoute::new(
+        "test",
+        "large",
+        ReasoningLevel::Auto,
+    )));
+    let provider = DynamicProvider::new_routed(ctx, "test", route);
+
+    assert_eq!(provider.context_window("large"), Some(999_999));
+    assert_eq!(provider.context_window("small"), Some(1_000));
+    assert_eq!(provider.context_window("missing"), None);
 }
 
 #[test]

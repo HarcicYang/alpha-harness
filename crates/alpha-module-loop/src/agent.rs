@@ -154,7 +154,7 @@ impl AgentLoop {
         let initial_route = self.route(ctx);
         let mut effective_state = state.clone();
         if let Some(preparer) = &self.context_preparer {
-            let _ = preparer
+            preparer
                 .prepare(
                     writer,
                     &mut effective_state,
@@ -162,7 +162,7 @@ impl AgentLoop {
                     &initial_route.model,
                     prompt,
                 )
-                .await;
+                .await?;
         }
         let mut messages = HistoryBuilder::from_state(&effective_state);
         if let Some(injector) = &self.context_injector {

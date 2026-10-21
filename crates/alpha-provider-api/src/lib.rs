@@ -714,6 +714,20 @@ impl ModelProvider for DynamicProvider {
             .unwrap_or_default()
     }
 
+    fn context_window(&self, model: &str) -> Option<usize> {
+        let route = self.current_route();
+        let (instance, kind) = resolve_provider_choice(&self.root, &route.provider).ok()?;
+        let model = if model.trim().is_empty() {
+            default_model_id(&instance, kind.as_ref())?
+        } else {
+            model.to_owned()
+        };
+        effective_models(&instance, &kind.descriptor().models)
+            .into_iter()
+            .find(|descriptor| descriptor.id == model)
+            .and_then(|descriptor| usize::try_from(descriptor.context_window).ok())
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,

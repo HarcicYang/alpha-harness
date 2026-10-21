@@ -277,6 +277,11 @@ pub trait ModelProvider: Send + Sync + 'static {
         ProviderCapabilities::default()
     }
 
+    /// Context window reported for one model, when known.
+    fn context_window(&self, _model: &str) -> Option<usize> {
+        None
+    }
+
     /// Produce a completion for the request.
     fn complete(
         &self,
