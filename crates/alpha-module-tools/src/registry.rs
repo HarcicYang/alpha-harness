@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use thiserror::Error;
 
-use crate::contract::Tool;
+use crate::contract::{Tool, ToolError};
 
 /// Registry errors.
 #[derive(Debug, Error)]
@@ -60,5 +60,20 @@ impl ToolRegistry {
             .keys()
             .cloned()
             .collect()
+    }
+
+    /// Prepare every registered tool before schema generation.
+    pub async fn prepare_all(&self) -> Result<(), ToolError> {
+        let tools = self
+            .tools
+            .read()
+            .expect("tool lock poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for tool in tools {
+            tool.prepare().await?;
+        }
+        Ok(())
     }
 }

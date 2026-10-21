@@ -227,6 +227,9 @@ Built-in and third-party tools use the same contract:
   model-visible content; optional UI metadata (three-value result).
 - Errors are classified: `ToolFailure` (expected, model-visible),
   operational errors, and cancellation (never a tool result).
+- Tools may prepare model-facing metadata before schemas are generated. The
+  loop awaits preparation once per turn, and tools cache it until the runtime
+  scope is rebuilt.
 - Execution follows one pipeline: a per-request tool snapshot is frozen in
   `request/header`, input validation, `tools/pre-execute` waterfall, explicit
   permission assertion, execution, `tools/post-execute`, normalization and
@@ -266,6 +269,9 @@ templates. The default shell is resolved from module config, then `$SHELL`,
 then a platform fallback. Shell calls are exclusive, assert `shell.exec`,
 inherit the parent environment with an optional denylist, cancel by killing
 the process group, and stream stdout and stderr as tagged live progress.
+Shell discovery runs before the first schema is advertised, so the description
+does not switch from an unprepared placeholder to a populated list in a later
+turn.
 
 ### D19: Permission modes and sandbox
 

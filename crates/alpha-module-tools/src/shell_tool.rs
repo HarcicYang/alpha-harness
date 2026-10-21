@@ -183,6 +183,9 @@ impl Tool for ShellTool {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Some(_) => {
+                "Run a command in a selected shell. No supported shells are available.".to_owned()
+            }
             _ => "Run a command in a selected shell. Shells are probed on first use.".to_owned(),
         }
     }
@@ -197,6 +200,23 @@ impl Tool for ShellTool {
                 "description": { "type": "string" }
             },
             "required": ["command"]
+        })
+    }
+
+    fn prepare(&self) -> BoxFuture<'_, Result<(), ToolError>> {
+        Box::pin(async move {
+            if self
+                .available
+                .lock()
+                .expect("shell lock poisoned")
+                .is_some()
+            {
+                return Ok(());
+            }
+            if self.available_shells().await.is_err() {
+                *self.available.lock().expect("shell lock poisoned") = Some(Vec::new());
+            }
+            Ok(())
         })
     }
 

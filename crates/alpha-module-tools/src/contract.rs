@@ -99,6 +99,10 @@ pub trait Tool: Send + Sync + 'static {
     fn parallel_safe(&self) -> bool {
         false
     }
+    /// Prepare model-facing metadata before a schema is advertised.
+    fn prepare(&self) -> BoxFuture<'_, Result<(), ToolError>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Execute one call.
     fn execute(
         &self,

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use alpha_kernel::{Ctx, Module};
@@ -141,6 +142,10 @@ struct NoteTool {
     seen: Arc<Mutex<Vec<String>>>,
 }
 
+struct PreparedTool {
+    prepared: Arc<AtomicBool>,
+}
+
 struct SummaryPreparer;
 
 impl ContextPreparer for SummaryPreparer {
@@ -198,6 +203,37 @@ impl Tool for NoteTool {
             seen.lock().expect("seen lock").push(value.clone());
             Ok(ToolResponse::text(format!("note: {value}")))
         })
+    }
+}
+
+impl Tool for PreparedTool {
+    fn name(&self) -> &'static str {
+        "prepared"
+    }
+
+    fn description(&self) -> String {
+        if self.prepared.load(Ordering::SeqCst) {
+            "Prepared tool".to_owned()
+        } else {
+            "Unprepared tool".to_owned()
+        }
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    fn prepare(&self) -> BoxFuture<'_, Result<(), ToolError>> {
+        self.prepared.store(true, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn execute(
+        &self,
+        _input: Value,
+        _context: ToolContext,
+    ) -> BoxFuture<'_, Result<ToolResponse, ToolError>> {
+        Box::pin(async { Ok(ToolResponse::text("ok")) })
     }
 }
 
@@ -815,6 +851,34 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
         message,
         ChatMessage::ToolResult { call_id, .. } if call_id == "call-1"
     )));
+}
+
+#[tokio::test]
+async fn tools_are_prepared_before_schema_generation() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![CompletionResponse {
+        text: "done".to_owned(),
+        tool_calls: Vec::new(),
+        blocks: Vec::new(),
+    }]));
+    let prepared = Arc::new(AtomicBool::new(false));
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .register(Arc::new(PreparedTool {
+            prepared: prepared.clone(),
+        }))
+        .expect("register");
+    let agent = AgentLoop::new(provider.clone(), "scripted").with_tools(registry);
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+
+    run_turn(&agent, &writer, &state, "hello")
+        .await
+        .expect("turn");
+
+    assert!(prepared.load(Ordering::SeqCst));
+    let requests = provider.requests.lock().expect("request lock");
+    assert_eq!(requests[0].tools[0].description, "Prepared tool");
 }
 
 #[tokio::test]

@@ -170,6 +170,13 @@ impl AgentLoop {
                 .inject(ctx, writer, &mut effective_state, &mut messages)
                 .await?;
         }
+        if let Some(tools) = &self.tools {
+            tools
+                .prepare_all()
+                .await
+                .map_err(|error| LoopError::Tool(error.to_string()))?;
+        }
+        let tools = self.tool_definitions();
         writer.append(SessionEvent::TurnStarted)?;
         let user_id = MessageId::new();
         writer.append(SessionEvent::UserMessage {
@@ -179,7 +186,6 @@ impl AgentLoop {
 
         messages.push(ChatMessage::User(prompt.to_owned()));
 
-        let tools = self.tool_definitions();
         let mut last_text = String::new();
         let mut last_message_id: Option<MessageId> = None;
 

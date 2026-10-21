@@ -244,6 +244,21 @@ fn registry_rejects_duplicates_and_exposes_metadata() {
 }
 
 #[tokio::test]
+async fn shell_is_probed_before_schema_metadata_is_read() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_ctx, registry) = setup(PermissionMode::Free, dir.path());
+    let shell = registry.get("shell").expect("shell");
+    assert!(shell.description().contains("probed on first use"));
+
+    registry.prepare_all().await.expect("prepare tools");
+
+    let description = shell.description();
+    assert!(!description.contains("probed on first use"));
+    registry.prepare_all().await.expect("prepare tools again");
+    assert_eq!(shell.description(), description);
+}
+
+#[tokio::test]
 async fn grep_finds_matches_with_filters() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir(dir.path().join("src")).expect("mkdir");
