@@ -751,6 +751,7 @@ struct HistoryBuilder {
     pending_blocks: Option<(MessageId, Vec<AssistantContentBlock>)>,
     pending_calls: Vec<ToolCall>,
     calls_for: Option<MessageId>,
+    tool_result_ids: BTreeMap<String, String>,
 }
 
 impl HistoryBuilder {
@@ -799,7 +800,13 @@ impl HistoryBuilder {
                 ..
             } => {
                 if self.calls_for != Some(*message_id) {
-                    self.flush();
+                    let has_pending_message = self
+                        .pending_blocks
+                        .as_ref()
+                        .is_some_and(|(pending_id, _)| pending_id == message_id);
+                    if !has_pending_message {
+                        self.flush();
+                    }
                     self.calls_for = Some(*message_id);
                 }
                 self.pending_calls.push(ToolCall {
@@ -810,8 +817,14 @@ impl HistoryBuilder {
             }
             MessageRecord::ToolResult { id, content, .. } => {
                 self.flush();
+                let local_id = id.to_string();
+                let call_id = self
+                    .tool_result_ids
+                    .get(&local_id)
+                    .cloned()
+                    .unwrap_or(local_id);
                 self.messages.push(ChatMessage::ToolResult {
-                    call_id: id.to_string(),
+                    call_id,
                     content: content.clone(),
                 });
             }
@@ -849,19 +862,29 @@ impl HistoryBuilder {
             self.messages.push(ChatMessage::AssistantContent(blocks));
             blocks = Vec::new();
         }
+        let mut matched_blocks = vec![false; blocks.len()];
         for call in calls {
-            if !blocks.iter().any(|block| {
-                matches!(
-                    block,
-                    AssistantContentBlock::LocalToolCall { id, .. } if id == &call.id
-                )
-            }) {
+            let matched = blocks.iter().enumerate().find_map(|(index, block)| {
+                let AssistantContentBlock::LocalToolCall { id, name, .. } = block else {
+                    return None;
+                };
+                (!matched_blocks[index] && name == &call.name).then(|| {
+                    matched_blocks[index] = true;
+                    id.clone()
+                })
+            });
+            let call_id = if let Some(call_id) = matched {
+                call_id
+            } else {
                 blocks.push(AssistantContentBlock::LocalToolCall {
-                    id: call.id,
-                    name: call.name,
-                    arguments: call.arguments,
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
                 });
-            }
+                matched_blocks.push(true);
+                call.id.clone()
+            };
+            self.tool_result_ids.insert(call.id, call_id);
         }
         self.messages.push(ChatMessage::AssistantContent(blocks));
     }

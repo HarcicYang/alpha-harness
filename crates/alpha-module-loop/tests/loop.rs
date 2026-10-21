@@ -720,6 +720,11 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
             tool_calls: Vec::new(),
             blocks: Vec::new(),
         },
+        CompletionResponse {
+            text: "finished".to_owned(),
+            tool_calls: Vec::new(),
+            blocks: Vec::new(),
+        },
     ]));
     let seen = Arc::new(Mutex::new(Vec::new()));
     let registry = Arc::new(ToolRegistry::new());
@@ -770,14 +775,45 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
         ]
     );
 
+    {
+        let requests = provider.requests.lock().expect("request lock");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].tools.len(), 1);
+        assert_eq!(requests[0].tools[0].name, "write_note");
+        assert!(requests[1].messages.iter().any(|message| matches!(
+            message,
+            ChatMessage::ToolResult { call_id, content }
+                if call_id == "call-1" && content == "note: hi"
+        )));
+    }
+
+    let reader = store.open_read(header.id).expect("read");
+    let state = reader.state();
+    drop(reader);
+    let writer = store.open_write(header.id).expect("write");
+    run_turn(&agent, &writer, &state, "continue")
+        .await
+        .expect("second turn");
+
     let requests = provider.requests.lock().expect("request lock");
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].tools.len(), 1);
-    assert_eq!(requests[0].tools[0].name, "write_note");
-    assert!(requests[1].messages.iter().any(|message| matches!(
+    let calls = requests[2]
+        .messages
+        .iter()
+        .flat_map(|message| match message {
+            ChatMessage::AssistantContent(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    AssistantContentBlock::LocalToolCall { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(calls, vec!["call-1"]);
+    assert!(requests[2].messages.iter().any(|message| matches!(
         message,
-        ChatMessage::ToolResult { call_id, content }
-            if call_id == "call-1" && content == "note: hi"
+        ChatMessage::ToolResult { call_id, .. } if call_id == "call-1"
     )));
 }
 
