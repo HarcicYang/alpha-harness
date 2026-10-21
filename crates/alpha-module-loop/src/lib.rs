@@ -37,7 +37,7 @@ pub struct LoopConfig {
 }
 
 fn default_max_steps() -> usize {
-    24
+    114514
 }
 
 impl Default for LoopConfig {

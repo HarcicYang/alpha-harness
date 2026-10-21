@@ -20,7 +20,7 @@ use crate::provider::{
     ModelRouteOverride, ProviderError, ToolCall, ToolDefinition,
 };
 
-const DEFAULT_MAX_STEPS: usize = 24;
+const DEFAULT_MAX_STEPS: usize = 114514;
 
 /// One steer message waiting for a safe injection boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
