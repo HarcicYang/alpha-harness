@@ -5,14 +5,16 @@
 use std::time::Duration;
 
 use alpha_front_runtime::{
-    CommandOutcome, FrontRuntime, InteractionDecision, TranscriptItem, parse_command,
+    CommandOutcome, FrontRuntime, InteractionDecision, ModelChoice, TranscriptItem, parse_command,
+    supported_reasoning_levels,
 };
-use alpha_schema::AssistantContentBlock;
+use alpha_schema::{AssistantContentBlock, PermissionMode, ReasoningLevel, ToolStatus};
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::{
     Theme, ThemeMode,
     button::{Button, ButtonVariants as _},
-    input::{Textarea, TextareaState},
+    input::{InputEvent, Textarea, TextareaState},
+    scroll::ScrollableElement as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -37,9 +39,36 @@ pub enum DesktopError {
 struct AlphaDesktop {
     runtime: FrontRuntime,
     composer: Entity<TextareaState>,
+    model_choices: Vec<ModelChoice>,
+    composer_menu: Option<ComposerMenu>,
+    submit_requested: bool,
     context_open: bool,
     local_status: Option<String>,
     _poll_task: Option<Task<()>>,
+    _composer_subscription: Subscription,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMenu {
+    Mode,
+    Model,
+    Effort,
+}
+
+#[derive(Clone, Debug)]
+enum DesktopTranscriptItem {
+    User(String),
+    Assistant(String),
+    Thinking(String),
+    Tools(Vec<ToolSummary>),
+    Error(String),
+}
+
+#[derive(Clone, Debug)]
+struct ToolSummary {
+    name: String,
+    status: Option<ToolStatus>,
+    content: Option<String>,
 }
 
 impl AlphaDesktop {
@@ -48,13 +77,25 @@ impl AlphaDesktop {
             TextareaState::new(window, cx)
                 .placeholder("Ask alpha to inspect, change, or explain...")
                 .auto_grow(1, 6)
+                .submit_on_enter(true)
         });
+        let composer_subscription = cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.submit_requested = true;
+                cx.notify();
+            }
+        });
+        let model_choices = runtime.providers().model_choices();
         let mut this = Self {
             runtime,
             composer,
+            model_choices,
+            composer_menu: None,
+            submit_requested: false,
             context_open: false,
             local_status: None,
             _poll_task: None,
+            _composer_subscription: composer_subscription,
         };
         this._poll_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -62,7 +103,11 @@ impl AlphaDesktop {
                     .timer(Duration::from_millis(50))
                     .await;
                 if this
-                    .update_in(cx, |this, _, cx| {
+                    .update_in(cx, |this, window, cx| {
+                        if this.submit_requested {
+                            this.submit_requested = false;
+                            this.submit_composer(window, cx);
+                        }
                         let mut changed = this.runtime.expire_interaction().unwrap_or(false);
                         match this.runtime.try_receive_events() {
                             Ok(events) => changed |= !events.is_empty(),
@@ -79,6 +124,167 @@ impl AlphaDesktop {
             }
         }));
         this
+    }
+
+    fn open_composer_menu(&mut self, menu: ComposerMenu) {
+        self.composer_menu = if self.composer_menu == Some(menu) {
+            None
+        } else {
+            if menu == ComposerMenu::Model
+                && let Err(error) = self.runtime.refresh_providers()
+            {
+                self.local_status = Some(error.to_string());
+            }
+            let provider = self.runtime.chat().provider.clone();
+            if menu == ComposerMenu::Model
+                && let Err(error) = self.runtime.refresh_models(Some(&provider))
+            {
+                self.local_status = Some(error.to_string());
+            }
+            self.model_choices = self.runtime.providers().model_choices();
+            Some(menu)
+        };
+    }
+
+    fn select_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+        match self.runtime.set_mode(mode) {
+            Ok(()) => {
+                self.composer_menu = None;
+                self.local_status = None;
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn select_model(&mut self, choice: &ModelChoice, cx: &mut Context<Self>) {
+        let reasoning = if choice
+            .reasoning_levels
+            .contains(&self.runtime.chat().reasoning)
+        {
+            self.runtime.chat().reasoning
+        } else {
+            choice
+                .reasoning_levels
+                .first()
+                .copied()
+                .unwrap_or(ReasoningLevel::Auto)
+        };
+        match self.runtime.set_route_and_default(
+            choice.provider.clone(),
+            choice.model.clone(),
+            reasoning,
+        ) {
+            Ok(()) => {
+                self.composer_menu = None;
+                self.local_status = None;
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn select_effort(&mut self, reasoning: ReasoningLevel, cx: &mut Context<Self>) {
+        let provider = self.runtime.chat().provider.clone();
+        let model = self.runtime.chat().model.clone();
+        match self.runtime.set_route(provider, model, reasoning) {
+            Ok(()) => {
+                self.composer_menu = None;
+                self.local_status = None;
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn render_composer_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(menu) = self.composer_menu else {
+            return div().into_any_element();
+        };
+        let chat = self.runtime.chat();
+        let panel = div()
+            .w(px(320.))
+            .max_h(px(430.))
+            .overflow_y_scrollbar()
+            .rounded(px(22.))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE_RAISED))
+            .p(px(6.))
+            .flex()
+            .flex_col()
+            .gap_1();
+
+        match menu {
+            ComposerMenu::Mode => panel
+                .child(menu_label("Permission mode"))
+                .children(
+                    [
+                        PermissionMode::Read,
+                        PermissionMode::Auto,
+                        PermissionMode::Reviewed,
+                        PermissionMode::Free,
+                    ]
+                    .into_iter()
+                    .map(|mode| {
+                        let selected = chat.mode == mode;
+                        let label = match mode {
+                            PermissionMode::Read => "Read",
+                            PermissionMode::Auto => "Auto",
+                            PermissionMode::Reviewed => "Reviewed",
+                            PermissionMode::Free => "Free",
+                        };
+                        Button::new(format!("mode:{label}"))
+                            .label(label)
+                            .selected(selected)
+                            .ghost()
+                            .w_full()
+                            .rounded(px(16.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_mode(mode, cx);
+                            }))
+                    }),
+                )
+                .into_any_element(),
+            ComposerMenu::Model => panel
+                .child(menu_label("Model route"))
+                .children(self.model_choices.iter().map(|choice| {
+                    let selected = chat.provider == choice.provider && chat.model == choice.model;
+                    Button::new(format!("model:{}:{}", choice.provider, choice.model))
+                        .label(format!(
+                            "{}  ·  {}",
+                            choice.provider_name, choice.model_name
+                        ))
+                        .selected(selected)
+                        .ghost()
+                        .w_full()
+                        .rounded(px(16.))
+                        .on_click(cx.listener({
+                            let choice = choice.clone();
+                            move |this, _, _, cx| this.select_model(&choice, cx)
+                        }))
+                }))
+                .into_any_element(),
+            ComposerMenu::Effort => {
+                let levels =
+                    supported_reasoning_levels(&self.model_choices, &chat.provider, &chat.model);
+                panel
+                    .child(menu_label("Reasoning effort"))
+                    .children(levels.into_iter().map(|level| {
+                        let selected = chat.reasoning == level;
+                        Button::new(format!("effort:{}", level.as_str()))
+                            .label(level.as_str())
+                            .selected(selected)
+                            .ghost()
+                            .w_full()
+                            .rounded(px(16.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_effort(level, cx);
+                            }))
+                    }))
+                    .into_any_element()
+            }
+        }
     }
 
     fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -117,12 +323,9 @@ impl AlphaDesktop {
     }
 
     fn render_transcript(&self) -> AnyElement {
-        let items = self
-            .runtime
-            .chat()
-            .transcript
-            .iter()
-            .filter_map(render_transcript_item)
+        let items = desktop_transcript_items(&self.runtime.chat().transcript)
+            .into_iter()
+            .map(render_desktop_transcript_item)
             .collect::<Vec<_>>();
 
         if items.is_empty() {
@@ -171,79 +374,165 @@ impl AlphaDesktop {
     }
 }
 
-fn render_transcript_item(item: &TranscriptItem) -> Option<AnyElement> {
-    match item {
-        TranscriptItem::User { text } | TranscriptItem::QueuedSteer { text, .. } => Some(
-            div()
-                .w_full()
-                .rounded(px(24.))
-                .bg(rgb(0x15181c))
-                .px(px(18.))
-                .py(px(15.))
-                .text_size(px(14.))
-                .line_height(px(23.))
-                .text_color(rgb(TEXT))
-                .child(text.clone())
-                .into_any_element(),
-        ),
-        TranscriptItem::AssistantDelta { text }
-        | TranscriptItem::ThinkingDelta { text }
-        | TranscriptItem::Error { message: text } => Some(
-            div()
-                .w_full()
-                .text_size(px(14.))
-                .line_height(px(24.))
-                .text_color(rgb(TEXT))
-                .child(text.clone())
-                .into_any_element(),
-        ),
-        TranscriptItem::AssistantMessage { blocks } => {
-            let text = blocks
-                .iter()
-                .filter_map(AssistantContentBlock::text)
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!text.is_empty()).then(|| {
-                div()
-                    .w_full()
-                    .text_size(px(14.))
-                    .line_height(px(24.))
-                    .text_color(rgb(TEXT))
-                    .child(text)
-                    .into_any_element()
-            })
+fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptItem> {
+    let mut rendered = Vec::new();
+    let mut tools = Vec::new();
+
+    for item in items {
+        match item {
+            TranscriptItem::ToolCall { name, input, .. } => tools.push(ToolSummary {
+                name: if input.is_null() {
+                    name.clone()
+                } else {
+                    format!("{name} {}", compact_json(input))
+                },
+                status: None,
+                content: None,
+            }),
+            TranscriptItem::ToolResult {
+                name,
+                status,
+                content,
+                ..
+            } => {
+                if let Some(tool) = tools.iter_mut().rev().find(|tool| {
+                    tool.status.is_none()
+                        && (tool.name == *name || tool.name.starts_with(&format!("{name} ")))
+                }) {
+                    tool.name = name.clone();
+                    tool.status = Some(*status);
+                    tool.content = Some(content.clone());
+                } else {
+                    tools.push(ToolSummary {
+                        name: name.clone(),
+                        status: Some(*status),
+                        content: Some(content.clone()),
+                    });
+                }
+            }
+            other => {
+                flush_tools(&mut rendered, &mut tools);
+                match other {
+                    TranscriptItem::User { text } | TranscriptItem::QueuedSteer { text, .. } => {
+                        rendered.push(DesktopTranscriptItem::User(text.clone()));
+                    }
+                    TranscriptItem::AssistantDelta { text } => {
+                        rendered.push(DesktopTranscriptItem::Assistant(text.clone()));
+                    }
+                    TranscriptItem::ThinkingDelta { text } => {
+                        rendered.push(DesktopTranscriptItem::Thinking(text.clone()));
+                    }
+                    TranscriptItem::AssistantMessage { blocks } => {
+                        let text = blocks
+                            .iter()
+                            .filter_map(AssistantContentBlock::text)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() {
+                            rendered.push(DesktopTranscriptItem::Assistant(text));
+                        }
+                    }
+                    TranscriptItem::Error { message } => {
+                        rendered.push(DesktopTranscriptItem::Error(message.clone()));
+                    }
+                    TranscriptItem::ToolCall { .. } | TranscriptItem::ToolResult { .. } => {}
+                }
+            }
         }
-        TranscriptItem::ToolCall { name, .. } => Some(tool_row(name, "running", None)),
-        TranscriptItem::ToolResult {
-            name,
-            status,
-            content,
-            ..
-        } => Some(tool_row(
-            name,
-            match status {
-                alpha_schema::ToolStatus::Completed => "completed",
-                alpha_schema::ToolStatus::Failed => "failed",
-                alpha_schema::ToolStatus::Interrupted => "interrupted",
-            },
-            Some(content),
-        )),
+    }
+    flush_tools(&mut rendered, &mut tools);
+    rendered
+}
+
+fn flush_tools(items: &mut Vec<DesktopTranscriptItem>, tools: &mut Vec<ToolSummary>) {
+    if !tools.is_empty() {
+        items.push(DesktopTranscriptItem::Tools(std::mem::take(tools)));
     }
 }
 
-fn tool_row(name: &str, status: &str, detail: Option<&str>) -> AnyElement {
+fn compact_json(value: &serde_json::Value) -> String {
+    let value = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
+    if value.chars().count() <= 80 {
+        value
+    } else {
+        format!("{}...", value.chars().take(77).collect::<String>())
+    }
+}
+
+fn render_desktop_transcript_item(item: DesktopTranscriptItem) -> AnyElement {
+    match item {
+        DesktopTranscriptItem::User(text) => div()
+            .w_full()
+            .rounded(px(24.))
+            .bg(rgb(0x15181c))
+            .px(px(18.))
+            .py(px(15.))
+            .text_size(px(14.))
+            .line_height(px(23.))
+            .text_color(rgb(TEXT))
+            .child(text)
+            .into_any_element(),
+        DesktopTranscriptItem::Assistant(text) => div()
+            .w_full()
+            .text_size(px(14.))
+            .line_height(px(24.))
+            .text_color(rgb(TEXT))
+            .child(text)
+            .into_any_element(),
+        DesktopTranscriptItem::Thinking(text) => div()
+            .w_full()
+            .text_size(px(13.))
+            .line_height(px(22.))
+            .italic()
+            .text_color(rgb(MUTED))
+            .child(text)
+            .into_any_element(),
+        DesktopTranscriptItem::Error(text) => div()
+            .w_full()
+            .text_size(px(13.))
+            .line_height(px(22.))
+            .text_color(rgb(0xff7888))
+            .child(text)
+            .into_any_element(),
+        DesktopTranscriptItem::Tools(tools) => render_tool_group(&tools),
+    }
+}
+
+fn render_tool_group(tools: &[ToolSummary]) -> AnyElement {
+    let Some(latest) = tools.last() else {
+        return div().into_any_element();
+    };
+    let status = latest.status.map_or("running", |status| match status {
+        ToolStatus::Completed => "completed",
+        ToolStatus::Failed => "failed",
+        ToolStatus::Interrupted => "interrupted",
+    });
+
     div()
         .w_full()
-        .rounded(px(20.))
+        .rounded(px(22.))
         .border_1()
         .border_color(rgb(BORDER))
         .bg(rgb(SURFACE))
-        .px(px(14.))
-        .py(px(11.))
+        .p(px(4.))
         .flex()
         .flex_col()
+        .when(tools.len() > 1, |this| {
+            this.child(
+                div()
+                    .px(px(9.))
+                    .py(px(7.))
+                    .text_size(px(9.))
+                    .font_family("monospace")
+                    .text_color(rgb(MUTED))
+                    .child(format!("{} tool calls", tools.len())),
+            )
+        })
         .child(
             div()
+                .rounded(px(18.))
+                .px(px(11.))
+                .py(px(9.))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -252,19 +541,20 @@ fn tool_row(name: &str, status: &str, detail: Option<&str>) -> AnyElement {
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(rgb(TEXT_SECONDARY))
-                        .child(name.to_owned()),
+                        .child(latest.name.clone()),
                 )
                 .child(
                     div()
                         .text_size(px(10.))
                         .text_color(rgb(MUTED))
-                        .child(status.to_owned()),
+                        .child(status),
                 ),
         )
-        .when_some(detail, |this, detail| {
+        .when_some(latest.content.as_deref(), |this, detail| {
             this.child(
                 div()
-                    .mt_1()
+                    .px(px(11.))
+                    .pb(px(9.))
                     .truncate()
                     .text_size(px(11.))
                     .text_color(rgb(MUTED))
@@ -443,12 +733,6 @@ impl Render for AlphaDesktop {
                         .border_color(rgb(BORDER))
                         .bg(rgb(SURFACE))
                         .p(px(8.))
-                        .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                            if event.keystroke.key == "enter" && !event.keystroke.modifiers.shift {
-                                window.prevent_default();
-                                this.submit_composer(window, cx);
-                            }
-                        }))
                         .child(
                             Textarea::new(&self.composer)
                                 .appearance(false)
@@ -471,19 +755,41 @@ impl Render for AlphaDesktop {
                                             Button::new("mode")
                                                 .label(mode)
                                                 .ghost()
-                                                .rounded(px(999.)),
+                                                .rounded(px(999.))
+                                                .selected(
+                                                    self.composer_menu == Some(ComposerMenu::Mode),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.open_composer_menu(ComposerMenu::Mode);
+                                                    cx.notify();
+                                                })),
                                         )
                                         .child(
                                             Button::new("model")
                                                 .label(model)
                                                 .ghost()
-                                                .rounded(px(999.)),
+                                                .rounded(px(999.))
+                                                .selected(
+                                                    self.composer_menu == Some(ComposerMenu::Model),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.open_composer_menu(ComposerMenu::Model);
+                                                    cx.notify();
+                                                })),
                                         )
                                         .child(
                                             Button::new("effort")
                                                 .label(effort)
                                                 .ghost()
-                                                .rounded(px(999.)),
+                                                .rounded(px(999.))
+                                                .selected(
+                                                    self.composer_menu
+                                                        == Some(ComposerMenu::Effort),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.open_composer_menu(ComposerMenu::Effort);
+                                                    cx.notify();
+                                                })),
                                         ),
                                 )
                                 .child(
@@ -509,6 +815,18 @@ impl Render for AlphaDesktop {
                         .text_size(px(10.))
                         .text_color(rgb(MUTED))
                         .child(status.to_owned()),
+                )
+            })
+            .when(self.composer_menu.is_some(), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom(px(126.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .flex()
+                        .justify_center()
+                        .child(self.render_composer_menu(cx)),
                 )
             })
             .when(self.context_open, |this| {
@@ -552,6 +870,17 @@ impl Render for AlphaDesktop {
     }
 }
 
+fn menu_label(label: &str) -> AnyElement {
+    div()
+        .px(px(9.))
+        .py(px(7.))
+        .text_size(px(9.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(MUTED))
+        .child(label.to_owned())
+        .into_any_element()
+}
+
 /// Run the desktop application until its window closes.
 pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
     let mut runtime = Some(runtime);
@@ -570,4 +899,52 @@ pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
             .expect("desktop window opens");
         });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use alpha_front_runtime::TranscriptItem;
+    use alpha_schema::{ToolCallId, ToolStatus};
+
+    use super::{DesktopTranscriptItem, desktop_transcript_items};
+
+    #[test]
+    fn consecutive_tool_items_render_as_one_group_with_the_latest_tool() {
+        let first = ToolCallId::new();
+        let second = ToolCallId::new();
+        let items = vec![
+            TranscriptItem::ToolCall {
+                id: first,
+                name: "read".to_owned(),
+                input: serde_json::json!({ "path": "README.md" }),
+            },
+            TranscriptItem::ToolResult {
+                id: first,
+                name: "read".to_owned(),
+                status: ToolStatus::Completed,
+                content: "README".to_owned(),
+            },
+            TranscriptItem::ToolCall {
+                id: second,
+                name: "grep".to_owned(),
+                input: serde_json::json!({ "pattern": "desktop" }),
+            },
+            TranscriptItem::ToolResult {
+                id: second,
+                name: "grep".to_owned(),
+                status: ToolStatus::Completed,
+                content: "4 matches".to_owned(),
+            },
+        ];
+
+        let rendered = desktop_transcript_items(&items);
+        assert_eq!(rendered.len(), 1);
+        let DesktopTranscriptItem::Tools(tools) = &rendered[0] else {
+            panic!("consecutive tools must render as a tool group");
+        };
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[1].name, "grep");
+        assert_eq!(tools[1].status, Some(ToolStatus::Completed));
+        assert_eq!(tools[1].content.as_deref(), Some("4 matches"));
+    }
 }
