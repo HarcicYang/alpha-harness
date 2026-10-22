@@ -8,11 +8,13 @@ use alpha_front_runtime::{
     CommandOutcome, FrontRuntime, InteractionDecision, ModelChoice, TranscriptItem, parse_command,
     supported_reasoning_levels,
 };
-use alpha_schema::{AssistantContentBlock, PermissionMode, ReasoningLevel, ToolStatus};
+use alpha_schema::{
+    AssistantContentBlock, PermissionMode, ReasoningLevel, SessionId, SessionListEntry, ToolStatus,
+};
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::{
     Theme, ThemeMode,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     input::{InputEvent, Textarea, TextareaState},
     scroll::ScrollableElement as _,
 };
@@ -43,6 +45,8 @@ struct AlphaDesktop {
     composer_menu: Option<ComposerMenu>,
     submit_requested: bool,
     context_open: bool,
+    sessions_open: bool,
+    sessions: Vec<SessionListEntry>,
     local_status: Option<String>,
     _poll_task: Option<Task<()>>,
     _composer_subscription: Subscription,
@@ -93,6 +97,8 @@ impl AlphaDesktop {
             composer_menu: None,
             submit_requested: false,
             context_open: false,
+            sessions_open: false,
+            sessions: Vec::new(),
             local_status: None,
             _poll_task: None,
             _composer_subscription: composer_subscription,
@@ -195,6 +201,223 @@ impl AlphaDesktop {
             Err(error) => self.local_status = Some(error.to_string()),
         }
         cx.notify();
+    }
+
+    fn open_sessions(&mut self, cx: &mut Context<Self>) {
+        match self.runtime.list_sessions() {
+            Ok(sessions) => {
+                self.sessions = sessions;
+                self.sessions_open = true;
+                self.local_status = None;
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn resume_session(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        match self.runtime.resume_session(session_id) {
+            Ok(_) => {
+                self.sessions_open = false;
+                self.local_status = None;
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn new_session(&mut self, cx: &mut Context<Self>) {
+        self.runtime.new_session();
+        self.sessions_open = false;
+        self.composer_menu = None;
+        self.local_status = None;
+        cx.notify();
+    }
+
+    fn render_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.sessions_open {
+            return div().into_any_element();
+        }
+        let rows = if self.sessions.is_empty() {
+            vec![
+                div()
+                    .py(px(40.))
+                    .text_center()
+                    .text_size(px(12.))
+                    .text_color(rgb(MUTED))
+                    .child("No stored sessions")
+                    .into_any_element(),
+            ]
+        } else {
+            self.sessions
+                .iter()
+                .map(|session| {
+                    let route = if session.provider.is_empty() && session.model.is_empty() {
+                        "default".to_owned()
+                    } else {
+                        format!("{}/{}", session.provider, session.model)
+                    };
+                    let preview = session
+                        .first_message
+                        .as_deref()
+                        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or_else(|| "(empty session)".to_owned());
+                    let session_id = session.id;
+                    Button::new(format!("session:{}", session.id))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(rgb(TEXT))
+                                                        .child(short_id(session.id)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .rounded(px(999.))
+                                                        .bg(rgb(SURFACE_RAISED))
+                                                        .px(px(7.))
+                                                        .py(px(2.))
+                                                        .text_size(px(9.))
+                                                        .text_color(rgb(ACCENT))
+                                                        .child(session.mode.to_string()),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(9.))
+                                                .font_family("monospace")
+                                                .text_color(rgb(MUTED))
+                                                .child(route),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .truncate()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(TEXT_SECONDARY))
+                                        .child(preview),
+                                ),
+                        )
+                        .bg(rgb(SURFACE))
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .w_full()
+                        .rounded(px(18.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.resume_session(session_id, cx);
+                        }))
+                        .into_any_element()
+                })
+                .collect()
+        };
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .child(div().absolute().inset_0().bg(rgba(0x00000099)))
+            .child(
+                div()
+                    .relative()
+                    .mt(px(70.))
+                    .w(px(680.))
+                    .h(px(520.))
+                    .rounded(px(26.))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(SURFACE_RAISED))
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(58.))
+                            .flex_none()
+                            .px(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_b_1()
+                            .border_color(rgb(BORDER))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Sessions"),
+                            )
+                            .child(
+                                Button::new("close-sessions")
+                                    .label("×")
+                                    .ghost()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sessions_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("session-list")
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scrollbar()
+                            .p(px(8.))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(rows),
+                    )
+                    .child(
+                        div()
+                            .h(px(54.))
+                            .flex_none()
+                            .px(px(12.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_t_1()
+                            .border_color(rgb(BORDER))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(MUTED))
+                                    .child("Select a session to resume"),
+                            )
+                            .child(
+                                Button::new("new-session")
+                                    .custom(accent_button_variant(cx))
+                                    .label("New session")
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.new_session(cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_composer_menu(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -608,7 +831,10 @@ impl Render for AlphaDesktop {
                                 Button::new("sessions")
                                     .label("Sessions")
                                     .ghost()
-                                    .rounded(px(999.)),
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_sessions(cx);
+                                    })),
                             )
                             .child(
                                 Button::new("context")
@@ -707,7 +933,7 @@ impl Render for AlphaDesktop {
                                                 .child(
                                                     Button::new("allow-once")
                                                         .label("Allow once")
-                                                        .primary()
+                                                        .custom(accent_button_variant(cx))
                                                         .rounded(px(999.))
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             let _ =
@@ -795,7 +1021,7 @@ impl Render for AlphaDesktop {
                                 .child(
                                     Button::new("send")
                                         .label(if running { "■" } else { "↑" })
-                                        .primary()
+                                        .custom(accent_button_variant(cx))
                                         .rounded(px(999.))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.submit_composer(window, cx);
@@ -829,6 +1055,7 @@ impl Render for AlphaDesktop {
                         .child(self.render_composer_menu(cx)),
                 )
             })
+            .child(self.render_sessions(cx))
             .when(self.context_open, |this| {
                 this.child(
                     div()
@@ -870,6 +1097,11 @@ impl Render for AlphaDesktop {
     }
 }
 
+fn short_id(id: SessionId) -> String {
+    let id = id.to_string();
+    id.chars().take(8).collect()
+}
+
 fn menu_label(label: &str) -> AnyElement {
     div()
         .px(px(9.))
@@ -879,6 +1111,14 @@ fn menu_label(label: &str) -> AnyElement {
         .text_color(rgb(MUTED))
         .child(label.to_owned())
         .into_any_element()
+}
+
+fn accent_button_variant(cx: &App) -> ButtonCustomVariant {
+    ButtonCustomVariant::new(cx)
+        .color(rgb(ACCENT).into())
+        .foreground(rgb(CANVAS).into())
+        .hover(rgb(0x84dcf3).into())
+        .active(rgb(0x84dcf3).into())
 }
 
 /// Run the desktop application until its window closes.
