@@ -47,6 +47,10 @@ struct AlphaDesktop {
     context_open: bool,
     sessions_open: bool,
     sessions: Vec<SessionListEntry>,
+    providers_open: bool,
+    provider_kind: Option<String>,
+    provider_status: Option<String>,
+    more_open: bool,
     local_status: Option<String>,
     _poll_task: Option<Task<()>>,
     _composer_subscription: Subscription,
@@ -99,6 +103,10 @@ impl AlphaDesktop {
             context_open: false,
             sessions_open: false,
             sessions: Vec::new(),
+            providers_open: false,
+            provider_kind: None,
+            provider_status: None,
+            more_open: false,
             local_status: None,
             _poll_task: None,
             _composer_subscription: composer_subscription,
@@ -232,6 +240,391 @@ impl AlphaDesktop {
         self.composer_menu = None;
         self.local_status = None;
         cx.notify();
+    }
+
+    fn open_providers(&mut self, cx: &mut Context<Self>) {
+        self.more_open = false;
+        match self.runtime.refresh_providers() {
+            Ok(()) => {
+                self.provider_kind = self
+                    .runtime
+                    .providers()
+                    .kinds
+                    .first()
+                    .map(|kind| kind.kind.clone());
+                self.provider_status = None;
+                self.providers_open = true;
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn create_provider_instance(&mut self, cx: &mut Context<Self>) {
+        let Some(kind) = self.provider_kind.clone() else {
+            return;
+        };
+        match self.runtime.create_provider_instance(&kind) {
+            Ok(id) => {
+                self.provider_status = Some(format!("created {id}"));
+                let _ = self.runtime.refresh_providers();
+            }
+            Err(error) => self.provider_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn test_provider_instance(&mut self, id: String, cx: &mut Context<Self>) {
+        match self.runtime.test_provider(&id) {
+            Ok(()) => self.provider_status = Some(format!("connection passed: {id}")),
+            Err(error) => self.provider_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn set_default_provider_instance(&mut self, id: String, cx: &mut Context<Self>) {
+        match self.runtime.set_default_provider(&id) {
+            Ok(()) => self.provider_status = Some(format!("default provider: {id}")),
+            Err(error) => self.provider_status = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn render_more_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.more_open {
+            return div().into_any_element();
+        }
+        div()
+            .absolute()
+            .top(px(50.))
+            .right(px(16.))
+            .w(px(224.))
+            .rounded(px(20.))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE_RAISED))
+            .p(px(5.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                Button::new("more-providers")
+                    .label("Provider settings")
+                    .ghost()
+                    .w_full()
+                    .rounded(px(15.))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_providers(cx))),
+            )
+            .child(
+                Button::new("more-new-session")
+                    .label("New session")
+                    .ghost()
+                    .w_full()
+                    .rounded(px(15.))
+                    .on_click(cx.listener(|this, _, _, cx| this.new_session(cx))),
+            )
+            .child(
+                Button::new("more-diagnostics")
+                    .label("Core diagnostics")
+                    .ghost()
+                    .w_full()
+                    .rounded(px(15.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let info = this.runtime.core_info();
+                        this.local_status = Some(format!(
+                            "core pid={} protocol={} instance={}",
+                            info.pid, info.protocol, info.core_instance_id
+                        ));
+                        this.more_open = false;
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_providers(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.providers_open {
+            return div().into_any_element();
+        }
+        let providers = self.runtime.providers();
+        let selected_kind = self.provider_kind.as_deref();
+        let kind = selected_kind.and_then(|kind| providers.kind(kind));
+        let instances = selected_kind.map_or_else(Vec::new, |kind| {
+            providers
+                .instances
+                .iter()
+                .filter(|instance| instance.kind == kind)
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+
+        let kinds = if providers.kinds.is_empty() {
+            vec![
+                div()
+                    .p(px(12.))
+                    .text_size(px(11.))
+                    .text_color(rgb(MUTED))
+                    .child("No provider kinds registered")
+                    .into_any_element(),
+            ]
+        } else {
+            providers
+                .kinds
+                .iter()
+                .map(|kind| {
+                    let selected = selected_kind == Some(kind.kind.as_str());
+                    let kind_id = kind.kind.clone();
+                    Button::new(format!("provider-kind:{}", kind.kind))
+                        .label(kind.name.clone())
+                        .selected(selected)
+                        .ghost()
+                        .w_full()
+                        .rounded(px(16.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.provider_kind = Some(kind_id.clone());
+                            this.provider_status = None;
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                })
+                .collect()
+        };
+
+        let instance_rows = if instances.is_empty() {
+            vec![
+                div()
+                    .py(px(24.))
+                    .text_center()
+                    .text_size(px(11.))
+                    .text_color(rgb(MUTED))
+                    .child("No configured instances")
+                    .into_any_element(),
+            ]
+        } else {
+            instances
+                .into_iter()
+                .map(|instance| {
+                    let id = instance.id.clone();
+                    let test_id = id.clone();
+                    let default_id = id.clone();
+                    let credential = instance
+                        .auth_ref
+                        .clone()
+                        .unwrap_or_else(|| "no credential".to_owned());
+                    div()
+                        .rounded(px(18.))
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .bg(rgb(SURFACE))
+                        .p(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .size(px(28.))
+                                .rounded_full()
+                                .bg(if instance.disabled {
+                                    rgb(0x2a3038)
+                                } else {
+                                    rgb(0x12333c)
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(11.))
+                                .text_color(if instance.disabled {
+                                    rgb(MUTED)
+                                } else {
+                                    rgb(ACCENT)
+                                })
+                                .child(if instance.disabled { "!" } else { "✓" }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .font_family("monospace")
+                                        .text_size(px(10.))
+                                        .text_color(rgb(TEXT))
+                                        .child(id),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(9.))
+                                        .text_color(rgb(MUTED))
+                                        .child(credential),
+                                ),
+                        )
+                        .child(
+                            Button::new(format!("test:{test_id}"))
+                                .label("Test")
+                                .ghost()
+                                .rounded(px(999.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.test_provider_instance(test_id.clone(), cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(format!("default:{default_id}"))
+                                .label("Set default")
+                                .secondary()
+                                .rounded(px(999.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_default_provider_instance(default_id.clone(), cx);
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect()
+        };
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .child(div().absolute().inset_0().bg(rgba(0x00000099)))
+            .child(
+                div()
+                    .relative()
+                    .mt(px(58.))
+                    .w(px(820.))
+                    .h(px(620.))
+                    .rounded(px(26.))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(SURFACE_RAISED))
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(58.))
+                            .flex_none()
+                            .px(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_b_1()
+                            .border_color(rgb(BORDER))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Providers"),
+                            )
+                            .child(
+                                Button::new("close-providers")
+                                    .label("×")
+                                    .ghost()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.providers_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .child(
+                                div()
+                                    .w(px(220.))
+                                    .flex_none()
+                                    .border_r_1()
+                                    .border_color(rgb(BORDER))
+                                    .bg(rgb(SURFACE))
+                                    .p(px(7.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(kinds),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .p(px(18.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_4()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_start()
+                                            .justify_between()
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(20.))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(
+                                                                kind.map(|kind| kind.name.clone())
+                                                                    .unwrap_or_else(|| {
+                                                                        "Provider".to_owned()
+                                                                    }),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(10.))
+                                                            .text_color(rgb(MUTED))
+                                                            .child(
+                                                                kind.map(|kind| kind.kind.clone())
+                                                                    .unwrap_or_default(),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new("create-provider")
+                                                    .custom(accent_button_variant(cx))
+                                                    .label("New instance")
+                                                    .rounded(px(999.))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.create_provider_instance(cx);
+                                                    })),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(MUTED))
+                                            .child("Instances"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("provider-instances")
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .overflow_y_scrollbar()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_2()
+                                            .children(instance_rows),
+                                    )
+                                    .when_some(self.provider_status.as_deref(), |this, status| {
+                                        this.child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(rgb(ACCENT))
+                                                .child(status.to_owned()),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -851,7 +1244,12 @@ impl Render for AlphaDesktop {
                                 Button::new("commands")
                                     .label("More")
                                     .ghost()
-                                    .rounded(px(999.)),
+                                    .rounded(px(999.))
+                                    .selected(self.more_open)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.more_open = !this.more_open;
+                                        cx.notify();
+                                    })),
                             ),
                     ),
             )
@@ -1055,7 +1453,9 @@ impl Render for AlphaDesktop {
                         .child(self.render_composer_menu(cx)),
                 )
             })
+            .child(self.render_more_menu(cx))
             .child(self.render_sessions(cx))
+            .child(self.render_providers(cx))
             .when(self.context_open, |this| {
                 this.child(
                     div()
