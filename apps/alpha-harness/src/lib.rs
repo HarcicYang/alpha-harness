@@ -54,7 +54,9 @@ use alpha_provider_api::{
     ProviderInstanceRegistry, ProviderKindRegistry, build_provider_instance, default_model_id,
     discover_models, resolve_credential, resolve_provider_choice,
 };
-use alpha_schema::{EventEnvelope, PermissionMode, SessionId};
+use alpha_schema::{
+    EventEnvelope, PermissionMode, SessionId, SessionListEntry as FrontSessionListEntry,
+};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1168,7 +1170,18 @@ fn build_router_with_transport(
                 async move {
                     let sessions = store
                         .list_entries()
-                        .map_err(|error| RpcError::internal(error.to_string()))?;
+                        .map_err(|error| RpcError::internal(error.to_string()))?
+                        .into_iter()
+                        .map(|entry| FrontSessionListEntry {
+                            id: entry.header.id,
+                            created_at: entry.header.created_at,
+                            mode: entry.header.mode,
+                            workspace: entry.header.workspace,
+                            provider: entry.header.provider,
+                            model: entry.header.model,
+                            first_message: entry.first_message,
+                        })
+                        .collect::<Vec<_>>();
                     serde_json::to_value(sessions)
                         .map_err(|error| RpcError::internal(error.to_string()))
                 }

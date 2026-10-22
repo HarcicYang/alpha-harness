@@ -5,7 +5,7 @@ use alpha_module_session::{
     SessionEvent, SessionHeader, SessionStore, TurnEndReason, WorkspaceRef,
 };
 use alpha_protocol::{Id, Message, Response, ResponsePayload, codes, read_message};
-use alpha_schema::{MessageId, PermissionMode, SessionId, ToolCallId};
+use alpha_schema::{MessageId, PermissionMode, SessionId, SessionListEntry, ToolCallId};
 use serde_json::{Value, json};
 
 fn result_of(message: Message) -> serde_json::Value {
@@ -190,11 +190,15 @@ fn session_list_includes_first_message_preview() {
     let message = read_message(&mut Cursor::new(output))
         .expect("read list")
         .expect("list response");
-    let result = result_of(message);
+    let sessions: Vec<SessionListEntry> =
+        serde_json::from_value(result_of(message)).expect("front session list DTO");
+    assert_eq!(sessions.len(), 1);
     assert_eq!(
-        result[0]["firstMessage"],
-        json!("fix the first failing test")
+        sessions[0].first_message.as_deref(),
+        Some("fix the first failing test")
     );
+    assert_eq!(sessions[0].mode, PermissionMode::Auto);
+    assert_eq!(sessions[0].workspace.root, "/tmp/workspace");
 }
 
 #[test]
