@@ -361,10 +361,7 @@ fn drain_events(
     done: &mut bool,
     finish: bool,
 ) -> Result<(), ProviderError> {
-    loop {
-        let Some(index) = buffer.iter().position(|byte| *byte == b'\n') else {
-            break;
-        };
+    while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
         let mut line: Vec<u8> = buffer.drain(..=index).collect();
         line.pop();
         process_event_line(&line, pending, block_kinds, done)?;

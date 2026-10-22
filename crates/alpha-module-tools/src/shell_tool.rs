@@ -102,10 +102,10 @@ pub async fn discover_shells(runner: &Arc<dyn ProcessRunner>) -> Vec<ShellKind> 
     for kind in ShellKind::builtin() {
         let request = ProcessRequest::new(kind.program, kind.probe_args())
             .with_timeout(Duration::from_secs(3));
-        if let Ok(outcome) = runner.run(request).await {
-            if outcome.success {
-                available.push(kind);
-            }
+        if let Ok(outcome) = runner.run(request).await
+            && outcome.success
+        {
+            available.push(kind);
         }
     }
     available

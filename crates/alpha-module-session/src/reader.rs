@@ -139,13 +139,13 @@ fn push_envelope(
         }
         envelope.schema = CURRENT_EVENT_SCHEMA;
     }
-    if let Some(previous) = events.last() {
-        if envelope.seq <= previous.seq {
-            return Err(SessionError::CorruptEvent {
-                line: line_number,
-                reason: format!("sequence {} does not follow {}", envelope.seq, previous.seq),
-            });
-        }
+    if let Some(previous) = events.last()
+        && envelope.seq <= previous.seq
+    {
+        return Err(SessionError::CorruptEvent {
+            line: line_number,
+            reason: format!("sequence {} does not follow {}", envelope.seq, previous.seq),
+        });
     }
     events.push(envelope);
     Ok(())

@@ -151,12 +151,13 @@ Headless and SDK first:
 - `alpha run`: one-shot and streaming stdout, for scripts and CI.
 - `alpha chat`: interactive managed-core chat front.
 - `alpha tui`: full-screen terminal profile backed by a managed core.
+- `alpha desktop`: GPUI Kit desktop profile backed by the same managed core.
 - `alpha __core --stdio`: hidden core process managed by a front.
 - Rust SDK embeds the core crates directly.
 
-`chat` and `tui` share the same UI-independent front runtime and differ only in
-their terminal profile. A daemon can be added later because the protocol and
-transport are separate.
+`chat`, `tui`, and `desktop` share the same UI-independent front runtime and
+differ only in their presentation adapter. A daemon can be added later because
+the protocol and transport are separate.
 
 ### D13: External protocol
 
@@ -454,9 +455,10 @@ The public `alpha` binary is the only user entry point. `alpha-core` and
 supervisor starts one hidden `alpha __core --stdio` child, performs the
 `body.hello` handshake, and manages that child's lifecycle.
 
-All front modes (`run`, `chat`, `tui`, and `sessions`) use the same
-managed-core path. `alpha run`, `alpha chat`, and `alpha tui` start their own
-core process. `alpha sessions` uses the managed core to read durable state.
+All front modes (`run`, `chat`, `tui`, `desktop`, and `sessions`) use the same
+managed-core path. `alpha run`, `alpha chat`, `alpha tui`, and `alpha desktop`
+start their own core process. `alpha sessions` uses the managed core to read
+durable state.
 Each front and core pair is independent. A front never attaches to another
 instance's core, and a second writer for the same session fails with
 `session_busy`.
@@ -495,6 +497,10 @@ clipboard support, and terminal lifecycle. The `chat` profile stays in the
 current terminal, while `tui` enters the alternate screen. Both consume the
 shared runtime.
 
+`alpha-front-desktop` owns GPUI Kit window lifecycle, layout, keyboard and
+pointer mapping, selection, and rendering. It consumes typed front state and
+does not duplicate session, turn, provider, command, or timeout behavior.
+
 The chat screen shows the effective provider/model route, reasoning effort, and
 permission mode as `provider/model effort | mode`. `Ctrl-L` selects a
 configured provider and model, `Shift-Tab` cycles the model's configured
@@ -529,8 +535,8 @@ values, environment-variable names, or platform-specific credential details.
 If the keyring backend is unavailable, credential operations fail closed and
 the front reports `keyring_unavailable`. There is no plaintext-file fallback.
 
-The workspace MSRV is Rust 1.88 because the credential stack uses
-`keyring-core` and platform-specific store crates.
+The workspace MSRV is Rust 1.99 because the GPUI Kit desktop stack uses
+current GPUI platform, text, and credential dependencies that require it.
 
 ### D27: Provider API adapters
 
@@ -669,6 +675,7 @@ pub trait Module: Send + Sync + 'static {
 | `alpha-front-supervisor` | managed core child process lifecycle |
 | `alpha-front-runtime` | UI-independent frontend state, controller, and workflows |
 | `alpha-front-tui` | interactive chat and full-screen terminal adapters |
+| `alpha-front-desktop` | GPUI Kit desktop adapter |
 | `alpha-provider-api` | provider descriptors and API adapter contracts |
 | `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
 | `alpha-api-openai-responses` | OpenAI Responses adapter |

@@ -297,10 +297,10 @@ fn completion_chunks(
     message: ResponseMessage,
 ) -> Result<Vec<Result<CompletionChunk, ProviderError>>, ProviderError> {
     let mut chunks = Vec::new();
-    if let Some(text) = message.content {
-        if !text.is_empty() {
-            chunks.push(Ok(CompletionChunk::Text(text)));
-        }
+    if let Some(text) = message.content
+        && !text.is_empty()
+    {
+        chunks.push(Ok(CompletionChunk::Text(text)));
     }
     for (index, call) in message
         .tool_calls
@@ -331,10 +331,7 @@ fn drain_events(
     done: &mut bool,
     finish: bool,
 ) -> Result<(), ProviderError> {
-    loop {
-        let Some(index) = buffer.iter().position(|byte| *byte == b'\n') else {
-            break;
-        };
+    while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
         let mut line: Vec<u8> = buffer.drain(..=index).collect();
         line.pop();
         process_event_line(&line, pending, done)?;
@@ -373,10 +370,10 @@ fn process_event_line(
         return Err(ProviderError::Request(format!("stream error: {error}")));
     }
     for choice in response.choices {
-        if let Some(text) = choice.delta.content {
-            if !text.is_empty() {
-                pending.push_back(Ok(CompletionChunk::Text(text)));
-            }
+        if let Some(text) = choice.delta.content
+            && !text.is_empty()
+        {
+            pending.push_back(Ok(CompletionChunk::Text(text)));
         }
         if let Some(reasoning) = [
             choice.delta.reasoning_content,

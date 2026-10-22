@@ -15,7 +15,7 @@ modules. The design decisions live in
 cargo build --release
 ```
 
-The workspace requires Rust 1.88 or newer.
+The workspace requires Rust 1.99 or newer.
 
 ## Run a prompt
 
@@ -44,15 +44,17 @@ Shell commands run in a bubblewrap sandbox when one is available.
 Assistant output goes to stdout as it arrives. Step, tool, and error progress
 goes to stderr.
 
-## Terminal frontends
+## Interactive frontends
 
 ```sh
 alpha chat
 alpha tui
+alpha desktop
 ```
 
-Both commands run a managed core through the shared front runtime. `chat`
+These commands run a managed core through the shared front runtime. `chat`
 stays in the current terminal, while `tui` uses the alternate screen. The
+desktop command opens the GPUI Kit window. The
 runtime discovers provider kinds and stored provider instances, and supports
 creating, removing, and validating them, setting the default, entering
 credentials, editing the provider configuration as JSON, and refreshing

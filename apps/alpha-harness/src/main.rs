@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use alpha_front_desktop::run_desktop;
 use alpha_front_runtime::{
     FrontEvent, FrontRuntime, FrontRuntimeConfig, SessionOptions, read_terminal_approval,
 };
@@ -30,6 +31,8 @@ enum Command {
     Chat,
     /// Open the full-screen terminal interface.
     Tui,
+    /// Open the desktop interface.
+    Desktop,
     /// List stored sessions.
     Sessions,
     /// Internal core process entry point.
@@ -74,7 +77,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args),
-        command @ (Command::Chat | Command::Tui) => {
+        command @ (Command::Chat | Command::Tui | Command::Desktop) => {
             let runtime = match FrontRuntime::start(FrontRuntimeConfig::default()) {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -82,9 +85,10 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let result = match command {
-                Command::Chat => run_chat(runtime),
-                Command::Tui => run_tui(runtime),
+            let result: Result<(), String> = match command {
+                Command::Chat => run_chat(runtime).map_err(|error| error.to_string()),
+                Command::Tui => run_tui(runtime).map_err(|error| error.to_string()),
+                Command::Desktop => run_desktop(runtime).map_err(|error| error.to_string()),
                 _ => unreachable!(),
             };
             match result {

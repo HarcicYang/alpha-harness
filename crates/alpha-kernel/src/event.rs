@@ -163,10 +163,10 @@ where
     let mut handlers = Vec::new();
     for node in chain {
         let buckets = select(node.events()).read().expect("event lock poisoned");
-        if let Some(bucket) = buckets.get(&type_id) {
-            if let Some(list) = bucket.downcast_ref::<Vec<Arc<H>>>() {
-                handlers.extend(list.iter().cloned());
-            }
+        if let Some(bucket) = buckets.get(&type_id)
+            && let Some(list) = bucket.downcast_ref::<Vec<Arc<H>>>()
+        {
+            handlers.extend(list.iter().cloned());
         }
     }
     handlers

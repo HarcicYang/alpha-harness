@@ -281,10 +281,7 @@ fn drain_events(
     done: &mut bool,
     finish: bool,
 ) -> Result<(), ProviderError> {
-    loop {
-        let Some(index) = buffer.iter().position(|byte| *byte == b'\n') else {
-            break;
-        };
+    while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
         let mut line: Vec<u8> = buffer.drain(..=index).collect();
         line.pop();
         process_event_line(&line, pending, done)?;
@@ -321,10 +318,10 @@ fn process_event_line(
         .map_err(|error| ProviderError::Request(format!("invalid stream event: {error}")))?;
     match event.kind.as_str() {
         "response.output_text.delta" => {
-            if let Some(delta) = event.delta {
-                if !delta.is_empty() {
-                    pending.push_back(Ok(CompletionChunk::Text(delta)));
-                }
+            if let Some(delta) = event.delta
+                && !delta.is_empty()
+            {
+                pending.push_back(Ok(CompletionChunk::Text(delta)));
             }
         }
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
@@ -338,15 +335,15 @@ fn process_event_line(
             }
         }
         "response.output_item.added" => {
-            if let Some(item) = event.item {
-                if item.kind.as_deref() == Some("function_call") {
-                    pending.push_back(Ok(CompletionChunk::ToolCall(ToolCallDelta {
-                        index: event.output_index.unwrap_or_default(),
-                        id: item.call_id.or(item.id),
-                        name: item.name,
-                        arguments: item.arguments.unwrap_or_default(),
-                    })));
-                }
+            if let Some(item) = event.item
+                && item.kind.as_deref() == Some("function_call")
+            {
+                pending.push_back(Ok(CompletionChunk::ToolCall(ToolCallDelta {
+                    index: event.output_index.unwrap_or_default(),
+                    id: item.call_id.or(item.id),
+                    name: item.name,
+                    arguments: item.arguments.unwrap_or_default(),
+                })));
             }
         }
         "response.function_call_arguments.delta" => {

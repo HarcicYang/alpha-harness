@@ -571,10 +571,10 @@ impl AgentHostService {
         let pending = self.sink.finish_attach(session_id);
         let (last_seq, replayed) = replay?;
         for notification in pending {
-            if let SessionEventNotification::Durable { event, .. } = &notification {
-                if event.seq.get() <= last_seq {
-                    continue;
-                }
+            if let SessionEventNotification::Durable { event, .. } = &notification
+                && event.seq.get() <= last_seq
+            {
+                continue;
             }
             self.transport
                 .notify(

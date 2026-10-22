@@ -187,10 +187,10 @@ impl Ctx {
         let mut current = Some(self);
         while let Some(ctx) = current {
             let services = ctx.inner.services.read().expect("service lock poisoned");
-            if let Some(entry) = services.get(&type_id) {
-                if let Some(erased) = entry.value.downcast_ref::<Erased<T>>() {
-                    return Some(erased.value.clone());
-                }
+            if let Some(entry) = services.get(&type_id)
+                && let Some(erased) = entry.value.downcast_ref::<Erased<T>>()
+            {
+                return Some(erased.value.clone());
             }
             drop(services);
             current = ctx.parent();

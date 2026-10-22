@@ -1494,10 +1494,10 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
             async move {
                 let params: DefaultInstanceParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
-                if let Some(id) = params.id.as_deref() {
-                    if instances.get(id).is_none() {
-                        return Err(RpcError::invalid_params("unknown provider instance"));
-                    }
+                if let Some(id) = params.id.as_deref()
+                    && instances.get(id).is_none()
+                {
+                    return Err(RpcError::invalid_params("unknown provider instance"));
                 }
                 let store = config_store
                     .ok_or_else(|| RpcError::internal("provider config store is unavailable"))?;

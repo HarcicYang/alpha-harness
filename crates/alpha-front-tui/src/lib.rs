@@ -1560,10 +1560,10 @@ fn handle_provider_key(
         match code {
             KeyCode::Esc => app.providers.config_editor = None,
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Err(error) = app.providers.submit_config_edit(runtime) {
-                    if let Some(editor) = &mut app.providers.config_editor {
-                        editor.error = Some(error.to_string());
-                    }
+                if let Err(error) = app.providers.submit_config_edit(runtime)
+                    && let Some(editor) = &mut app.providers.config_editor
+                {
+                    editor.error = Some(error.to_string());
                 }
             }
             KeyCode::Enter => {
