@@ -2,7 +2,11 @@
 
 #![forbid(unsafe_code)]
 
-use alpha_front_runtime::{FrontRuntime, TranscriptItem};
+use std::time::Duration;
+
+use alpha_front_runtime::{
+    CommandOutcome, FrontRuntime, InteractionDecision, TranscriptItem, parse_command,
+};
 use alpha_schema::AssistantContentBlock;
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::{
@@ -34,6 +38,8 @@ struct AlphaDesktop {
     runtime: FrontRuntime,
     composer: Entity<TextareaState>,
     context_open: bool,
+    local_status: Option<String>,
+    _poll_task: Option<Task<()>>,
 }
 
 impl AlphaDesktop {
@@ -43,11 +49,71 @@ impl AlphaDesktop {
                 .placeholder("Ask alpha to inspect, change, or explain...")
                 .auto_grow(1, 6)
         });
-        Self {
+        let mut this = Self {
             runtime,
             composer,
             context_open: false,
+            local_status: None,
+            _poll_task: None,
+        };
+        this._poll_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                if this
+                    .update_in(cx, |this, _, cx| {
+                        let mut changed = this.runtime.expire_interaction().unwrap_or(false);
+                        match this.runtime.try_receive_events() {
+                            Ok(events) => changed |= !events.is_empty(),
+                            Err(error) => this.local_status = Some(error.to_string()),
+                        }
+                        if changed {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        this
+    }
+
+    fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.composer.read(cx).value().trim().to_owned();
+        if value.is_empty() {
+            if self.runtime.chat().running_turn.is_some()
+                && let Err(error) = self.runtime.cancel()
+            {
+                self.local_status = Some(error.to_string());
+            }
+            cx.notify();
+            return;
         }
+
+        let result = if value.starts_with('/') {
+            self.runtime
+                .execute_command(parse_command(&value))
+                .map(|outcome| {
+                    if matches!(outcome, CommandOutcome::OpenSessions) {
+                        self.local_status = Some("session manager is not wired yet".to_owned());
+                    }
+                })
+        } else {
+            self.runtime.submit_prompt(&value)
+        };
+
+        match result {
+            Ok(()) => {
+                self.local_status = None;
+                self.composer
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+            }
+            Err(error) => self.local_status = Some(error.to_string()),
+        }
+        cx.notify();
     }
 
     fn render_transcript(&self) -> AnyElement {
@@ -218,6 +284,9 @@ impl Render for AlphaDesktop {
         };
         let effort = chat.reasoning.to_string();
         let mode = chat.mode.to_string();
+        let running = chat.running_turn.is_some();
+        let status = self.local_status.as_deref().or(chat.status.as_deref());
+        let interaction = chat.interaction.clone();
 
         div()
             .relative()
@@ -283,7 +352,84 @@ impl Render for AlphaDesktop {
                             .mx_auto()
                             .px(px(24.))
                             .py(px(18.))
-                            .child(self.render_transcript()),
+                            .child(self.render_transcript())
+                            .when_some(interaction, |this, interaction| {
+                                let prompt = serde_json::to_string_pretty(&interaction.prompt)
+                                    .unwrap_or_else(|_| interaction.prompt.to_string());
+                                this.child(
+                                    div()
+                                        .mt_5()
+                                        .rounded(px(24.))
+                                        .border_1()
+                                        .border_color(rgb(0x5cc8e6))
+                                        .bg(rgb(SURFACE))
+                                        .p(px(16.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child("Permission requested"),
+                                        )
+                                        .child(
+                                            div()
+                                                .rounded(px(16.))
+                                                .bg(rgb(SURFACE_RAISED))
+                                                .p(px(10.))
+                                                .font_family("monospace")
+                                                .text_size(px(11.))
+                                                .text_color(rgb(TEXT_SECONDARY))
+                                                .child(prompt),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .justify_end()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new("deny")
+                                                        .label("Deny")
+                                                        .ghost()
+                                                        .rounded(px(999.))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            let _ =
+                                                                this.runtime.respond_interaction(
+                                                                    InteractionDecision::Deny,
+                                                                );
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .child(
+                                                    Button::new("allow-session")
+                                                        .label("Allow session")
+                                                        .secondary()
+                                                        .rounded(px(999.))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            let _ =
+                                                                this.runtime.respond_interaction(
+                                                                    InteractionDecision::Session,
+                                                                );
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .child(
+                                                    Button::new("allow-once")
+                                                        .label("Allow once")
+                                                        .primary()
+                                                        .rounded(px(999.))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            let _ =
+                                                                this.runtime.respond_interaction(
+                                                                    InteractionDecision::Once,
+                                                                );
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                        ),
+                                )
+                            }),
                     ),
             )
             .child(
@@ -297,11 +443,18 @@ impl Render for AlphaDesktop {
                         .border_color(rgb(BORDER))
                         .bg(rgb(SURFACE))
                         .p(px(8.))
+                        .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            if event.keystroke.key == "enter" && !event.keystroke.modifiers.shift {
+                                window.prevent_default();
+                                this.submit_composer(window, cx);
+                            }
+                        }))
                         .child(
                             Textarea::new(&self.composer)
                                 .appearance(false)
                                 .bordered(false)
-                                .h(px(54.)),
+                                .h(px(54.))
+                                .aria_label("Message"),
                         )
                         .child(
                             div()
@@ -334,19 +487,30 @@ impl Render for AlphaDesktop {
                                         ),
                                 )
                                 .child(
-                                    div()
-                                        .size(px(36.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded_full()
-                                        .bg(rgb(ACCENT))
-                                        .text_color(rgb(CANVAS))
-                                        .child("↑"),
+                                    Button::new("send")
+                                        .label(if running { "■" } else { "↑" })
+                                        .primary()
+                                        .rounded(px(999.))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.submit_composer(window, cx);
+                                        })),
                                 ),
                         ),
                 ),
             )
+            .when_some(status, |this, status| {
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom(px(6.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .text_center()
+                        .text_size(px(10.))
+                        .text_color(rgb(MUTED))
+                        .child(status.to_owned()),
+                )
+            })
             .when(self.context_open, |this| {
                 this.child(
                     div()
