@@ -167,6 +167,7 @@ impl FrontRuntime {
         };
         let mut chat = ChatState::default();
         chat.mode = config.session.mode;
+        chat.workspace = config.session.workspace.display().to_string();
         chat.provider = config.session.provider.clone();
         chat.model = config.session.model.clone();
         chat.reasoning = config.session.reasoning;
@@ -190,6 +191,7 @@ impl FrontRuntime {
         }
         let mut chat = ChatState::default();
         chat.mode = session.mode;
+        chat.workspace = session.workspace.display().to_string();
         chat.provider = session.provider.clone();
         chat.model = session.model.clone();
         chat.reasoning = session.reasoning;
@@ -314,6 +316,7 @@ impl FrontRuntime {
             self.session_options.reasoning,
         )?;
         self.chat.session_id = Some(created.session_id);
+        self.chat.workspace = created.workspace.clone();
         self.chat.provider = created.provider.clone();
         self.chat.model = created.model.clone();
         self.chat.reasoning = created.reasoning;
@@ -362,6 +365,7 @@ impl FrontRuntime {
         )?)?;
         self.chat.reset_projection();
         self.chat.session_id = Some(session_id);
+        self.chat.workspace = resumed.workspace.clone();
         self.chat.provider = resumed.provider.clone();
         self.chat.model = resumed.model.clone();
         self.chat.reasoning = resumed.reasoning;
@@ -376,6 +380,7 @@ impl FrontRuntime {
     /// Start a new unpersisted draft.
     pub fn new_session(&mut self) {
         self.chat.new_session();
+        self.chat.workspace = self.session_options.workspace.display().to_string();
     }
 
     /// Submit text, creating the session on first use.

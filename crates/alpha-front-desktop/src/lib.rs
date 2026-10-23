@@ -3174,7 +3174,17 @@ fn tool_detail_content(content: &str) -> String {
 
 impl Render for AlphaDesktop {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (model, effort, mode, running, status, interaction, queued_steers, has_transcript) = {
+        let (
+            workspace,
+            model,
+            effort,
+            mode,
+            running,
+            status,
+            interaction,
+            queued_steers,
+            has_transcript,
+        ) = {
             let chat = self.runtime.chat();
             let model = if chat.model.is_empty() {
                 "unset".to_owned()
@@ -3190,6 +3200,7 @@ impl Render for AlphaDesktop {
                 })
                 .collect::<Vec<_>>();
             (
+                workspace_name(&chat.workspace),
                 model,
                 chat.reasoning.to_string(),
                 chat.mode.to_string(),
@@ -3223,7 +3234,7 @@ impl Render for AlphaDesktop {
                     .justify_between()
                     .child(
                         Button::new("workspace")
-                            .label("alpha-harness")
+                            .label(workspace)
                             .ghost()
                             .rounded(px(999.)),
                     )
@@ -3621,6 +3632,15 @@ fn session_meta_row(label: &str, value: String) -> AnyElement {
         .into_any_element()
 }
 
+fn workspace_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("workspace")
+        .to_owned()
+}
+
 fn path_parts(path: &str) -> (String, String) {
     let path = path.trim_start_matches("./");
     match path.rsplit_once('/') {
@@ -3795,6 +3815,7 @@ mod tests {
     use super::{
         DesktopTranscriptItem, context_capabilities, desktop_transcript_items, format_token_count,
         parse_provider_config, path_parts, pretty_provider_config, session_matches_query,
+        workspace_name,
     };
 
     #[test]
@@ -3876,6 +3897,11 @@ mod tests {
         assert_eq!(format_token_count(987), "987");
         assert_eq!(format_token_count(12_400), "12.4k");
         assert_eq!(format_token_count(1_250_000), "1.2m");
+        assert_eq!(
+            workspace_name("/run/media/user/projects/alpha-harness"),
+            "alpha-harness"
+        );
+        assert_eq!(workspace_name(""), "workspace");
 
         let context = ContextView {
             local_tools: vec!["read".to_owned(), "edit".to_owned()],

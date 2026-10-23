@@ -171,6 +171,8 @@ struct PendingFileChange {
 pub struct ChatState {
     /// Active session identity.
     pub session_id: Option<SessionId>,
+    /// Workspace bound to the active session or draft.
+    pub workspace: String,
     /// Structured transcript.
     pub transcript: Vec<TranscriptItem>,
     /// Index of the in-progress assistant stream.
@@ -224,6 +226,7 @@ impl ChatState {
 
     pub(crate) fn reset_projection(&mut self) {
         self.session_id = None;
+        self.workspace.clear();
         self.transcript.clear();
         self.streaming_assistant = None;
         self.streaming_thinking = None;
