@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alpha_front_runtime::{
     ActivityState, CommandOutcome, ContextView, FileChange, FileChangeKind, FrontRuntime,
@@ -65,6 +65,8 @@ struct AlphaDesktop {
     provider_status: Option<String>,
     provider_credential: Entity<TextareaState>,
     provider_config: Entity<TextareaState>,
+    transcript_scroll: ScrollHandle,
+    jump_to_latest_hidden_until: Option<Instant>,
     more_open: bool,
     help_open: bool,
     local_status: Option<String>,
@@ -161,6 +163,8 @@ impl AlphaDesktop {
             provider_status: None,
             provider_credential,
             provider_config,
+            transcript_scroll: ScrollHandle::new(),
+            jump_to_latest_hidden_until: None,
             more_open: false,
             help_open: false,
             local_status: None,
@@ -175,16 +179,27 @@ impl AlphaDesktop {
                     .await;
                 if this
                     .update_in(cx, |this, window, cx| {
+                        if this
+                            .jump_to_latest_hidden_until
+                            .is_some_and(|deadline| Instant::now() >= deadline)
+                        {
+                            this.jump_to_latest_hidden_until = None;
+                            cx.notify();
+                        }
                         if this.submit_requested {
                             this.submit_requested = false;
                             this.submit_composer(window, cx);
                         }
+                        let follow_transcript = transcript_is_at_bottom(&this.transcript_scroll);
                         let mut changed = this.runtime.expire_interaction().unwrap_or(false);
                         match this.runtime.try_receive_events() {
                             Ok(events) => changed |= !events.is_empty(),
                             Err(error) => this.local_status = Some(error.to_string()),
                         }
                         if changed {
+                            if follow_transcript {
+                                this.transcript_scroll.scroll_to_bottom();
+                            }
                             cx.notify();
                         }
                     })
@@ -299,6 +314,8 @@ impl AlphaDesktop {
                 self.context_tab = ContextTab::Changes;
                 self.thinking_expanded = false;
                 self.expanded_tool_group = None;
+                self.jump_to_latest_hidden_until = None;
+                self.transcript_scroll.scroll_to_bottom();
                 self.local_status = None;
             }
             Err(error) => self.local_status = Some(error.to_string()),
@@ -317,6 +334,8 @@ impl AlphaDesktop {
         self.context_tab = ContextTab::Changes;
         self.thinking_expanded = false;
         self.expanded_tool_group = None;
+        self.jump_to_latest_hidden_until = None;
+        self.transcript_scroll.scroll_to_bottom();
         self.local_status = None;
         cx.notify();
     }
@@ -2578,6 +2597,7 @@ impl AlphaDesktop {
         match result {
             Ok(()) => {
                 self.local_status = None;
+                self.transcript_scroll.scroll_to_bottom();
                 match outcome {
                     Some(CommandOutcome::OpenProviders) => self.open_providers(window, cx),
                     Some(CommandOutcome::OpenModels) => {
@@ -2722,7 +2742,11 @@ impl AlphaDesktop {
                             .ghost()
                             .rounded(px(16.))
                             .on_click(cx.listener(|this, _, _, cx| {
+                                let follow = transcript_is_at_bottom(&this.transcript_scroll);
                                 this.thinking_expanded = !this.thinking_expanded;
+                                if follow {
+                                    this.transcript_scroll.scroll_to_bottom();
+                                }
                                 cx.notify();
                             })),
                     )
@@ -2867,12 +2891,16 @@ impl AlphaDesktop {
                     .w_full()
                     .rounded(px(16.))
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        let follow = transcript_is_at_bottom(&this.transcript_scroll);
                         this.expanded_tool_group =
                             if this.expanded_tool_group.as_deref() == Some(group_id.as_str()) {
                                 None
                             } else {
                                 Some(group_id.clone())
                             };
+                        if follow {
+                            this.transcript_scroll.scroll_to_bottom();
+                        }
                         cx.notify();
                     })),
             )
@@ -3031,6 +3059,12 @@ fn compact_json(value: &serde_json::Value) -> String {
     }
 }
 
+fn transcript_is_at_bottom(scroll: &ScrollHandle) -> bool {
+    let offset = -scroll.offset().y;
+    let maximum = scroll.max_offset().y;
+    offset >= maximum - px(4.) && offset <= maximum + px(4.)
+}
+
 fn tool_status_label(status: Option<ToolStatus>) -> &'static str {
     status.map_or("running", |status| match status {
         ToolStatus::Completed => "completed",
@@ -3067,7 +3101,7 @@ fn tool_detail_content(content: &str) -> String {
 
 impl Render for AlphaDesktop {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (model, effort, mode, running, status, interaction, queued_steers) = {
+        let (model, effort, mode, running, status, interaction, queued_steers, has_transcript) = {
             let chat = self.runtime.chat();
             let model = if chat.model.is_empty() {
                 "unset".to_owned()
@@ -3090,9 +3124,14 @@ impl Render for AlphaDesktop {
                 self.local_status.clone().or_else(|| chat.status.clone()),
                 chat.interaction.clone(),
                 queued_steers,
+                !chat.transcript.is_empty(),
             )
         };
         let context = self.runtime.context();
+        let transcript_at_bottom = transcript_is_at_bottom(&self.transcript_scroll);
+        let jump_to_latest_hidden = self
+            .jump_to_latest_hidden_until
+            .is_some_and(|deadline| Instant::now() < deadline);
 
         div()
             .relative()
@@ -3224,6 +3263,7 @@ impl Render for AlphaDesktop {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.transcript_scroll)
                     .when(self.context_open, |this| this.pr(px(354.)))
                     .child(
                         div()
@@ -3418,6 +3458,29 @@ impl Render for AlphaDesktop {
                         .child(status),
                 )
             })
+            .when(
+                has_transcript && !transcript_at_bottom && !jump_to_latest_hidden,
+                |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .bottom(px(126.))
+                            .right(px(if self.context_open { 370. } else { 18. }))
+                            .child(
+                                Button::new("jump-to-latest")
+                                    .label("Jump to latest")
+                                    .secondary()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.jump_to_latest_hidden_until =
+                                            Some(Instant::now() + Duration::from_millis(250));
+                                        this.transcript_scroll.scroll_to_bottom();
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                },
+            )
             .when(self.composer_menu.is_some(), |this| {
                 this.child(
                     div()
