@@ -5,8 +5,9 @@
 use std::time::{Duration, Instant};
 
 use alpha_front_runtime::{
-    ActivityState, CommandOutcome, ContextView, FileChange, FileChangeKind, FrontRuntime,
-    InteractionDecision, ModelChoice, TranscriptItem, parse_command, supported_reasoning_levels,
+    ActivityState, COMMANDS, CommandOutcome, CommandSpec, ContextView, FileChange, FileChangeKind,
+    FrontRuntime, InteractionDecision, ModelChoice, TranscriptItem, parse_command,
+    supported_reasoning_levels,
 };
 use alpha_schema::{
     AssistantContentBlock, CredentialBackendStatus, PermissionMode, ReasoningLevel, SessionId,
@@ -116,8 +117,8 @@ impl AlphaDesktop {
         let composer_subscription = cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.submit_requested = true;
-                cx.notify();
             }
+            cx.notify();
         });
         let session_search = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -2644,6 +2645,110 @@ impl AlphaDesktop {
         }
     }
 
+    fn render_command_palette(
+        &self,
+        commands: &[CommandSpec],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let rows = commands
+            .iter()
+            .map(|command| {
+                let insert = if command.takes_argument {
+                    format!("/{} ", command.name)
+                } else {
+                    format!("/{}", command.name)
+                };
+                Button::new(format!("command-palette:{}", command.name))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_h(px(40.))
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w(px(184.))
+                                    .flex_none()
+                                    .font_family("monospace")
+                                    .text_size(px(10.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(TEXT))
+                                    .child(command.usage),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(MUTED))
+                                    .child(command.description),
+                            ),
+                    )
+                    .ghost()
+                    .w_full()
+                    .rounded(px(16.))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let value = insert.clone();
+                        this.composer.update(cx, |state, cx| {
+                            state.set_value(&value, window, cx);
+                        });
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+
+        div()
+            .absolute()
+            .bottom(px(126.))
+            .left(px(0.))
+            .right(px(0.))
+            .when(self.context_open, |this| this.pr(px(354.)))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(620.))
+                    .max_w_full()
+                    .max_h(px(360.))
+                    .overflow_y_scrollbar()
+                    .rounded(px(24.))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(SURFACE_RAISED))
+                    .shadow_lg()
+                    .p(px(6.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(6.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(MUTED))
+                                    .child("Commands"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(8.))
+                                    .text_color(rgb(MUTED))
+                                    .child("Click to insert"),
+                            ),
+                    )
+                    .children(rows),
+            )
+            .into_any_element()
+    }
+
     fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.composer.read(cx).value().trim().to_owned();
         if value.is_empty() {
@@ -3216,6 +3321,21 @@ impl Render for AlphaDesktop {
         let jump_to_latest_hidden = self
             .jump_to_latest_hidden_until
             .is_some_and(|deadline| Instant::now() < deadline);
+        let composer_value = self.composer.read(cx).value().trim_start().to_owned();
+        let command_query = composer_value
+            .strip_prefix('/')
+            .filter(|value| !value.contains(char::is_whitespace))
+            .map(str::to_owned);
+        let slash_commands = command_query
+            .as_deref()
+            .map(command_suggestions)
+            .unwrap_or_default();
+        let show_command_palette = !slash_commands.is_empty()
+            && self.composer_menu.is_none()
+            && !self.sessions_open
+            && !self.providers_open
+            && !self.help_open
+            && interaction.is_none();
 
         div()
             .relative()
@@ -3565,6 +3685,9 @@ impl Render for AlphaDesktop {
                     )
                 },
             )
+            .when(show_command_palette, |this| {
+                this.child(self.render_command_palette(&slash_commands, cx))
+            })
             .when(self.composer_menu.is_some(), |this| {
                 this.child(
                     div()
@@ -3639,6 +3762,15 @@ fn workspace_name(path: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("workspace")
         .to_owned()
+}
+
+fn command_suggestions(query: &str) -> Vec<CommandSpec> {
+    let query = query.to_ascii_lowercase();
+    COMMANDS
+        .iter()
+        .copied()
+        .filter(|command| command.name.starts_with(&query))
+        .collect()
 }
 
 fn path_parts(path: &str) -> (String, String) {
@@ -3813,9 +3945,9 @@ mod tests {
     };
 
     use super::{
-        DesktopTranscriptItem, context_capabilities, desktop_transcript_items, format_token_count,
-        parse_provider_config, path_parts, pretty_provider_config, session_matches_query,
-        workspace_name,
+        DesktopTranscriptItem, command_suggestions, context_capabilities, desktop_transcript_items,
+        format_token_count, parse_provider_config, path_parts, pretty_provider_config,
+        session_matches_query, workspace_name,
     };
 
     #[test]
@@ -3955,5 +4087,20 @@ mod tests {
         assert!(session_matches_query(&session, "deepseek/chat"));
         assert!(session_matches_query(&session, "workspace/alpha"));
         assert!(!session_matches_query(&session, "unrelated"));
+    }
+
+    #[test]
+    fn slash_command_suggestions_filter_by_name() {
+        let commands = command_suggestions("mo");
+        let names = commands
+            .iter()
+            .map(|command| command.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["model", "mode"]);
+        assert_eq!(
+            command_suggestions("").len(),
+            alpha_front_runtime::COMMANDS.len()
+        );
+        assert!(command_suggestions("missing").is_empty());
     }
 }
