@@ -15,10 +15,11 @@ use alpha_schema::{
 };
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::{
-    Theme, ThemeMode,
+    Sizable as _, Theme, ThemeMode,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     input::{InputEvent, Textarea, TextareaState},
     scroll::ScrollableElement as _,
+    spinner::Spinner,
     text::markdown,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -3590,6 +3591,47 @@ impl Render for AlphaDesktop {
                                             .flex()
                                             .items_center()
                                             .gap_1()
+                                            .child(
+                                                div()
+                                                    .h(px(28.))
+                                                    .rounded(px(999.))
+                                                    .border_1()
+                                                    .border_color(rgb(BORDER))
+                                                    .px(px(8.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .when(running, |this| {
+                                                        this.child(
+                                                            Spinner::new()
+                                                                .xsmall()
+                                                                .color(rgb(ACCENT).into()),
+                                                        )
+                                                    })
+                                                    .when(!running, |this| {
+                                                        this.child(
+                                                            div()
+                                                                .size(px(6.))
+                                                                .rounded_full()
+                                                                .bg(rgb(0x72d69a)),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(8.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(if running {
+                                                                rgb(ACCENT)
+                                                            } else {
+                                                                rgb(MUTED)
+                                                            })
+                                                            .child(if running {
+                                                                "Working"
+                                                            } else {
+                                                                "Ready"
+                                                            }),
+                                                    ),
+                                            )
                                             .child(
                                                 Button::new("mode")
                                                     .label(mode)
