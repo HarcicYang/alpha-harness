@@ -10,7 +10,7 @@ use alpha_front_runtime::{
 };
 use alpha_schema::{
     AssistantContentBlock, CredentialBackendStatus, PermissionMode, ReasoningLevel, SessionId,
-    SessionListEntry, ToolStatus,
+    SessionListEntry, ToolCallId, ToolStatus,
 };
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::{
@@ -49,6 +49,8 @@ struct AlphaDesktop {
     context_tab: ContextTab,
     change_review_open: bool,
     selected_change: usize,
+    thinking_expanded: bool,
+    expanded_tool_group: Option<String>,
     sessions_open: bool,
     session_search: Entity<TextareaState>,
     session_selected: Option<SessionId>,
@@ -83,17 +85,18 @@ enum ContextTab {
     Activity,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum DesktopTranscriptItem {
     User(String),
     Assistant(String),
     Thinking(String),
-    Tools(Vec<ToolSummary>),
+    Tools { id: String, tools: Vec<ToolSummary> },
     Error(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ToolSummary {
+    id: ToolCallId,
     name: String,
     status: Option<ToolStatus>,
     content: Option<String>,
@@ -142,6 +145,8 @@ impl AlphaDesktop {
             context_tab: ContextTab::Changes,
             change_review_open: false,
             selected_change: 0,
+            thinking_expanded: false,
+            expanded_tool_group: None,
             sessions_open: false,
             session_search,
             session_selected: None,
@@ -291,6 +296,8 @@ impl AlphaDesktop {
                 self.change_review_open = false;
                 self.selected_change = 0;
                 self.context_tab = ContextTab::Changes;
+                self.thinking_expanded = false;
+                self.expanded_tool_group = None;
                 self.local_status = None;
             }
             Err(error) => self.local_status = Some(error.to_string()),
@@ -307,6 +314,8 @@ impl AlphaDesktop {
         self.change_review_open = false;
         self.selected_change = 0;
         self.context_tab = ContextTab::Changes;
+        self.thinking_expanded = false;
+        self.expanded_tool_group = None;
         self.local_status = None;
         cx.notify();
     }
@@ -2589,10 +2598,10 @@ impl AlphaDesktop {
         cx.notify();
     }
 
-    fn render_transcript(&self) -> AnyElement {
+    fn render_transcript(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = desktop_transcript_items(&self.runtime.chat().transcript)
             .into_iter()
-            .map(render_desktop_transcript_item)
+            .map(|item| self.render_desktop_transcript_item(item, cx))
             .collect::<Vec<_>>();
 
         if items.is_empty() {
@@ -2639,6 +2648,283 @@ impl AlphaDesktop {
             .children(items)
             .into_any_element()
     }
+
+    fn render_desktop_transcript_item(
+        &self,
+        item: DesktopTranscriptItem,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match item {
+            DesktopTranscriptItem::User(text) => div()
+                .w_full()
+                .rounded(px(24.))
+                .bg(rgb(0x15181c))
+                .px(px(18.))
+                .py(px(15.))
+                .text_size(px(14.))
+                .line_height(px(23.))
+                .text_color(rgb(TEXT))
+                .child(text)
+                .into_any_element(),
+            DesktopTranscriptItem::Assistant(text) => div()
+                .w_full()
+                .text_size(px(14.))
+                .line_height(px(24.))
+                .text_color(rgb(TEXT))
+                .child(text)
+                .into_any_element(),
+            DesktopTranscriptItem::Thinking(text) => {
+                let expanded = self.thinking_expanded;
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        Button::new("toggle-thinking")
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .size(px(22.))
+                                            .flex_none()
+                                            .rounded_full()
+                                            .bg(rgb(0x102e37))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(10.))
+                                            .text_color(rgb(ACCENT))
+                                            .child("*"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child("Thought"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(rgb(MUTED))
+                                            .child(if expanded { "Hide" } else { "Show" }),
+                                    ),
+                            )
+                            .ghost()
+                            .rounded(px(16.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.thinking_expanded = !this.thinking_expanded;
+                                cx.notify();
+                            })),
+                    )
+                    .when(expanded, |this| {
+                        this.child(
+                            div()
+                                .rounded(px(20.))
+                                .bg(rgb(SURFACE))
+                                .p(px(14.))
+                                .text_size(px(12.))
+                                .line_height(px(21.))
+                                .italic()
+                                .text_color(rgb(MUTED))
+                                .child(text),
+                        )
+                    })
+                    .into_any_element()
+            }
+            DesktopTranscriptItem::Error(text) => div()
+                .w_full()
+                .text_size(px(13.))
+                .line_height(px(22.))
+                .text_color(rgb(0xff7888))
+                .child(text)
+                .into_any_element(),
+            DesktopTranscriptItem::Tools { id, tools } => self.render_tool_group(&id, &tools, cx),
+        }
+    }
+
+    fn render_tool_group(
+        &self,
+        id: &str,
+        tools: &[ToolSummary],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(latest) = tools.last() else {
+            return div().into_any_element();
+        };
+        let expanded = self.expanded_tool_group.as_deref() == Some(id);
+        let detail_rows = tools
+            .iter()
+            .map(|tool| {
+                let status = tool_status_label(tool.status);
+                let color = tool_status_color(tool.status);
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .py(px(7.))
+                    .child(
+                        div()
+                            .mt(px(4.))
+                            .size(px(7.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(rgb(color)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child(tool.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(9.))
+                                            .text_color(rgb(color))
+                                            .child(status),
+                                    ),
+                            )
+                            .when_some(tool.content.as_deref(), |this, content| {
+                                this.child(
+                                    div()
+                                        .mt(px(2.))
+                                        .max_h(px(240.))
+                                        .overflow_y_scrollbar()
+                                        .text_size(px(10.))
+                                        .line_height(px(17.))
+                                        .text_color(rgb(MUTED))
+                                        .child(tool_detail_content(content)),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let group_id = id.to_owned();
+
+        div()
+            .w_full()
+            .rounded(px(22.))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE))
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .child(
+                Button::new(format!("tool-group:{id}"))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .font_family("monospace")
+                                    .text_color(rgb(MUTED))
+                                    .child(if tools.len() == 1 {
+                                        "1 tool call".to_owned()
+                                    } else {
+                                        format!("{} tool calls", tools.len())
+                                    }),
+                            )
+                            .child(div().text_size(px(9.)).text_color(rgb(ACCENT)).child(
+                                if expanded {
+                                    "Hide details"
+                                } else {
+                                    "View details"
+                                },
+                            )),
+                    )
+                    .ghost()
+                    .w_full()
+                    .rounded(px(16.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.expanded_tool_group =
+                            if this.expanded_tool_group.as_deref() == Some(group_id.as_str()) {
+                                None
+                            } else {
+                                Some(group_id.clone())
+                            };
+                        cx.notify();
+                    })),
+            )
+            .when(!expanded, |this| {
+                this.child(
+                    div()
+                        .rounded(px(18.))
+                        .px(px(11.))
+                        .py(px(9.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(TEXT_SECONDARY))
+                                .child(latest.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.))
+                                .text_color(rgb(tool_status_color(latest.status)))
+                                .child(tool_status_label(latest.status)),
+                        ),
+                )
+                .when_some(latest.content.as_deref(), |this, detail| {
+                    this.child(
+                        div()
+                            .px(px(11.))
+                            .pb(px(9.))
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(rgb(MUTED))
+                            .child(compact_tool_content(detail)),
+                    )
+                })
+            })
+            .when(expanded, |this| {
+                this.child(
+                    div()
+                        .rounded(px(18.))
+                        .bg(rgb(SURFACE_RAISED))
+                        .px(px(10.))
+                        .py(px(4.))
+                        .flex()
+                        .flex_col()
+                        .children(detail_rows),
+                )
+            })
+            .into_any_element()
+    }
 }
 
 fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptItem> {
@@ -2647,7 +2933,10 @@ fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptIt
 
     for item in items {
         match item {
-            TranscriptItem::ToolCall { name, input, .. } => tools.push(ToolSummary {
+            TranscriptItem::ToolCall {
+                id, name, input, ..
+            } => tools.push(ToolSummary {
+                id: *id,
                 name: if input.is_null() {
                     name.clone()
                 } else {
@@ -2657,20 +2946,18 @@ fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptIt
                 content: None,
             }),
             TranscriptItem::ToolResult {
+                id,
                 name,
                 status,
                 content,
-                ..
             } => {
-                if let Some(tool) = tools.iter_mut().rev().find(|tool| {
-                    tool.status.is_none()
-                        && (tool.name == *name || tool.name.starts_with(&format!("{name} ")))
-                }) {
+                if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.id == *id) {
                     tool.name = name.clone();
                     tool.status = Some(*status);
                     tool.content = Some(content.clone());
                 } else {
                     tools.push(ToolSummary {
+                        id: *id,
                         name: name.clone(),
                         status: Some(*status),
                         content: Some(content.clone()),
@@ -2691,6 +2978,15 @@ fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptIt
                         rendered.push(DesktopTranscriptItem::Thinking(text.clone()));
                     }
                     TranscriptItem::AssistantMessage { blocks } => {
+                        let thinking = blocks
+                            .iter()
+                            .filter_map(AssistantContentBlock::thinking)
+                            .map(|(text, _)| text)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !thinking.is_empty() {
+                            rendered.push(DesktopTranscriptItem::Thinking(thinking));
+                        }
                         let text = blocks
                             .iter()
                             .filter_map(AssistantContentBlock::text)
@@ -2714,7 +3010,12 @@ fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptIt
 
 fn flush_tools(items: &mut Vec<DesktopTranscriptItem>, tools: &mut Vec<ToolSummary>) {
     if !tools.is_empty() {
-        items.push(DesktopTranscriptItem::Tools(std::mem::take(tools)));
+        let tools = std::mem::take(tools);
+        let id = tools
+            .first()
+            .map(|tool| tool.id.to_string())
+            .unwrap_or_default();
+        items.push(DesktopTranscriptItem::Tools { id, tools });
     }
 }
 
@@ -2727,132 +3028,67 @@ fn compact_json(value: &serde_json::Value) -> String {
     }
 }
 
-fn render_desktop_transcript_item(item: DesktopTranscriptItem) -> AnyElement {
-    match item {
-        DesktopTranscriptItem::User(text) => div()
-            .w_full()
-            .rounded(px(24.))
-            .bg(rgb(0x15181c))
-            .px(px(18.))
-            .py(px(15.))
-            .text_size(px(14.))
-            .line_height(px(23.))
-            .text_color(rgb(TEXT))
-            .child(text)
-            .into_any_element(),
-        DesktopTranscriptItem::Assistant(text) => div()
-            .w_full()
-            .text_size(px(14.))
-            .line_height(px(24.))
-            .text_color(rgb(TEXT))
-            .child(text)
-            .into_any_element(),
-        DesktopTranscriptItem::Thinking(text) => div()
-            .w_full()
-            .text_size(px(13.))
-            .line_height(px(22.))
-            .italic()
-            .text_color(rgb(MUTED))
-            .child(text)
-            .into_any_element(),
-        DesktopTranscriptItem::Error(text) => div()
-            .w_full()
-            .text_size(px(13.))
-            .line_height(px(22.))
-            .text_color(rgb(0xff7888))
-            .child(text)
-            .into_any_element(),
-        DesktopTranscriptItem::Tools(tools) => render_tool_group(&tools),
-    }
-}
-
-fn render_tool_group(tools: &[ToolSummary]) -> AnyElement {
-    let Some(latest) = tools.last() else {
-        return div().into_any_element();
-    };
-    let status = latest.status.map_or("running", |status| match status {
+fn tool_status_label(status: Option<ToolStatus>) -> &'static str {
+    status.map_or("running", |status| match status {
         ToolStatus::Completed => "completed",
         ToolStatus::Failed => "failed",
         ToolStatus::Interrupted => "interrupted",
-    });
+    })
+}
 
-    div()
-        .w_full()
-        .rounded(px(22.))
-        .border_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(SURFACE))
-        .p(px(4.))
-        .flex()
-        .flex_col()
-        .when(tools.len() > 1, |this| {
-            this.child(
-                div()
-                    .px(px(9.))
-                    .py(px(7.))
-                    .text_size(px(9.))
-                    .font_family("monospace")
-                    .text_color(rgb(MUTED))
-                    .child(format!("{} tool calls", tools.len())),
-            )
-        })
-        .child(
-            div()
-                .rounded(px(18.))
-                .px(px(11.))
-                .py(px(9.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(TEXT_SECONDARY))
-                        .child(latest.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.))
-                        .text_color(rgb(MUTED))
-                        .child(status),
-                ),
-        )
-        .when_some(latest.content.as_deref(), |this, detail| {
-            this.child(
-                div()
-                    .px(px(11.))
-                    .pb(px(9.))
-                    .truncate()
-                    .text_size(px(11.))
-                    .text_color(rgb(MUTED))
-                    .child(detail.to_owned()),
-            )
-        })
-        .into_any_element()
+fn tool_status_color(status: Option<ToolStatus>) -> u32 {
+    status.map_or(ACCENT, |status| match status {
+        ToolStatus::Completed => 0x72d69a,
+        ToolStatus::Failed => 0xff7888,
+        ToolStatus::Interrupted => 0xf1c56b,
+    })
+}
+
+fn compact_tool_content(content: &str) -> String {
+    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 360 {
+        compact
+    } else {
+        format!("{}...", compact.chars().take(357).collect::<String>())
+    }
+}
+
+fn tool_detail_content(content: &str) -> String {
+    let content = content.trim();
+    if content.chars().count() <= 1_200 {
+        content.to_owned()
+    } else {
+        format!("{}...", content.chars().take(1_197).collect::<String>())
+    }
 }
 
 impl Render for AlphaDesktop {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let chat = self.runtime.chat();
-        let model = if chat.model.is_empty() {
-            "unset".to_owned()
-        } else {
-            chat.model.clone()
+        let (model, effort, mode, running, status, interaction, queued_steers) = {
+            let chat = self.runtime.chat();
+            let model = if chat.model.is_empty() {
+                "unset".to_owned()
+            } else {
+                chat.model.clone()
+            };
+            let queued_steers = chat
+                .transcript
+                .iter()
+                .filter_map(|item| match item {
+                    TranscriptItem::QueuedSteer { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            (
+                model,
+                chat.reasoning.to_string(),
+                chat.mode.to_string(),
+                chat.running_turn.is_some(),
+                self.local_status.clone().or_else(|| chat.status.clone()),
+                chat.interaction.clone(),
+                queued_steers,
+            )
         };
-        let effort = chat.reasoning.to_string();
-        let mode = chat.mode.to_string();
-        let running = chat.running_turn.is_some();
-        let status = self.local_status.as_deref().or(chat.status.as_deref());
-        let interaction = chat.interaction.clone();
-        let queued_steers = chat
-            .transcript
-            .iter()
-            .filter_map(|item| match item {
-                TranscriptItem::QueuedSteer { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         let context = self.runtime.context();
 
         div()
@@ -2993,7 +3229,7 @@ impl Render for AlphaDesktop {
                             .mx_auto()
                             .px(px(24.))
                             .py(px(18.))
-                            .child(self.render_transcript())
+                            .child(self.render_transcript(cx))
                             .when_some(interaction, |this, interaction| {
                                 let prompt = serde_json::to_string_pretty(&interaction.prompt)
                                     .unwrap_or_else(|_| interaction.prompt.to_string());
@@ -3176,7 +3412,7 @@ impl Render for AlphaDesktop {
                         .text_center()
                         .text_size(px(10.))
                         .text_color(rgb(MUTED))
-                        .child(status.to_owned()),
+                        .child(status),
                 )
             })
             .when(self.composer_menu.is_some(), |this| {
@@ -3453,13 +3689,36 @@ mod tests {
 
         let rendered = desktop_transcript_items(&items);
         assert_eq!(rendered.len(), 1);
-        let DesktopTranscriptItem::Tools(tools) = &rendered[0] else {
+        let DesktopTranscriptItem::Tools { id, tools } = &rendered[0] else {
             panic!("consecutive tools must render as a tool group");
         };
+        assert_eq!(id, &first.to_string());
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[1].name, "grep");
         assert_eq!(tools[1].status, Some(ToolStatus::Completed));
         assert_eq!(tools[1].content.as_deref(), Some("4 matches"));
+    }
+
+    #[test]
+    fn durable_assistant_thinking_is_preserved_before_the_response() {
+        let rendered = desktop_transcript_items(&[TranscriptItem::AssistantMessage {
+            blocks: vec![
+                alpha_schema::AssistantContentBlock::Thinking {
+                    text: "inspect the workspace".to_owned(),
+                    signature: None,
+                },
+                alpha_schema::AssistantContentBlock::Text {
+                    text: "The workspace is ready.".to_owned(),
+                },
+            ],
+        }]);
+        assert_eq!(
+            rendered,
+            vec![
+                DesktopTranscriptItem::Thinking("inspect the workspace".to_owned()),
+                DesktopTranscriptItem::Assistant("The workspace is ready.".to_owned()),
+            ]
+        );
     }
 
     #[test]
