@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use alpha_front_runtime::{
-    CommandOutcome, FrontRuntime, InteractionDecision, ModelChoice, TranscriptItem, parse_command,
-    supported_reasoning_levels,
+    ActivityState, CommandOutcome, ContextView, FileChange, FileChangeKind, FrontRuntime,
+    InteractionDecision, ModelChoice, TranscriptItem, parse_command, supported_reasoning_levels,
 };
 use alpha_schema::{
     AssistantContentBlock, PermissionMode, ReasoningLevel, SessionId, SessionListEntry, ToolStatus,
@@ -45,6 +45,9 @@ struct AlphaDesktop {
     composer_menu: Option<ComposerMenu>,
     submit_requested: bool,
     context_open: bool,
+    context_tab: ContextTab,
+    change_review_open: bool,
+    selected_change: usize,
     sessions_open: bool,
     sessions: Vec<SessionListEntry>,
     providers_open: bool,
@@ -62,6 +65,12 @@ enum ComposerMenu {
     Mode,
     Model,
     Effort,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextTab {
+    Changes,
+    Activity,
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +111,9 @@ impl AlphaDesktop {
             composer_menu: None,
             submit_requested: false,
             context_open: false,
+            context_tab: ContextTab::Changes,
+            change_review_open: false,
+            selected_change: 0,
             sessions_open: false,
             sessions: Vec::new(),
             providers_open: false,
@@ -229,6 +241,9 @@ impl AlphaDesktop {
         match self.runtime.resume_session(session_id) {
             Ok(_) => {
                 self.sessions_open = false;
+                self.change_review_open = false;
+                self.selected_change = 0;
+                self.context_tab = ContextTab::Changes;
                 self.local_status = None;
             }
             Err(error) => self.local_status = Some(error.to_string()),
@@ -240,6 +255,9 @@ impl AlphaDesktop {
         self.runtime.new_session();
         self.sessions_open = false;
         self.composer_menu = None;
+        self.change_review_open = false;
+        self.selected_change = 0;
+        self.context_tab = ContextTab::Changes;
         self.local_status = None;
         cx.notify();
     }
@@ -409,6 +427,710 @@ impl AlphaDesktop {
                     .child(help_row("Permission mode", "Composer mode pill"))
                     .child(help_row("Sessions", "Sessions button"))
                     .child(help_row("Commands", "/command in composer")),
+            )
+            .into_any_element()
+    }
+
+    fn render_context_panel(&self, context: &ContextView, cx: &mut Context<Self>) -> AnyElement {
+        if !self.context_open {
+            return div().into_any_element();
+        }
+
+        let percent_value = if context.context_window == 0 {
+            0.0
+        } else {
+            (context.input_tokens as f64 / context.context_window as f64 * 100.0).min(100.0)
+        };
+        let percent_label = if percent_value > 0.0 && percent_value < 1.0 {
+            "<1%".to_owned()
+        } else {
+            format!("{percent_value:.0}%")
+        };
+        let meter_width = if percent_value == 0.0 {
+            0.0
+        } else {
+            (304.0 * percent_value as f32 / 100.0).max(6.0)
+        };
+        let changes_count = context.changes.len();
+        let body = match self.context_tab {
+            ContextTab::Changes => {
+                let rows =
+                    if context.changes.is_empty() {
+                        vec![
+                            div()
+                                .py(px(26.))
+                                .text_center()
+                                .text_size(px(10.))
+                                .text_color(rgb(MUTED))
+                                .child("No file changes in this session")
+                                .into_any_element(),
+                        ]
+                    } else {
+                        context
+                            .changes
+                            .iter()
+                            .enumerate()
+                            .take(6)
+                            .map(|(index, change)| {
+                                let (name, directory) = path_parts(&change.path);
+                                Button::new(format!("context-change:{index}"))
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .size(px(24.))
+                                                    .flex_none()
+                                                    .rounded_full()
+                                                    .bg(rgb(0x102e37))
+                                                    .text_center()
+                                                    .text_size(px(9.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(rgb(ACCENT))
+                                                    .child(match change.kind {
+                                                        FileChangeKind::Added => "A",
+                                                        FileChangeKind::Modified => "M",
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_start()
+                                                    .child(
+                                                        div()
+                                                            .max_w_full()
+                                                            .truncate()
+                                                            .text_size(px(10.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(rgb(TEXT))
+                                                            .child(name),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .max_w_full()
+                                                            .truncate()
+                                                            .text_size(px(8.))
+                                                            .text_color(rgb(MUTED))
+                                                            .child(directory),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .gap_1()
+                                                    .font_family("monospace")
+                                                    .text_size(px(8.))
+                                                    .child(
+                                                        div().text_color(rgb(0x72d69a)).child(
+                                                            format!("+{}", change.added_lines),
+                                                        ),
+                                                    )
+                                                    .child(div().text_color(rgb(0xff7888)).child(
+                                                        format!("-{}", change.removed_lines),
+                                                    )),
+                                            ),
+                                    )
+                                    .ghost()
+                                    .w_full()
+                                    .rounded(px(16.))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.selected_change = index;
+                                        this.change_review_open = true;
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            })
+                            .collect()
+                    };
+                let added = context
+                    .changes
+                    .iter()
+                    .map(|change| change.added_lines)
+                    .sum::<usize>();
+                let removed = context
+                    .changes
+                    .iter()
+                    .map(|change| change.removed_lines)
+                    .sum::<usize>();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(rgb(MUTED))
+                                    .child("Working tree"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_1()
+                                    .font_family("monospace")
+                                    .text_size(px(9.))
+                                    .child(
+                                        div().text_color(rgb(0x72d69a)).child(format!("+{added}")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(rgb(0xff7888))
+                                            .child(format!("-{removed}")),
+                                    ),
+                            ),
+                    )
+                    .children(rows)
+                    .when(!context.changes.is_empty(), |this| {
+                        this.child(
+                            Button::new("review-all-changes")
+                                .label("Review all changes")
+                                .secondary()
+                                .w_full()
+                                .rounded(px(999.))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.selected_change = 0;
+                                    this.change_review_open = true;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            }
+            ContextTab::Activity => {
+                let rows = if context.activity.is_empty() {
+                    vec![
+                        div()
+                            .py(px(26.))
+                            .text_center()
+                            .text_size(px(10.))
+                            .text_color(rgb(MUTED))
+                            .child("No activity yet")
+                            .into_any_element(),
+                    ]
+                } else {
+                    context
+                        .activity
+                        .iter()
+                        .rev()
+                        .take(8)
+                        .map(|activity| {
+                            let color = match activity.state {
+                                ActivityState::Running => ACCENT,
+                                ActivityState::Completed => 0x72d69a,
+                                ActivityState::Failed => 0xff7888,
+                            };
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap_2()
+                                .py(px(4.))
+                                .child(
+                                    div()
+                                        .mt(px(5.))
+                                        .size(px(6.))
+                                        .flex_none()
+                                        .rounded_full()
+                                        .bg(rgb(color)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(rgb(TEXT_SECONDARY))
+                                                .child(activity.title.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .max_w_full()
+                                                .truncate()
+                                                .text_size(px(9.))
+                                                .text_color(rgb(MUTED))
+                                                .child(activity.detail.clone()),
+                                        ),
+                                )
+                                .into_any_element()
+                        })
+                        .collect()
+                };
+                div().flex().flex_col().children(rows).into_any_element()
+            }
+        };
+
+        let capabilities = context_capabilities(context);
+        let capability_chips = if capabilities.is_empty() {
+            div()
+                .text_size(px(9.))
+                .text_color(rgb(MUTED))
+                .child("Reported after the first model request")
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_1()
+                .children(capabilities.into_iter().map(|capability| {
+                    div()
+                        .rounded(px(999.))
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .bg(rgb(SURFACE))
+                        .px(px(8.))
+                        .py(px(3.))
+                        .font_family("monospace")
+                        .text_size(px(8.))
+                        .text_color(rgb(TEXT_SECONDARY))
+                        .child(capability)
+                        .into_any_element()
+                }))
+                .into_any_element()
+        };
+
+        div()
+            .absolute()
+            .top(px(58.))
+            .right(px(18.))
+            .w(px(336.))
+            .h(px(560.))
+            .rounded(px(28.))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE_RAISED))
+            .shadow_lg()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(58.))
+                    .flex_none()
+                    .px(px(18.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Context"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(rgb(MUTED))
+                                    .child("Session working set"),
+                            ),
+                    )
+                    .child(
+                        Button::new("close-context")
+                            .label("×")
+                            .ghost()
+                            .rounded(px(999.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.context_open = false;
+                                this.change_review_open = false;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(16.))
+                    .pb(px(12.))
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(rgb(MUTED))
+                                    .child("Context window"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(ACCENT))
+                                    .child(percent_label),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(5.))
+                            .w_full()
+                            .rounded(px(999.))
+                            .bg(rgb(SURFACE))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(px(meter_width))
+                                    .rounded(px(999.))
+                                    .bg(rgb(ACCENT)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .text_size(px(8.))
+                            .text_color(rgb(MUTED))
+                            .child(format!(
+                                "{} input",
+                                format_token_count(context.input_tokens)
+                            ))
+                            .child(format!(
+                                "{} output",
+                                format_token_count(context.output_tokens)
+                            ))
+                            .child(if context.context_window == 0 {
+                                "limit unknown".to_owned()
+                            } else {
+                                format!("{} limit", format_token_count(context.context_window))
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(16.))
+                    .py(px(10.))
+                    .flex()
+                    .gap_1()
+                    .child(
+                        Button::new("context-tab-changes")
+                            .label(if changes_count == 0 {
+                                "Changes".to_owned()
+                            } else {
+                                format!("Changes  {changes_count}")
+                            })
+                            .selected(self.context_tab == ContextTab::Changes)
+                            .ghost()
+                            .rounded(px(999.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.context_tab = ContextTab::Changes;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("context-tab-activity")
+                            .label("Activity")
+                            .selected(self.context_tab == ContextTab::Activity)
+                            .ghost()
+                            .rounded(px(999.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.context_tab = ContextTab::Activity;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("context-body")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scrollbar()
+                    .px(px(16.))
+                    .pb(px(12.))
+                    .child(body),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .border_t_1()
+                    .border_color(rgb(BORDER))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(9.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(MUTED))
+                            .child("Capabilities"),
+                    )
+                    .child(capability_chips),
+            )
+            .into_any_element()
+    }
+
+    fn render_change_review(&self, context: &ContextView, cx: &mut Context<Self>) -> AnyElement {
+        if !self.change_review_open || context.changes.is_empty() {
+            return div().into_any_element();
+        }
+        let selected = self.selected_change.min(context.changes.len() - 1);
+        let change = &context.changes[selected];
+        let rows = context
+            .changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let (name, directory) = path_parts(&change.path);
+                Button::new(format!("review-file:{index}"))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .size(px(24.))
+                                    .flex_none()
+                                    .rounded_full()
+                                    .bg(rgb(0x102e37))
+                                    .text_center()
+                                    .text_size(px(9.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(ACCENT))
+                                    .child(match change.kind {
+                                        FileChangeKind::Added => "A",
+                                        FileChangeKind::Modified => "M",
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .items_start()
+                                    .child(
+                                        div()
+                                            .max_w_full()
+                                            .truncate()
+                                            .text_size(px(10.))
+                                            .text_color(rgb(TEXT))
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .max_w_full()
+                                            .truncate()
+                                            .text_size(px(8.))
+                                            .text_color(rgb(MUTED))
+                                            .child(directory),
+                                    ),
+                            ),
+                    )
+                    .selected(index == selected)
+                    .ghost()
+                    .w_full()
+                    .rounded(px(16.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected_change = index;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let (name, directory) = path_parts(&change.path);
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .child(div().absolute().inset_0().bg(rgba(0x000000bb)))
+            .child(
+                div()
+                    .relative()
+                    .mt(px(56.))
+                    .w(px(860.))
+                    .h(px(620.))
+                    .rounded(px(28.))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(SURFACE_RAISED))
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(60.))
+                            .flex_none()
+                            .px(px(18.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_b_1()
+                            .border_color(rgb(BORDER))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Workspace changes"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(rgb(MUTED))
+                                            .child("Files inferred from completed session tools"),
+                                    ),
+                            )
+                            .child(
+                                Button::new("close-change-review")
+                                    .label("×")
+                                    .ghost()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.change_review_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .child(
+                                div()
+                                    .w(px(238.))
+                                    .flex_none()
+                                    .border_r_1()
+                                    .border_color(rgb(BORDER))
+                                    .bg(rgb(SURFACE))
+                                    .p(px(7.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(rows),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .px(px(18.))
+                                            .py(px(14.))
+                                            .border_b_1()
+                                            .border_color(rgb(BORDER))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(name),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(8.))
+                                                            .text_color(rgb(MUTED))
+                                                            .child(directory),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .gap_2()
+                                                    .font_family("monospace")
+                                                    .text_size(px(9.))
+                                                    .child(
+                                                        div().text_color(rgb(0x72d69a)).child(
+                                                            format!("+{}", change.added_lines),
+                                                        ),
+                                                    )
+                                                    .child(div().text_color(rgb(0xff7888)).child(
+                                                        format!("-{}", change.removed_lines),
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("change-review-diff")
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .overflow_y_scrollbar()
+                                            .p(px(14.))
+                                            .child(render_change_diff(change)),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(54.))
+                            .flex_none()
+                            .px(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_t_1()
+                            .border_color(rgb(BORDER))
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(rgb(MUTED))
+                                    .child(format!(
+                                        "{} files changed · +{} -{}",
+                                        context.changes.len(),
+                                        context
+                                            .changes
+                                            .iter()
+                                            .map(|change| change.added_lines)
+                                            .sum::<usize>(),
+                                        context
+                                            .changes
+                                            .iter()
+                                            .map(|change| change.removed_lines)
+                                            .sum::<usize>(),
+                                    )),
+                            )
+                            .child(
+                                Button::new("done-change-review")
+                                    .label("Done")
+                                    .custom(accent_button_variant(cx))
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.change_review_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -1285,6 +2007,7 @@ impl Render for AlphaDesktop {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let context = self.runtime.context();
 
         div()
             .relative()
@@ -1347,63 +2070,67 @@ impl Render for AlphaDesktop {
             )
             .when(!queued_steers.is_empty(), |this| {
                 this.child(
-                    div().flex_none().px(px(20.)).child(
-                        div()
-                            .w(px(780.))
-                            .max_w_full()
-                            .mx_auto()
-                            .mb(px(8.))
-                            .rounded(px(18.))
-                            .border_1()
-                            .border_color(rgb(0x5cc8e655))
-                            .bg(rgb(0x0e2a31))
-                            .px(px(12.))
-                            .py(px(8.))
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(px(9.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(ACCENT))
-                                            .child("Queued steer"),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(10.))
-                                            .text_color(rgb(TEXT_SECONDARY))
-                                            .child(queued_steers.join("  ·  ")),
-                                    ),
-                            )
-                            .child(
-                                Button::new("discard-steers")
-                                    .label("Discard")
-                                    .ghost()
-                                    .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let _ = this.runtime.confirm_steers(false);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("run-steers")
-                                    .label("Run next")
-                                    .secondary()
-                                    .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let _ = this.runtime.confirm_steers(true);
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
+                    div()
+                        .flex_none()
+                        .px(px(20.))
+                        .when(self.context_open, |this| this.pr(px(354.)))
+                        .child(
+                            div()
+                                .w(px(780.))
+                                .max_w_full()
+                                .mx_auto()
+                                .mb(px(8.))
+                                .rounded(px(18.))
+                                .border_1()
+                                .border_color(rgb(0x5cc8e655))
+                                .bg(rgb(0x0e2a31))
+                                .px(px(12.))
+                                .py(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .text_size(px(9.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(ACCENT))
+                                                .child("Queued steer"),
+                                        )
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_size(px(10.))
+                                                .text_color(rgb(TEXT_SECONDARY))
+                                                .child(queued_steers.join("  ·  ")),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("discard-steers")
+                                        .label("Discard")
+                                        .ghost()
+                                        .rounded(px(999.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let _ = this.runtime.confirm_steers(false);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("run-steers")
+                                        .label("Run next")
+                                        .secondary()
+                                        .rounded(px(999.))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let _ = this.runtime.confirm_steers(true);
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
                 )
             })
             .child(
@@ -1412,6 +2139,7 @@ impl Render for AlphaDesktop {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_y_scroll()
+                    .when(self.context_open, |this| this.pr(px(354.)))
                     .child(
                         div()
                             .w(px(780.))
@@ -1500,86 +2228,97 @@ impl Render for AlphaDesktop {
                     ),
             )
             .child(
-                div().flex_none().px(px(20.)).pb(px(22.)).child(
-                    div()
-                        .w(px(780.))
-                        .max_w_full()
-                        .mx_auto()
-                        .rounded(px(28.))
-                        .border_1()
-                        .border_color(rgb(BORDER))
-                        .bg(rgb(SURFACE))
-                        .p(px(8.))
-                        .child(
-                            Textarea::new(&self.composer)
-                                .appearance(false)
-                                .bordered(false)
-                                .h(px(54.))
-                                .aria_label("Message"),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(
-                                            Button::new("mode")
-                                                .label(mode)
-                                                .ghost()
-                                                .rounded(px(999.))
-                                                .selected(
-                                                    self.composer_menu == Some(ComposerMenu::Mode),
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.open_composer_menu(ComposerMenu::Mode);
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("model")
-                                                .label(model)
-                                                .ghost()
-                                                .rounded(px(999.))
-                                                .selected(
-                                                    self.composer_menu == Some(ComposerMenu::Model),
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.open_composer_menu(ComposerMenu::Model);
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("effort")
-                                                .label(effort)
-                                                .ghost()
-                                                .rounded(px(999.))
-                                                .selected(
-                                                    self.composer_menu
-                                                        == Some(ComposerMenu::Effort),
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.open_composer_menu(ComposerMenu::Effort);
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                )
-                                .child(
-                                    Button::new("send")
-                                        .label(if running { "■" } else { "↑" })
-                                        .custom(accent_button_variant(cx))
-                                        .rounded(px(999.))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.submit_composer(window, cx);
-                                        })),
-                                ),
-                        ),
-                ),
+                div()
+                    .flex_none()
+                    .px(px(20.))
+                    .pb(px(22.))
+                    .when(self.context_open, |this| this.pr(px(354.)))
+                    .child(
+                        div()
+                            .w(px(780.))
+                            .max_w_full()
+                            .mx_auto()
+                            .rounded(px(28.))
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .bg(rgb(SURFACE))
+                            .p(px(8.))
+                            .child(
+                                Textarea::new(&self.composer)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .h(px(54.))
+                                    .aria_label("Message"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .child(
+                                                Button::new("mode")
+                                                    .label(mode)
+                                                    .ghost()
+                                                    .rounded(px(999.))
+                                                    .selected(
+                                                        self.composer_menu
+                                                            == Some(ComposerMenu::Mode),
+                                                    )
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.open_composer_menu(ComposerMenu::Mode);
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("model")
+                                                    .label(model)
+                                                    .ghost()
+                                                    .rounded(px(999.))
+                                                    .selected(
+                                                        self.composer_menu
+                                                            == Some(ComposerMenu::Model),
+                                                    )
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.open_composer_menu(
+                                                            ComposerMenu::Model,
+                                                        );
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("effort")
+                                                    .label(effort)
+                                                    .ghost()
+                                                    .rounded(px(999.))
+                                                    .selected(
+                                                        self.composer_menu
+                                                            == Some(ComposerMenu::Effort),
+                                                    )
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.open_composer_menu(
+                                                            ComposerMenu::Effort,
+                                                        );
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("send")
+                                            .label(if running { "■" } else { "↑" })
+                                            .custom(accent_button_variant(cx))
+                                            .rounded(px(999.))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.submit_composer(window, cx);
+                                            })),
+                                    ),
+                            ),
+                    ),
             )
             .when_some(status, |this, status| {
                 this.child(
@@ -1601,6 +2340,7 @@ impl Render for AlphaDesktop {
                         .bottom(px(126.))
                         .left(px(0.))
                         .right(px(0.))
+                        .when(self.context_open, |this| this.pr(px(354.)))
                         .flex()
                         .justify_center()
                         .child(self.render_composer_menu(cx)),
@@ -1610,50 +2350,100 @@ impl Render for AlphaDesktop {
             .child(self.render_sessions(cx))
             .child(self.render_providers(cx))
             .child(self.render_help(cx))
-            .when(self.context_open, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top(px(58.))
-                        .right(px(18.))
-                        .w(px(336.))
-                        .rounded(px(22.))
-                        .border_1()
-                        .border_color(rgb(BORDER))
-                        .bg(rgb(SURFACE_RAISED))
-                        .p(px(16.))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Context"),
-                        )
-                        .child(
-                            div()
-                                .mt_2()
-                                .text_size(px(11.))
-                                .line_height(px(18.))
-                                .text_color(rgb(TEXT_SECONDARY))
-                                .child(format!(
-                                    "Provider: {}\nModel: {}\nEffort: {}\nMode: {}",
-                                    if chat.provider.is_empty() {
-                                        "default"
-                                    } else {
-                                        &chat.provider
-                                    },
-                                    chat.model,
-                                    chat.reasoning,
-                                    chat.mode,
-                                )),
-                        ),
-                )
-            })
+            .child(self.render_context_panel(&context, cx))
+            .child(self.render_change_review(&context, cx))
     }
 }
 
 fn short_id(id: SessionId) -> String {
     let id = id.to_string();
     id.chars().take(8).collect()
+}
+
+fn path_parts(path: &str) -> (String, String) {
+    let path = path.trim_start_matches("./");
+    match path.rsplit_once('/') {
+        Some((directory, name)) => (
+            name.to_owned(),
+            if directory.is_empty() {
+                "Workspace root".to_owned()
+            } else {
+                directory.to_owned()
+            },
+        ),
+        None => (path.to_owned(), "Workspace root".to_owned()),
+    }
+}
+
+fn format_token_count(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}m", tokens as f32 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f32 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn context_capabilities(context: &ContextView) -> Vec<String> {
+    let mut capabilities = Vec::new();
+    for capability in context
+        .local_tools
+        .iter()
+        .chain(context.provider_tools.iter())
+    {
+        if !capabilities.contains(capability) {
+            capabilities.push(capability.clone());
+        }
+    }
+    capabilities
+}
+
+fn render_change_diff(change: &FileChange) -> AnyElement {
+    let mut lines = Vec::new();
+    let mut remaining = 80usize;
+    if let Some(original) = &change.original {
+        for line in original.lines().take(remaining) {
+            lines.push(diff_line("-", line, 0xff9aaa, 0x281417));
+            remaining = remaining.saturating_sub(1);
+        }
+    }
+    if let Some(updated) = &change.updated {
+        for line in updated.lines().take(remaining) {
+            lines.push(diff_line("+", line, 0x9ce8b7, 0x10231a));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(MUTED))
+                .child("No preview available")
+                .into_any_element(),
+        );
+    }
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .children(lines)
+        .into_any_element()
+}
+
+fn diff_line(marker: &str, line: &str, color: u32, background: u32) -> AnyElement {
+    div()
+        .w_full()
+        .rounded(px(6.))
+        .bg(rgb(background))
+        .px(px(8.))
+        .py(px(3.))
+        .font_family("monospace")
+        .text_size(px(9.))
+        .line_height(px(15.))
+        .text_color(rgb(color))
+        .child(format!("{marker} {line}"))
+        .into_any_element()
 }
 
 fn menu_label(label: &str) -> AnyElement {
@@ -1722,10 +2512,13 @@ pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
 
 #[cfg(test)]
 mod tests {
-    use alpha_front_runtime::TranscriptItem;
+    use alpha_front_runtime::{ContextView, TranscriptItem};
     use alpha_schema::{ToolCallId, ToolStatus};
 
-    use super::{DesktopTranscriptItem, desktop_transcript_items};
+    use super::{
+        DesktopTranscriptItem, context_capabilities, desktop_transcript_items, format_token_count,
+        path_parts,
+    };
 
     #[test]
     fn consecutive_tool_items_render_as_one_group_with_the_latest_tool() {
@@ -1765,5 +2558,37 @@ mod tests {
         assert_eq!(tools[1].name, "grep");
         assert_eq!(tools[1].status, Some(ToolStatus::Completed));
         assert_eq!(tools[1].content.as_deref(), Some("4 matches"));
+    }
+
+    #[test]
+    fn context_helpers_format_paths_tokens_and_capabilities() {
+        assert_eq!(
+            path_parts("crates/alpha-front-desktop/src/lib.rs"),
+            (
+                "lib.rs".to_owned(),
+                "crates/alpha-front-desktop/src".to_owned()
+            )
+        );
+        assert_eq!(
+            path_parts("README.md"),
+            ("README.md".to_owned(), "Workspace root".to_owned())
+        );
+        assert_eq!(format_token_count(987), "987");
+        assert_eq!(format_token_count(12_400), "12.4k");
+        assert_eq!(format_token_count(1_250_000), "1.2m");
+
+        let context = ContextView {
+            local_tools: vec!["read".to_owned(), "edit".to_owned()],
+            provider_tools: vec!["edit".to_owned(), "web_search".to_owned()],
+            ..ContextView::default()
+        };
+        assert_eq!(
+            context_capabilities(&context),
+            [
+                "read".to_owned(),
+                "edit".to_owned(),
+                "web_search".to_owned()
+            ]
+        );
     }
 }
