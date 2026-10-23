@@ -18,6 +18,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     input::{InputEvent, Textarea, TextareaState},
     scroll::ScrollableElement as _,
+    text::markdown,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -2668,10 +2669,12 @@ impl AlphaDesktop {
                 .into_any_element(),
             DesktopTranscriptItem::Assistant(text) => div()
                 .w_full()
-                .text_size(px(14.))
-                .line_height(px(24.))
-                .text_color(rgb(TEXT))
-                .child(text)
+                .child(
+                    markdown(text)
+                        .text_size(px(14.))
+                        .line_height(px(24.))
+                        .text_color(rgb(TEXT)),
+                )
                 .into_any_element(),
             DesktopTranscriptItem::Thinking(text) => {
                 let expanded = self.thinking_expanded;
