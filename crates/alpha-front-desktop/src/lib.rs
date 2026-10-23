@@ -51,6 +51,7 @@ struct AlphaDesktop {
     provider_kind: Option<String>,
     provider_status: Option<String>,
     more_open: bool,
+    help_open: bool,
     local_status: Option<String>,
     _poll_task: Option<Task<()>>,
     _composer_subscription: Subscription,
@@ -107,6 +108,7 @@ impl AlphaDesktop {
             provider_kind: None,
             provider_status: None,
             more_open: false,
+            help_open: false,
             local_status: None,
             _poll_task: None,
             _composer_subscription: composer_subscription,
@@ -338,6 +340,75 @@ impl AlphaDesktop {
                         this.more_open = false;
                         cx.notify();
                     })),
+            )
+            .child(
+                Button::new("more-help")
+                    .label("Keyboard shortcuts")
+                    .ghost()
+                    .w_full()
+                    .rounded(px(15.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.more_open = false;
+                        this.help_open = true;
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_help(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.help_open {
+            return div().into_any_element();
+        }
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .child(div().absolute().inset_0().bg(rgba(0x00000099)))
+            .child(
+                div()
+                    .relative()
+                    .mt(px(90.))
+                    .w(px(560.))
+                    .rounded(px(24.))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(SURFACE_RAISED))
+                    .shadow_lg()
+                    .p(px(18.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Keyboard shortcuts"),
+                            )
+                            .child(
+                                Button::new("close-help")
+                                    .label("×")
+                                    .ghost()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.help_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(help_row("Send message", "Enter"))
+                    .child(help_row("Insert newline", "Shift + Enter"))
+                    .child(help_row("Model route", "Composer model pill"))
+                    .child(help_row("Reasoning effort", "Composer effort pill"))
+                    .child(help_row("Permission mode", "Composer mode pill"))
+                    .child(help_row("Sessions", "Sessions button"))
+                    .child(help_row("Commands", "/command in composer")),
             )
             .into_any_element()
     }
@@ -915,13 +986,12 @@ impl AlphaDesktop {
             return;
         }
 
+        let mut outcome = None;
         let result = if value.starts_with('/') {
             self.runtime
                 .execute_command(parse_command(&value))
-                .map(|outcome| {
-                    if matches!(outcome, CommandOutcome::OpenSessions) {
-                        self.local_status = Some("session manager is not wired yet".to_owned());
-                    }
+                .map(|command| {
+                    outcome = Some(command);
                 })
         } else {
             self.runtime.submit_prompt(&value)
@@ -930,6 +1000,19 @@ impl AlphaDesktop {
         match result {
             Ok(()) => {
                 self.local_status = None;
+                match outcome {
+                    Some(CommandOutcome::OpenProviders) => self.open_providers(cx),
+                    Some(CommandOutcome::OpenModels) => {
+                        self.open_composer_menu(ComposerMenu::Model);
+                    }
+                    Some(CommandOutcome::OpenThinking) => {
+                        self.open_composer_menu(ComposerMenu::Effort);
+                    }
+                    Some(CommandOutcome::OpenSessions) => self.open_sessions(cx),
+                    Some(CommandOutcome::Help) => self.help_open = true,
+                    Some(CommandOutcome::Quit) => cx.quit(),
+                    _ => {}
+                }
                 self.composer
                     .update(cx, |state, cx| state.set_value("", window, cx));
             }
@@ -1029,9 +1112,10 @@ fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopTranscriptIt
             other => {
                 flush_tools(&mut rendered, &mut tools);
                 match other {
-                    TranscriptItem::User { text } | TranscriptItem::QueuedSteer { text, .. } => {
+                    TranscriptItem::User { text } => {
                         rendered.push(DesktopTranscriptItem::User(text.clone()));
                     }
+                    TranscriptItem::QueuedSteer { .. } => continue,
                     TranscriptItem::AssistantDelta { text } => {
                         rendered.push(DesktopTranscriptItem::Assistant(text.clone()));
                     }
@@ -1193,6 +1277,14 @@ impl Render for AlphaDesktop {
         let running = chat.running_turn.is_some();
         let status = self.local_status.as_deref().or(chat.status.as_deref());
         let interaction = chat.interaction.clone();
+        let queued_steers = chat
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::QueuedSteer { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
 
         div()
             .relative()
@@ -1253,6 +1345,67 @@ impl Render for AlphaDesktop {
                             ),
                     ),
             )
+            .when(!queued_steers.is_empty(), |this| {
+                this.child(
+                    div().flex_none().px(px(20.)).child(
+                        div()
+                            .w(px(780.))
+                            .max_w_full()
+                            .mx_auto()
+                            .mb(px(8.))
+                            .rounded(px(18.))
+                            .border_1()
+                            .border_color(rgb(0x5cc8e655))
+                            .bg(rgb(0x0e2a31))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(ACCENT))
+                                            .child("Queued steer"),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(10.))
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child(queued_steers.join("  ·  ")),
+                                    ),
+                            )
+                            .child(
+                                Button::new("discard-steers")
+                                    .label("Discard")
+                                    .ghost()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let _ = this.runtime.confirm_steers(false);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("run-steers")
+                                    .label("Run next")
+                                    .secondary()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let _ = this.runtime.confirm_steers(true);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+                )
+            })
             .child(
                 div()
                     .id("transcript")
@@ -1456,6 +1609,7 @@ impl Render for AlphaDesktop {
             .child(self.render_more_menu(cx))
             .child(self.render_sessions(cx))
             .child(self.render_providers(cx))
+            .child(self.render_help(cx))
             .when(self.context_open, |this| {
                 this.child(
                     div()
@@ -1510,6 +1664,31 @@ fn menu_label(label: &str) -> AnyElement {
         .font_weight(FontWeight::MEDIUM)
         .text_color(rgb(MUTED))
         .child(label.to_owned())
+        .into_any_element()
+}
+
+fn help_row(label: &str, shortcut: &str) -> AnyElement {
+    div()
+        .h(px(30.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .border_b_1()
+        .border_color(rgb(BORDER))
+        .text_size(px(10.))
+        .text_color(rgb(TEXT_SECONDARY))
+        .child(label.to_owned())
+        .child(
+            div()
+                .rounded(px(999.))
+                .bg(rgb(SURFACE))
+                .px(px(8.))
+                .py(px(3.))
+                .font_family("monospace")
+                .text_size(px(9.))
+                .text_color(rgb(MUTED))
+                .child(shortcut.to_owned()),
+        )
         .into_any_element()
 }
 
