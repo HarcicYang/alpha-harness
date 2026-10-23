@@ -243,10 +243,23 @@ impl ProviderState {
                     } else {
                         vec![ReasoningLevel::Auto]
                     },
+                    context_window: model.context_window as usize,
+                    max_tokens: model.max_tokens as usize,
+                    provider_tools: model.provider_tools,
                 });
             }
         }
         choices
+    }
+
+    /// Resolve the current provider/model metadata from the effective catalog.
+    pub fn model_choice(&self, provider: &str, model: &str) -> Option<ModelChoice> {
+        let choices = self.model_choices();
+        choices
+            .iter()
+            .find(|choice| choice.provider == provider && choice.model == model)
+            .or_else(|| choices.iter().find(|choice| choice.provider == provider))
+            .cloned()
     }
 }
 
@@ -274,6 +287,12 @@ pub struct ModelChoice {
     pub model_name: String,
     /// Selectable reasoning levels.
     pub reasoning_levels: Vec<ReasoningLevel>,
+    /// Maximum model context window in tokens.
+    pub context_window: usize,
+    /// Maximum model output tokens.
+    pub max_tokens: usize,
+    /// Provider-native tools advertised by the model.
+    pub provider_tools: Vec<String>,
 }
 
 /// Resolve a model target against the effective catalog.
@@ -336,6 +355,9 @@ pub fn resolve_model_selection(
         model: model.clone(),
         model_name: model,
         reasoning_levels: ReasoningLevel::ALL.to_vec(),
+        context_window: 0,
+        max_tokens: 0,
+        provider_tools: Vec::new(),
     })
 }
 

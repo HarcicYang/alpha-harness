@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use alpha_protocol::Id;
 use alpha_schema::{
     AssistantContentBlock, EventEnvelope, LiveAgentEvent, MessageId, PermissionMode,
-    ReasoningLevel, Seq, SessionEvent, SessionEventNotification, SessionId, ToolCallId, ToolStatus,
-    TurnEndReason, TurnId,
+    ReasoningLevel, Seq, SessionEvent, SessionEventNotification, SessionId, Timestamp, ToolCallId,
+    ToolStatus, TurnEndReason, TurnId,
 };
 use serde_json::Value;
 
@@ -106,6 +106,66 @@ impl InteractionDecision {
     }
 }
 
+/// Kind of file change observed in the durable session log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChangeKind {
+    /// A file was created.
+    Added,
+    /// A file was updated.
+    Modified,
+}
+
+/// One file changed by a completed local tool call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileChange {
+    /// Workspace-relative path.
+    pub path: String,
+    /// Change kind inferred from the tool call.
+    pub kind: FileChangeKind,
+    /// Lines introduced by the change.
+    pub added_lines: usize,
+    /// Lines removed by the change.
+    pub removed_lines: usize,
+    /// Original text when the tool exposed it.
+    pub original: Option<String>,
+    /// Updated text when the tool exposed it.
+    pub updated: Option<String>,
+}
+
+/// Display state of one context activity entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivityState {
+    /// Work is still running or waiting for input.
+    Running,
+    /// Work completed successfully.
+    Completed,
+    /// Work failed or was interrupted.
+    Failed,
+}
+
+/// One recent activity entry derived from durable events.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityItem {
+    /// Event timestamp.
+    pub at: Timestamp,
+    /// Short activity title.
+    pub title: String,
+    /// Supporting detail.
+    pub detail: String,
+    /// Current activity state.
+    pub state: ActivityState,
+}
+
+#[derive(Clone, Debug)]
+struct PendingFileChange {
+    path: String,
+    kind: FileChangeKind,
+    added_lines: usize,
+    removed_lines: usize,
+    original: Option<String>,
+    updated: Option<String>,
+}
+
 /// UI-independent chat and session state.
 #[derive(Clone, Debug, Default)]
 pub struct ChatState {
@@ -131,16 +191,38 @@ pub struct ChatState {
     pub mode: PermissionMode,
     /// Provider-native tools waiting for the next session creation.
     pub pending_provider_tools: Option<Vec<String>>,
+    /// Estimated tokens currently visible to the model.
+    pub context_tokens: usize,
+    /// Estimated assistant output tokens recorded in this session.
+    pub output_tokens: usize,
+    /// Local tools frozen by the latest request header.
+    pub local_tools: Vec<String>,
+    /// Provider-native tools active for the current route.
+    pub provider_tools: Vec<String>,
+    /// File changes produced by completed local tool calls.
+    pub file_changes: Vec<FileChange>,
+    /// Recent activity derived from durable events.
+    pub activity: Vec<ActivityItem>,
     /// Human-readable status line.
     pub status: Option<String>,
     /// Last durable sequence applied.
     pub last_seq: Option<Seq>,
     pub(crate) tool_names: BTreeMap<ToolCallId, String>,
+    context_segments: BTreeMap<Seq, usize>,
+    system_prompt_seq: Option<Seq>,
+    request_header_seq: Option<Seq>,
+    pending_file_changes: BTreeMap<ToolCallId, PendingFileChange>,
+    tool_activity: BTreeMap<ToolCallId, usize>,
 }
 
 impl ChatState {
     /// Start a new unpersisted draft.
     pub fn new_session(&mut self) {
+        self.reset_projection();
+        self.status = Some("new session".to_owned());
+    }
+
+    pub(crate) fn reset_projection(&mut self) {
         self.session_id = None;
         self.transcript.clear();
         self.streaming_assistant = None;
@@ -148,9 +230,20 @@ impl ChatState {
         self.running_turn = None;
         self.interaction = None;
         self.pending_provider_tools = None;
-        self.status = Some("new session".to_owned());
+        self.context_tokens = 0;
+        self.output_tokens = 0;
+        self.local_tools.clear();
+        self.provider_tools.clear();
+        self.file_changes.clear();
+        self.activity.clear();
+        self.status = None;
         self.last_seq = None;
         self.tool_names.clear();
+        self.context_segments.clear();
+        self.system_prompt_seq = None;
+        self.request_header_seq = None;
+        self.pending_file_changes.clear();
+        self.tool_activity.clear();
     }
 
     /// Apply one typed session notification.
@@ -172,6 +265,12 @@ impl ChatState {
         kind: String,
         prompt: Value,
     ) -> ChatUpdate {
+        self.push_activity(
+            Timestamp::now(),
+            "Waiting for approval",
+            interaction_detail(&kind, &prompt),
+            ActivityState::Running,
+        );
         self.interaction = Some(InteractionPrompt {
             id,
             session_id,
@@ -245,6 +344,7 @@ impl ChatState {
 
     fn apply_durable(&mut self, envelope: &EventEnvelope<SessionEvent>) -> Vec<ChatUpdate> {
         self.last_seq = Some(envelope.seq);
+        self.project_context(envelope);
         let status = match &envelope.payload {
             SessionEvent::UserMessage { text, .. } => {
                 self.transcript
@@ -352,6 +452,246 @@ impl ChatState {
         Vec::new()
     }
 
+    fn project_context(&mut self, envelope: &EventEnvelope<SessionEvent>) {
+        match &envelope.payload {
+            SessionEvent::SystemPromptSet { text } => {
+                if let Some(previous) = self.system_prompt_seq.replace(envelope.seq) {
+                    self.remove_context_segment(previous);
+                }
+                self.insert_context_segment(envelope.seq, estimate_tokens(text) + 4);
+            }
+            SessionEvent::ContextInjected { text, .. } => {
+                self.insert_context_segment(envelope.seq, estimate_tokens(text) + 4);
+            }
+            SessionEvent::ContextCompacted {
+                summary,
+                from_seq,
+                through_seq,
+            } => {
+                self.context_segments
+                    .retain(|seq, _| *seq < *from_seq || *seq > *through_seq);
+                self.recompute_context_tokens();
+                self.insert_context_segment(*through_seq, estimate_tokens(summary) + 4);
+                self.push_activity(
+                    envelope.at,
+                    "Context compacted",
+                    format!("Sequences {from_seq} through {through_seq} were summarized."),
+                    ActivityState::Completed,
+                );
+            }
+            SessionEvent::TurnStarted => {
+                self.push_activity(
+                    envelope.at,
+                    "Turn started",
+                    format!("{} · {} effort", self.model, self.reasoning),
+                    ActivityState::Running,
+                );
+            }
+            SessionEvent::UserMessage { text, .. } => {
+                self.insert_context_segment(envelope.seq, estimate_tokens(text) + 4);
+            }
+            SessionEvent::AssistantMessage { blocks, text, .. } => {
+                let tokens = assistant_block_tokens(blocks, text);
+                self.insert_context_segment(envelope.seq, tokens);
+                self.output_tokens = self.output_tokens.saturating_add(tokens);
+            }
+            SessionEvent::ToolCall {
+                id, name, input, ..
+            } => {
+                let tokens = estimate_tokens(name) + estimate_tokens(&input.to_string()) + 8;
+                self.insert_context_segment(envelope.seq, tokens);
+                if let Some(change) = pending_file_change(name, input) {
+                    self.pending_file_changes.insert(*id, change);
+                }
+                self.push_activity(
+                    envelope.at,
+                    tool_activity_title(name),
+                    tool_activity_detail(name, input),
+                    ActivityState::Running,
+                );
+                let index = self.activity.len().saturating_sub(1);
+                self.tool_activity.insert(*id, index);
+            }
+            SessionEvent::ToolResult {
+                id,
+                status,
+                content,
+            } => {
+                self.insert_context_segment(envelope.seq, estimate_tokens(content) + 4);
+                if let Some(index) = self.tool_activity.remove(id)
+                    && let Some(activity) = self.activity.get_mut(index)
+                {
+                    activity.state = match status {
+                        ToolStatus::Completed => ActivityState::Completed,
+                        ToolStatus::Failed | ToolStatus::Interrupted => ActivityState::Failed,
+                    };
+                    activity.detail =
+                        format!("{} · {}", activity.detail, compact_text(content, 96));
+                }
+                if *status == ToolStatus::Completed
+                    && let Some(mut change) = self.pending_file_changes.remove(id)
+                {
+                    if change.kind == FileChangeKind::Modified {
+                        let replacements = replacement_count(content);
+                        change.added_lines = change.added_lines.saturating_mul(replacements);
+                        change.removed_lines = change.removed_lines.saturating_mul(replacements);
+                    }
+                    self.record_file_change(change);
+                }
+            }
+            SessionEvent::RequestHeader {
+                tools,
+                provider_tools,
+                ..
+            } => {
+                self.local_tools = tools.clone();
+                self.provider_tools = provider_tools.clone();
+                if let Some(previous) = self.request_header_seq.replace(envelope.seq) {
+                    self.remove_context_segment(previous);
+                }
+                let tools = tools
+                    .iter()
+                    .chain(provider_tools)
+                    .map(|name| estimate_tokens(name) + 8)
+                    .sum::<usize>();
+                self.insert_context_segment(envelope.seq, tools);
+            }
+            SessionEvent::CapabilitiesSet { provider_tools } => {
+                self.provider_tools = provider_tools.clone();
+                self.push_activity(
+                    envelope.at,
+                    "Capabilities updated",
+                    if provider_tools.is_empty() {
+                        "Provider tools cleared.".to_owned()
+                    } else {
+                        provider_tools.join(", ")
+                    },
+                    ActivityState::Completed,
+                );
+            }
+            SessionEvent::RouteChanged {
+                provider,
+                model,
+                reasoning,
+            } => {
+                self.push_activity(
+                    envelope.at,
+                    "Model route updated",
+                    format!("{provider} · {model} · {reasoning}"),
+                    ActivityState::Completed,
+                );
+            }
+            SessionEvent::ModeChanged { mode } => {
+                self.push_activity(
+                    envelope.at,
+                    "Permission mode updated",
+                    mode.to_string(),
+                    ActivityState::Completed,
+                );
+            }
+            SessionEvent::TurnEnded { reason } => {
+                let state = match reason {
+                    TurnEndReason::Completed => ActivityState::Completed,
+                    TurnEndReason::Interrupted
+                    | TurnEndReason::Failed
+                    | TurnEndReason::Rejected => ActivityState::Failed,
+                };
+                self.push_activity(envelope.at, "Turn finished", format!("{reason:?}"), state);
+            }
+            SessionEvent::PermissionRequested { action, resources } => {
+                self.push_activity(
+                    envelope.at,
+                    "Permission requested",
+                    format!("{action} · {}", resources.join(", ")),
+                    ActivityState::Running,
+                );
+            }
+            SessionEvent::PermissionDecided {
+                action,
+                allowed,
+                source,
+                ..
+            } => {
+                self.push_activity(
+                    envelope.at,
+                    "Permission decided",
+                    format!(
+                        "{action} · {source} · {}",
+                        if *allowed { "allowed" } else { "denied" }
+                    ),
+                    if *allowed {
+                        ActivityState::Completed
+                    } else {
+                        ActivityState::Failed
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_context_segment(&mut self, seq: Seq, tokens: usize) {
+        let previous = self.context_segments.insert(seq, tokens).unwrap_or(0);
+        self.context_tokens = self
+            .context_tokens
+            .saturating_sub(previous)
+            .saturating_add(tokens);
+    }
+
+    fn remove_context_segment(&mut self, seq: Seq) {
+        if let Some(tokens) = self.context_segments.remove(&seq) {
+            self.context_tokens = self.context_tokens.saturating_sub(tokens);
+        }
+    }
+
+    fn recompute_context_tokens(&mut self) {
+        self.context_tokens = self.context_segments.values().sum();
+    }
+
+    fn record_file_change(&mut self, change: PendingFileChange) {
+        if let Some(existing) = self
+            .file_changes
+            .iter_mut()
+            .find(|existing| existing.path == change.path)
+        {
+            existing.kind = change.kind;
+            existing.added_lines = existing.added_lines.saturating_add(change.added_lines);
+            existing.removed_lines = existing.removed_lines.saturating_add(change.removed_lines);
+            existing.updated = change.updated;
+        } else {
+            self.file_changes.push(FileChange {
+                path: change.path,
+                kind: change.kind,
+                added_lines: change.added_lines,
+                removed_lines: change.removed_lines,
+                original: change.original,
+                updated: change.updated,
+            });
+        }
+    }
+
+    fn push_activity(
+        &mut self,
+        at: Timestamp,
+        title: impl Into<String>,
+        detail: impl Into<String>,
+        state: ActivityState,
+    ) {
+        const MAX_ACTIVITY: usize = 32;
+        if self.activity.len() == MAX_ACTIVITY {
+            self.activity.remove(0);
+            for index in self.tool_activity.values_mut() {
+                *index = index.saturating_sub(1);
+            }
+        }
+        self.activity.push(ActivityItem {
+            at,
+            title: title.into(),
+            detail: detail.into(),
+            state,
+        });
+    }
+
     fn apply_live(&mut self, event: &LiveAgentEvent) -> Vec<ChatUpdate> {
         match event {
             LiveAgentEvent::TextDelta { text } => {
@@ -402,6 +742,145 @@ impl ChatState {
     }
 }
 
+fn estimate_tokens(text: &str) -> usize {
+    let mut ascii = 0usize;
+    let mut non_ascii = 0usize;
+    for character in text.chars() {
+        if character.is_ascii() {
+            ascii += 1;
+        } else {
+            non_ascii += 1;
+        }
+    }
+    ascii.div_ceil(4) + non_ascii
+}
+
+fn assistant_block_tokens(blocks: &[AssistantContentBlock], fallback: &str) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            AssistantContentBlock::Text { text } | AssistantContentBlock::Thinking { text, .. } => {
+                estimate_tokens(text) + 4
+            }
+            AssistantContentBlock::LocalToolCall {
+                name, arguments, ..
+            }
+            | AssistantContentBlock::ProviderToolCall {
+                name,
+                input: arguments,
+                ..
+            } => estimate_tokens(name) + estimate_tokens(&arguments.to_string()) + 8,
+            AssistantContentBlock::ProviderToolResult { name, content, .. } => {
+                estimate_tokens(name) + estimate_tokens(&content.to_string()) + 8
+            }
+            AssistantContentBlock::Citation {
+                url,
+                title,
+                snippet,
+            } => {
+                url.as_deref().map(estimate_tokens).unwrap_or_default()
+                    + title.as_deref().map(estimate_tokens).unwrap_or_default()
+                    + snippet.as_deref().map(estimate_tokens).unwrap_or_default()
+            }
+        })
+        .sum::<usize>()
+        .max(estimate_tokens(fallback))
+}
+
+fn pending_file_change(name: &str, input: &Value) -> Option<PendingFileChange> {
+    let path = input.get("path")?.as_str()?.to_owned();
+    match name {
+        "edit" => {
+            let old = input.get("old")?.as_str()?.to_owned();
+            let new = input.get("new")?.as_str()?.to_owned();
+            Some(PendingFileChange {
+                path,
+                kind: FileChangeKind::Modified,
+                added_lines: line_count(&new),
+                removed_lines: line_count(&old),
+                original: Some(old),
+                updated: Some(new),
+            })
+        }
+        "write" => {
+            let content = input.get("content")?.as_str()?.to_owned();
+            Some(PendingFileChange {
+                path,
+                kind: FileChangeKind::Added,
+                added_lines: line_count(&content),
+                removed_lines: 0,
+                original: None,
+                updated: Some(content),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn line_count(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    }
+}
+
+fn replacement_count(content: &str) -> usize {
+    content
+        .strip_prefix("Replaced ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(1)
+}
+
+fn tool_activity_title(name: &str) -> String {
+    match name {
+        "read" => "Read file",
+        "write" => "Wrote file",
+        "edit" => "Edited file",
+        "shell" => "Ran command",
+        "grep" => "Searched workspace",
+        _ => "Called tool",
+    }
+    .to_owned()
+}
+
+fn tool_activity_detail(name: &str, input: &Value) -> String {
+    let detail = match name {
+        "read" | "write" | "edit" => input.get("path").and_then(Value::as_str).map(str::to_owned),
+        "shell" => input
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "grep" => input
+            .get("query")
+            .or_else(|| input.get("pattern"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        _ => None,
+    }
+    .unwrap_or_else(|| input.to_string());
+    compact_text(&detail, 120)
+}
+
+fn interaction_detail(kind: &str, prompt: &Value) -> String {
+    for key in ["command", "path", "action", "reason"] {
+        if let Some(value) = prompt.get(key).and_then(Value::as_str) {
+            return compact_text(value, 120);
+        }
+    }
+    compact_text(&format!("{kind} · {prompt}"), 120)
+}
+
+fn compact_text(text: &str, limit: usize) -> String {
+    let mut compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() > limit {
+        compact = compact.chars().take(limit.saturating_sub(3)).collect();
+        compact.push_str("...");
+    }
+    compact
+}
+
 /// One observable update produced while reducing a core event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChatUpdate {
@@ -422,12 +901,12 @@ pub enum ChatUpdate {
 #[cfg(test)]
 mod tests {
     use alpha_schema::{
-        EventEnvelope, LiveAgentEvent, MessageId, Seq, SessionEvent, SessionEventNotification,
-        SessionId, Timestamp, ToolStatus, TurnId,
+        EventEnvelope, LiveAgentEvent, MessageId, ReasoningLevel, Seq, SessionEvent,
+        SessionEventNotification, SessionId, Timestamp, ToolStatus, TurnId,
     };
     use serde_json::json;
 
-    use super::{ChatState, TranscriptItem};
+    use super::{ActivityState, ChatState, FileChangeKind, TranscriptItem, estimate_tokens};
 
     #[test]
     fn live_text_is_replaced_by_the_durable_message() {
@@ -594,5 +1073,153 @@ mod tests {
             item,
             TranscriptItem::QueuedSteer { id, .. } if *id == discarded_id
         )));
+    }
+
+    #[test]
+    fn context_projection_tracks_capabilities_changes_and_activity() {
+        let session_id = SessionId::new();
+        let call_id = alpha_schema::ToolCallId::new();
+        let mut state = ChatState {
+            session_id: Some(session_id),
+            ..ChatState::default()
+        };
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(1),
+                Timestamp::from_millis(1),
+                SessionEvent::RequestHeader {
+                    provider: "local".to_owned(),
+                    model: "model".to_owned(),
+                    reasoning: ReasoningLevel::Auto,
+                    tools: vec!["read".to_owned(), "edit".to_owned()],
+                    provider_tools: vec!["web_search".to_owned()],
+                },
+            ),
+        });
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(2),
+                Timestamp::from_millis(2),
+                SessionEvent::ToolCall {
+                    id: call_id,
+                    message_id: MessageId::new(),
+                    name: "edit".to_owned(),
+                    input: json!({
+                        "path": "src/lib.rs",
+                        "old": "first\nsecond",
+                        "new": "first\nupdated\nthird"
+                    }),
+                },
+            ),
+        });
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(3),
+                Timestamp::from_millis(3),
+                SessionEvent::ToolResult {
+                    id: call_id,
+                    status: ToolStatus::Completed,
+                    content: "Replaced 1 occurrence(s) in src/lib.rs".to_owned(),
+                },
+            ),
+        });
+
+        assert_eq!(state.local_tools, ["read", "edit"]);
+        assert_eq!(state.provider_tools, ["web_search"]);
+        assert!(state.context_tokens > 0);
+        assert_eq!(state.file_changes.len(), 1);
+        assert_eq!(state.file_changes[0].path, "src/lib.rs");
+        assert_eq!(state.file_changes[0].kind, FileChangeKind::Modified);
+        assert_eq!(state.file_changes[0].added_lines, 3);
+        assert_eq!(state.file_changes[0].removed_lines, 2);
+        assert_eq!(
+            state.activity.last().map(|item| item.state),
+            Some(ActivityState::Completed)
+        );
+    }
+
+    #[test]
+    fn failed_file_tools_do_not_record_changes() {
+        let session_id = SessionId::new();
+        let call_id = alpha_schema::ToolCallId::new();
+        let mut state = ChatState {
+            session_id: Some(session_id),
+            ..ChatState::default()
+        };
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(1),
+                Timestamp::from_millis(1),
+                SessionEvent::ToolCall {
+                    id: call_id,
+                    message_id: MessageId::new(),
+                    name: "write".to_owned(),
+                    input: json!({ "path": "src/new.rs", "content": "fn main() {}" }),
+                },
+            ),
+        });
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(2),
+                Timestamp::from_millis(2),
+                SessionEvent::ToolResult {
+                    id: call_id,
+                    status: ToolStatus::Failed,
+                    content: "permission denied".to_owned(),
+                },
+            ),
+        });
+
+        assert!(state.file_changes.is_empty());
+        assert_eq!(
+            state.activity.last().map(|item| item.state),
+            Some(ActivityState::Failed)
+        );
+    }
+
+    #[test]
+    fn context_compaction_replaces_tracked_prefix_tokens() {
+        let session_id = SessionId::new();
+        let mut state = ChatState {
+            session_id: Some(session_id),
+            ..ChatState::default()
+        };
+        for (seq, text) in [
+            (1, "a long first message that should be compacted"),
+            (2, "another long message that should be compacted"),
+        ] {
+            state.apply(SessionEventNotification::Durable {
+                session_id,
+                event: EventEnvelope::at(
+                    Seq::new(seq),
+                    Timestamp::from_millis(seq as i64),
+                    SessionEvent::UserMessage {
+                        id: MessageId::new(),
+                        text: text.to_owned(),
+                    },
+                ),
+            });
+        }
+        let before = state.context_tokens;
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(3),
+                Timestamp::from_millis(3),
+                SessionEvent::ContextCompacted {
+                    summary: "short summary".to_owned(),
+                    from_seq: Seq::new(1),
+                    through_seq: Seq::new(2),
+                },
+            ),
+        });
+
+        assert!(state.context_tokens < before);
+        assert_eq!(state.context_tokens, estimate_tokens("short summary") + 4);
     }
 }

@@ -19,7 +19,10 @@ use alpha_schema::{
 };
 use serde_json::{Value, json};
 
-pub use chat::{ChatState, ChatUpdate, InteractionDecision, InteractionPrompt, TranscriptItem};
+pub use chat::{
+    ActivityItem, ActivityState, ChatState, ChatUpdate, FileChange, FileChangeKind,
+    InteractionDecision, InteractionPrompt, TranscriptItem,
+};
 pub use command::{COMMANDS, CommandSpec, FrontCommand, parse_command};
 pub use provider::{
     ModelChoice, ProviderRemoved, ProviderState, resolve_model_selection,
@@ -122,6 +125,27 @@ pub enum FrontEvent {
     },
 }
 
+/// Typed session context projected for every frontend.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextView {
+    /// Estimated tokens currently in the model context.
+    pub input_tokens: usize,
+    /// Estimated assistant output tokens.
+    pub output_tokens: usize,
+    /// Current model context window.
+    pub context_window: usize,
+    /// Maximum output tokens for the current model.
+    pub max_tokens: usize,
+    /// Local tools frozen by the latest request.
+    pub local_tools: Vec<String>,
+    /// Provider-native tools active for the current route.
+    pub provider_tools: Vec<String>,
+    /// Files changed by completed local tools.
+    pub changes: Vec<FileChange>,
+    /// Recent durable activity.
+    pub activity: Vec<ActivityItem>,
+}
+
 /// UI-independent state and protocol controller shared by all frontends.
 pub struct FrontRuntime {
     supervisor: CoreSupervisor,
@@ -141,13 +165,11 @@ impl FrontRuntime {
         } else {
             ProviderState::default()
         };
-        let chat = ChatState {
-            mode: config.session.mode,
-            provider: config.session.provider.clone(),
-            model: config.session.model.clone(),
-            reasoning: config.session.reasoning,
-            ..ChatState::default()
-        };
+        let mut chat = ChatState::default();
+        chat.mode = config.session.mode;
+        chat.provider = config.session.provider.clone();
+        chat.model = config.session.model.clone();
+        chat.reasoning = config.session.reasoning;
         Ok(Self {
             supervisor,
             chat,
@@ -166,13 +188,11 @@ impl FrontRuntime {
         if providers.kinds.is_empty() {
             providers.refresh(&mut supervisor)?;
         }
-        let chat = ChatState {
-            mode: session.mode,
-            provider: session.provider.clone(),
-            model: session.model.clone(),
-            reasoning: session.reasoning,
-            ..ChatState::default()
-        };
+        let mut chat = ChatState::default();
+        chat.mode = session.mode;
+        chat.provider = session.provider.clone();
+        chat.model = session.model.clone();
+        chat.reasoning = session.reasoning;
         Ok(Self {
             supervisor,
             chat,
@@ -189,6 +209,35 @@ impl FrontRuntime {
     /// Shared provider state.
     pub fn providers(&self) -> &ProviderState {
         &self.providers
+    }
+
+    /// Project context statistics and activity from typed runtime state.
+    pub fn context(&self) -> ContextView {
+        let choice = self
+            .providers
+            .model_choice(&self.chat.provider, &self.chat.model);
+        let mut provider_tools = self.chat.provider_tools.clone();
+        if provider_tools.is_empty()
+            && let Some(choice) = &choice
+        {
+            provider_tools = choice.provider_tools.clone();
+        }
+        ContextView {
+            input_tokens: self.chat.context_tokens,
+            output_tokens: self.chat.output_tokens,
+            context_window: choice
+                .as_ref()
+                .map(|choice| choice.context_window)
+                .unwrap_or_default(),
+            max_tokens: choice
+                .as_ref()
+                .map(|choice| choice.max_tokens)
+                .unwrap_or_default(),
+            local_tools: self.chat.local_tools.clone(),
+            provider_tools,
+            changes: self.chat.file_changes.clone(),
+            activity: self.chat.activity.clone(),
+        }
     }
 
     /// Session defaults.
@@ -311,14 +360,8 @@ impl FrontRuntime {
             "session.attach",
             Some(json!({ "sessionId": session_id, "afterSeq": 0 })),
         )?)?;
+        self.chat.reset_projection();
         self.chat.session_id = Some(session_id);
-        self.chat.transcript.clear();
-        self.chat.streaming_assistant = None;
-        self.chat.streaming_thinking = None;
-        self.chat.running_turn = None;
-        self.chat.interaction = None;
-        self.chat.pending_provider_tools = None;
-        self.chat.last_seq = None;
         self.chat.provider = resumed.provider.clone();
         self.chat.model = resumed.model.clone();
         self.chat.reasoning = resumed.reasoning;

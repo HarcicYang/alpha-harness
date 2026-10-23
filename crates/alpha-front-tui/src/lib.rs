@@ -2245,6 +2245,9 @@ fn open_model_picker(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), Tu
             model: app.chat.model.clone(),
             model_name: app.chat.model.clone(),
             reasoning_levels: ReasoningLevel::ALL.to_vec(),
+            context_window: 0,
+            max_tokens: 0,
+            provider_tools: Vec::new(),
         });
     }
     if choices.is_empty() {
