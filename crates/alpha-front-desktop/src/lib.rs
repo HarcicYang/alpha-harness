@@ -2487,7 +2487,8 @@ impl AlphaDesktop {
         };
         let chat = self.runtime.chat();
         let panel = div()
-            .w(px(320.))
+            .when(menu == ComposerMenu::Model, |this| this.w(px(480.)))
+            .when(menu != ComposerMenu::Model, |this| this.w(px(320.)))
             .max_h(px(430.))
             .overflow_y_scrollbar()
             .rounded(px(22.))
@@ -2534,14 +2535,86 @@ impl AlphaDesktop {
                 .child(menu_label("Model route"))
                 .children(self.model_choices.iter().map(|choice| {
                     let selected = chat.provider == choice.provider && chat.model == choice.model;
+                    let levels = choice
+                        .reasoning_levels
+                        .iter()
+                        .map(|level| level.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" / ");
                     Button::new(format!("model:{}:{}", choice.provider, choice.model))
-                        .label(format!(
-                            "{}  ·  {}",
-                            choice.provider_name, choice.model_name
-                        ))
+                        .child(
+                            div()
+                                .w_full()
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .justify_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .truncate()
+                                                .text_size(px(11.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(rgb(TEXT))
+                                                .child(format!(
+                                                    "{}  ·  {}",
+                                                    choice.provider_name, choice.model_name
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(px(8.))
+                                                .text_color(rgb(if selected {
+                                                    0x72d69a
+                                                } else {
+                                                    MUTED
+                                                }))
+                                                .child(if selected { "CURRENT" } else { "" }),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .truncate()
+                                        .text_size(px(9.))
+                                        .font_family("monospace")
+                                        .text_color(rgb(MUTED))
+                                        .child(format!(
+                                            "{} · {} ctx · {} out · {}",
+                                            choice.model,
+                                            if choice.context_window == 0 {
+                                                "unknown".to_owned()
+                                            } else {
+                                                format_token_count(choice.context_window)
+                                            },
+                                            if choice.max_tokens == 0 {
+                                                "unknown".to_owned()
+                                            } else {
+                                                format_token_count(choice.max_tokens)
+                                            },
+                                            if levels.is_empty() {
+                                                "auto".to_owned()
+                                            } else {
+                                                levels
+                                            },
+                                        )),
+                                ),
+                        )
                         .selected(selected)
                         .ghost()
                         .w_full()
+                        .h(px(58.))
+                        .p(px(6.))
                         .rounded(px(16.))
                         .on_click(cx.listener({
                             let choice = choice.clone();
