@@ -50,6 +50,10 @@ struct AlphaDesktop {
     change_review_open: bool,
     selected_change: usize,
     sessions_open: bool,
+    session_search: Entity<TextareaState>,
+    session_selected: Option<SessionId>,
+    session_delete_confirm: Option<SessionId>,
+    session_status: Option<String>,
     sessions: Vec<SessionListEntry>,
     providers_open: bool,
     provider_kind: Option<String>,
@@ -63,6 +67,7 @@ struct AlphaDesktop {
     local_status: Option<String>,
     _poll_task: Option<Task<()>>,
     _composer_subscription: Subscription,
+    _session_search_subscription: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +113,14 @@ impl AlphaDesktop {
                 cx.notify();
             }
         });
+        let session_search = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Search sessions")
+                .auto_grow(1, 1)
+        });
+        let session_search_subscription = cx.subscribe(&session_search, |_, _, _, cx| {
+            cx.notify();
+        });
         let provider_credential = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("API key or access token")
@@ -130,6 +143,10 @@ impl AlphaDesktop {
             change_review_open: false,
             selected_change: 0,
             sessions_open: false,
+            session_search,
+            session_selected: None,
+            session_delete_confirm: None,
+            session_status: None,
             sessions: Vec::new(),
             providers_open: false,
             provider_kind: None,
@@ -143,6 +160,7 @@ impl AlphaDesktop {
             local_status: None,
             _poll_task: None,
             _composer_subscription: composer_subscription,
+            _session_search_subscription: session_search_subscription,
         };
         this._poll_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -244,10 +262,18 @@ impl AlphaDesktop {
         cx.notify();
     }
 
-    fn open_sessions(&mut self, cx: &mut Context<Self>) {
+    fn open_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.runtime.list_sessions() {
             Ok(sessions) => {
+                let active = self.runtime.chat().session_id;
+                self.session_selected = active
+                    .filter(|id| sessions.iter().any(|session| session.id == *id))
+                    .or_else(|| sessions.first().map(|session| session.id));
                 self.sessions = sessions;
+                self.session_delete_confirm = None;
+                self.session_status = None;
+                self.session_search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
                 self.sessions_open = true;
                 self.local_status = None;
             }
@@ -260,6 +286,8 @@ impl AlphaDesktop {
         match self.runtime.resume_session(session_id) {
             Ok(_) => {
                 self.sessions_open = false;
+                self.session_delete_confirm = None;
+                self.session_status = None;
                 self.change_review_open = false;
                 self.selected_change = 0;
                 self.context_tab = ContextTab::Changes;
@@ -273,11 +301,42 @@ impl AlphaDesktop {
     fn new_session(&mut self, cx: &mut Context<Self>) {
         self.runtime.new_session();
         self.sessions_open = false;
+        self.session_delete_confirm = None;
+        self.session_status = None;
         self.composer_menu = None;
         self.change_review_open = false;
         self.selected_change = 0;
         self.context_tab = ContextTab::Changes;
         self.local_status = None;
+        cx.notify();
+    }
+
+    fn delete_selected_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session_id) = self.session_selected else {
+            return;
+        };
+        if self.session_delete_confirm != Some(session_id) {
+            self.session_delete_confirm = Some(session_id);
+            self.session_status = Some("delete confirmation required".to_owned());
+            cx.notify();
+            return;
+        }
+        match self.runtime.delete_session(session_id) {
+            Ok(()) => {
+                self.session_status = Some(format!("deleted {}", short_id(session_id)));
+                match self.runtime.list_sessions() {
+                    Ok(sessions) => {
+                        self.sessions = sessions;
+                        self.session_selected = self.sessions.first().map(|session| session.id);
+                    }
+                    Err(error) => self.session_status = Some(error.to_string()),
+                }
+                self.session_delete_confirm = None;
+                self.session_search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+            }
+            Err(error) => self.session_status = Some(error.to_string()),
+        }
         cx.notify();
     }
 
@@ -1920,19 +1979,41 @@ impl AlphaDesktop {
         if !self.sessions_open {
             return div().into_any_element();
         }
-        let rows = if self.sessions.is_empty() {
+        let query = self.session_search.read(cx).value().to_lowercase();
+        let filtered = self
+            .sessions
+            .iter()
+            .filter(|session| {
+                if query.trim().is_empty() {
+                    return true;
+                }
+                session_matches_query(session, query.trim())
+            })
+            .collect::<Vec<_>>();
+        let selected = filtered
+            .iter()
+            .copied()
+            .find(|session| Some(session.id) == self.session_selected)
+            .or_else(|| filtered.first().copied());
+        let active_session = self.runtime.chat().session_id;
+
+        let rows = if filtered.is_empty() {
             vec![
                 div()
                     .py(px(40.))
                     .text_center()
-                    .text_size(px(12.))
+                    .text_size(px(10.))
                     .text_color(rgb(MUTED))
-                    .child("No stored sessions")
+                    .child(if self.sessions.is_empty() {
+                        "No stored sessions"
+                    } else {
+                        "No matching sessions"
+                    })
                     .into_any_element(),
             ]
         } else {
-            self.sessions
-                .iter()
+            filtered
+                .into_iter()
                 .map(|session| {
                     let route = if session.provider.is_empty() && session.model.is_empty() {
                         "default".to_owned()
@@ -1946,28 +2027,50 @@ impl AlphaDesktop {
                         .filter(|text| !text.is_empty())
                         .unwrap_or_else(|| "(empty session)".to_owned());
                     let session_id = session.id;
+                    let is_selected = Some(session.id) == selected.map(|session| session.id);
+                    let is_active = active_session == Some(session.id);
                     Button::new(format!("session:{}", session.id))
                         .child(
                             div()
                                 .w_full()
                                 .flex()
-                                .flex_col()
-                                .items_start()
-                                .gap_1()
+                                .items_center()
+                                .gap_2()
                                 .child(
                                     div()
-                                        .w_full()
+                                        .size(px(30.))
+                                        .flex_none()
+                                        .rounded_full()
+                                        .bg(if is_selected {
+                                            rgb(0x102e37)
+                                        } else {
+                                            rgb(SURFACE_RAISED)
+                                        })
                                         .flex()
                                         .items_center()
-                                        .justify_between()
+                                        .justify_center()
+                                        .text_size(px(10.))
+                                        .text_color(rgb(ACCENT))
+                                        .child(">"),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .items_start()
+                                        .gap_1()
                                         .child(
                                             div()
+                                                .w_full()
                                                 .flex()
                                                 .items_center()
-                                                .gap_2()
+                                                .gap_1()
                                                 .child(
                                                     div()
-                                                        .text_size(px(11.))
+                                                        .font_family("monospace")
+                                                        .text_size(px(10.))
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(rgb(TEXT))
                                                         .child(short_id(session.id)),
@@ -1978,39 +2081,225 @@ impl AlphaDesktop {
                                                         .bg(rgb(SURFACE_RAISED))
                                                         .px(px(7.))
                                                         .py(px(2.))
-                                                        .text_size(px(9.))
+                                                        .text_size(px(8.))
                                                         .text_color(rgb(ACCENT))
                                                         .child(session.mode.to_string()),
-                                                ),
+                                                )
+                                                .when(is_active, |this| {
+                                                    this.child(
+                                                        div()
+                                                            .rounded(px(999.))
+                                                            .bg(rgb(0x12333c))
+                                                            .px(px(7.))
+                                                            .py(px(2.))
+                                                            .text_size(px(8.))
+                                                            .text_color(rgb(0x72d69a))
+                                                            .child("CURRENT"),
+                                                    )
+                                                }),
                                         )
                                         .child(
                                             div()
-                                                .text_size(px(9.))
+                                                .w_full()
+                                                .truncate()
+                                                .text_size(px(10.))
+                                                .text_color(rgb(TEXT_SECONDARY))
+                                                .child(preview),
+                                        )
+                                        .child(
+                                            div()
+                                                .max_w_full()
+                                                .truncate()
+                                                .text_size(px(8.))
                                                 .font_family("monospace")
                                                 .text_color(rgb(MUTED))
                                                 .child(route),
                                         ),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .truncate()
-                                        .text_size(px(11.))
-                                        .text_color(rgb(TEXT_SECONDARY))
-                                        .child(preview),
                                 ),
                         )
+                        .selected(is_selected)
+                        .ghost()
                         .bg(rgb(SURFACE))
                         .border_1()
-                        .border_color(rgb(BORDER))
+                        .border_color(if is_selected {
+                            rgb(0x36515a)
+                        } else {
+                            rgb(BORDER)
+                        })
                         .w_full()
+                        .h(px(74.))
+                        .p(px(8.))
                         .rounded(px(18.))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.resume_session(session_id, cx);
+                            this.session_selected = Some(session_id);
+                            this.session_delete_confirm = None;
+                            this.session_status = None;
+                            cx.notify();
                         }))
                         .into_any_element()
                 })
                 .collect()
+        };
+
+        let preview = if let Some(session) = selected {
+            let route = if session.provider.is_empty() && session.model.is_empty() {
+                "default".to_owned()
+            } else {
+                format!("{}/{}", session.provider, session.model)
+            };
+            let preview_text = session
+                .first_message
+                .as_deref()
+                .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| "(empty session)".to_owned());
+            let session_id = session.id;
+            let remove_pending = self.session_delete_confirm == Some(session.id);
+            let is_active = active_session == Some(session.id);
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(short_id(session.id)),
+                                )
+                                .child(
+                                    div()
+                                        .font_family("monospace")
+                                        .text_size(px(8.))
+                                        .text_color(rgb(MUTED))
+                                        .child(session.id.to_string()),
+                                ),
+                        )
+                        .when(is_active, |this| {
+                            this.child(
+                                div()
+                                    .rounded(px(999.))
+                                    .bg(rgb(0x12333c))
+                                    .px(px(9.))
+                                    .py(px(4.))
+                                    .text_size(px(8.))
+                                    .text_color(rgb(0x72d69a))
+                                    .child("CURRENT SESSION"),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .rounded(px(20.))
+                        .bg(rgb(SURFACE))
+                        .p(px(14.))
+                        .text_size(px(11.))
+                        .line_height(px(19.))
+                        .text_color(rgb(TEXT_SECONDARY))
+                        .child(preview_text),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(session_meta_row(
+                            "Workspace",
+                            session.workspace.root.clone(),
+                        ))
+                        .child(session_meta_row("CWD", session.workspace.cwd.clone()))
+                        .child(session_meta_row("Route", route))
+                        .child(session_meta_row("Mode", session.mode.to_string())),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("resume-selected-session")
+                                .custom(accent_button_variant(cx))
+                                .label(if is_active {
+                                    "Continue session"
+                                } else {
+                                    "Resume session"
+                                })
+                                .rounded(px(999.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.resume_session(session_id, cx);
+                                })),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("delete-selected-session")
+                                .label(if remove_pending {
+                                    "Confirm delete"
+                                } else {
+                                    "Delete"
+                                })
+                                .ghost()
+                                .rounded(px(999.))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.delete_selected_session(window, cx);
+                                })),
+                        )
+                        .when(remove_pending, |this| {
+                            this.child(
+                                Button::new("cancel-delete-session")
+                                    .label("Cancel")
+                                    .secondary()
+                                    .rounded(px(999.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.session_delete_confirm = None;
+                                        this.session_status = None;
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(
+                    div()
+                        .size(px(42.))
+                        .rounded_full()
+                        .bg(rgb(SURFACE))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(16.))
+                        .text_color(rgb(ACCENT))
+                        .child("+"),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("No session selected"),
+                )
+                .child(
+                    div()
+                        .text_size(px(9.))
+                        .text_color(rgb(MUTED))
+                        .child("Select a stored session or start a new draft."),
+                )
+                .into_any_element()
         };
 
         div()
@@ -2022,10 +2311,10 @@ impl AlphaDesktop {
             .child(
                 div()
                     .relative()
-                    .mt(px(70.))
-                    .w(px(680.))
-                    .h(px(520.))
-                    .rounded(px(26.))
+                    .mt(px(48.))
+                    .w(px(900.))
+                    .h(px(610.))
+                    .rounded(px(28.))
                     .border_1()
                     .border_color(rgb(BORDER))
                     .bg(rgb(SURFACE_RAISED))
@@ -2035,9 +2324,9 @@ impl AlphaDesktop {
                     .overflow_hidden()
                     .child(
                         div()
-                            .h(px(58.))
+                            .h(px(60.))
                             .flex_none()
-                            .px(px(16.))
+                            .px(px(18.))
                             .flex()
                             .items_center()
                             .justify_between()
@@ -2045,9 +2334,19 @@ impl AlphaDesktop {
                             .border_color(rgb(BORDER))
                             .child(
                                 div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Sessions"),
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Sessions"),
+                                    )
+                                    .child(
+                                        div().text_size(px(9.)).text_color(rgb(MUTED)).child(
+                                            format!("{} stored sessions", self.sessions.len()),
+                                        ),
+                                    ),
                             )
                             .child(
                                 Button::new("close-sessions")
@@ -2056,47 +2355,98 @@ impl AlphaDesktop {
                                     .rounded(px(999.))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.sessions_open = false;
+                                        this.session_delete_confirm = None;
                                         cx.notify();
                                     })),
                             ),
                     )
                     .child(
                         div()
-                            .id("session-list")
                             .flex_1()
                             .min_h(px(0.))
-                            .overflow_y_scrollbar()
-                            .p(px(8.))
                             .flex()
-                            .flex_col()
-                            .gap_1()
-                            .children(rows),
-                    )
-                    .child(
-                        div()
-                            .h(px(54.))
-                            .flex_none()
-                            .px(px(12.))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .border_t_1()
-                            .border_color(rgb(BORDER))
                             .child(
                                 div()
-                                    .text_size(px(10.))
-                                    .text_color(rgb(MUTED))
-                                    .child("Select a session to resume"),
+                                    .w(px(430.))
+                                    .flex_none()
+                                    .border_r_1()
+                                    .border_color(rgb(BORDER))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .p(px(10.))
+                                            .border_b_1()
+                                            .border_color(rgb(BORDER))
+                                            .child(
+                                                div()
+                                                    .rounded(px(18.))
+                                                    .border_1()
+                                                    .border_color(rgb(BORDER))
+                                                    .bg(rgb(SURFACE))
+                                                    .p(px(5.))
+                                                    .child(
+                                                        Textarea::new(&self.session_search)
+                                                            .appearance(false)
+                                                            .bordered(false)
+                                                            .h(px(38.))
+                                                            .aria_label("Search sessions"),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("session-list")
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .overflow_y_scrollbar()
+                                            .p(px(8.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .children(rows),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(50.))
+                                            .flex_none()
+                                            .px(px(12.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .border_t_1()
+                                            .border_color(rgb(BORDER))
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_size(px(9.))
+                                                    .text_color(if self.session_status.is_some() {
+                                                        rgb(ACCENT)
+                                                    } else {
+                                                        rgb(MUTED)
+                                                    })
+                                                    .child(
+                                                        self.session_status.clone().unwrap_or_else(
+                                                            || {
+                                                                "Search by message, route, or ID"
+                                                                    .to_owned()
+                                                            },
+                                                        ),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new("new-session")
+                                                    .secondary()
+                                                    .label("New draft")
+                                                    .rounded(px(999.))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.new_session(cx);
+                                                    })),
+                                            ),
+                                    ),
                             )
-                            .child(
-                                Button::new("new-session")
-                                    .custom(accent_button_variant(cx))
-                                    .label("New session")
-                                    .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.new_session(cx);
-                                    })),
-                            ),
+                            .child(div().flex_1().min_w(px(0.)).p(px(20.)).child(preview)),
                     ),
             )
             .into_any_element()
@@ -2226,7 +2576,7 @@ impl AlphaDesktop {
                     Some(CommandOutcome::OpenThinking) => {
                         self.open_composer_menu(ComposerMenu::Effort);
                     }
-                    Some(CommandOutcome::OpenSessions) => self.open_sessions(cx),
+                    Some(CommandOutcome::OpenSessions) => self.open_sessions(window, cx),
                     Some(CommandOutcome::Help) => self.help_open = true,
                     Some(CommandOutcome::Quit) => cx.quit(),
                     _ => {}
@@ -2536,8 +2886,8 @@ impl Render for AlphaDesktop {
                                     .label("Sessions")
                                     .ghost()
                                     .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_sessions(cx);
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_sessions(window, cx);
                                     })),
                             )
                             .child(
@@ -2856,6 +3206,46 @@ fn short_id(id: SessionId) -> String {
     id.chars().take(8).collect()
 }
 
+fn session_matches_query(session: &SessionListEntry, query: &str) -> bool {
+    let route = format!("{}/{}", session.provider, session.model);
+    let preview = session.first_message.as_deref().unwrap_or_default();
+    format!(
+        "{} {} {} {} {}",
+        session.id, session.mode, route, session.workspace.root, preview
+    )
+    .to_lowercase()
+    .contains(&query.to_lowercase())
+}
+
+fn session_meta_row(label: &str, value: String) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap_3()
+        .border_b_1()
+        .border_color(rgb(BORDER))
+        .py(px(6.))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(9.))
+                .text_color(rgb(MUTED))
+                .child(label.to_owned()),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .text_align(TextAlign::Right)
+                .font_family("monospace")
+                .text_size(px(9.))
+                .text_color(rgb(TEXT_SECONDARY))
+                .child(value),
+        )
+        .into_any_element()
+}
+
 fn path_parts(path: &str) -> (String, String) {
     let path = path.trim_start_matches("./");
     match path.rsplit_once('/') {
@@ -3022,11 +3412,14 @@ pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
 #[cfg(test)]
 mod tests {
     use alpha_front_runtime::{ContextView, TranscriptItem};
-    use alpha_schema::{ToolCallId, ToolStatus};
+    use alpha_schema::{
+        PermissionMode, SessionId, SessionListEntry, Timestamp, ToolCallId, ToolStatus,
+        WorkspaceRef,
+    };
 
     use super::{
         DesktopTranscriptItem, context_capabilities, desktop_transcript_items, format_token_count,
-        parse_provider_config, path_parts, pretty_provider_config,
+        parse_provider_config, path_parts, pretty_provider_config, session_matches_query,
     };
 
     #[test]
@@ -3118,5 +3511,25 @@ mod tests {
                 .unwrap_err()
                 .starts_with("invalid JSON:")
         );
+    }
+
+    #[test]
+    fn session_search_matches_preview_route_and_workspace() {
+        let session = SessionListEntry {
+            id: SessionId::new(),
+            created_at: Timestamp::from_millis(1),
+            mode: PermissionMode::Auto,
+            workspace: WorkspaceRef {
+                root: "/workspace/alpha".to_owned(),
+                cwd: "/workspace/alpha".to_owned(),
+            },
+            provider: "deepseek".to_owned(),
+            model: "chat".to_owned(),
+            first_message: Some("Fix the desktop session manager".to_owned()),
+        };
+        assert!(session_matches_query(&session, "DESKTOP"));
+        assert!(session_matches_query(&session, "deepseek/chat"));
+        assert!(session_matches_query(&session, "workspace/alpha"));
+        assert!(!session_matches_query(&session, "unrelated"));
     }
 }
