@@ -21,7 +21,22 @@ impl AlphaDesktop {
                 .placeholder("Search sessions")
                 .auto_grow(1, 1)
         });
-        let session_search_subscription = cx.subscribe(&session_search, |_, _, _, cx| {
+        let session_search_subscription = cx.subscribe(&session_search, |this, search, _, cx| {
+            let query = search.read(cx).value().to_lowercase();
+            let query = query.trim();
+            let selected_visible = this.session_selected.is_some_and(|selected| {
+                this.sessions.iter().any(|session| {
+                    session.id == selected
+                        && (query.is_empty() || session_matches_query(session, query))
+                })
+            });
+            if !selected_visible {
+                this.session_selected = this
+                    .sessions
+                    .iter()
+                    .find(|session| query.is_empty() || session_matches_query(session, query))
+                    .map(|session| session.id);
+            }
             cx.notify();
         });
         let provider_credential = cx.new(|cx| {
@@ -34,12 +49,42 @@ impl AlphaDesktop {
                 .placeholder("{}")
                 .auto_grow(4, 10)
         });
+        let capabilities_text = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("shell, read, edit, web_search")
+                .auto_grow(2, 5)
+        });
+        let capabilities_subscription = cx.subscribe(&capabilities_text, |_, _, _, cx| {
+            cx.notify();
+        });
+        let model_search = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Search models")
+                .auto_grow(1, 1)
+        });
+        let model_search_subscription = cx.subscribe(&model_search, |_, _, _, cx| {
+            cx.notify();
+        });
+        let command_palette_query = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Search commands and actions")
+                .auto_grow(1, 1)
+                .submit_on_enter(true)
+        });
+        let command_palette_subscription = cx.subscribe(&command_palette_query, |_, _, _, cx| {
+            cx.notify();
+        });
+        let focus_handle = cx.focus_handle();
         let model_choices = runtime.providers().model_choices();
         let mut this = Self {
             runtime,
+            focus_handle,
             composer,
+            model_search,
             model_choices,
             composer_menu: None,
+            command_palette_query,
+            command_palette_open: false,
             submit_requested: false,
             context_open: false,
             context_tab: ContextTab::Changes,
@@ -60,15 +105,21 @@ impl AlphaDesktop {
             provider_status: None,
             provider_credential,
             provider_config,
+            capabilities_open: false,
+            capabilities_text,
             transcript_scroll: ScrollHandle::new(),
             jump_to_latest_hidden_until: None,
-            more_open: false,
             help_open: false,
             local_status: None,
             _poll_task: None,
             _composer_subscription: composer_subscription,
+            _model_search_subscription: model_search_subscription,
+            _command_palette_subscription: command_palette_subscription,
             _session_search_subscription: session_search_subscription,
+            _capabilities_subscription: capabilities_subscription,
         };
+        let composer_focus = this.composer.read(cx).focus_handle(cx);
+        window.focus(&composer_focus, cx);
         this._poll_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -93,6 +144,9 @@ impl AlphaDesktop {
                             Ok(events) => changed |= !events.is_empty(),
                             Err(error) => this.local_status = Some(error.to_string()),
                         }
+                        if this.runtime.chat().interaction.is_some() {
+                            cx.notify();
+                        }
                         if changed {
                             if follow_transcript {
                                 this.transcript_scroll.scroll_to_bottom();
@@ -109,7 +163,17 @@ impl AlphaDesktop {
         this
     }
 
-    pub(crate) fn open_composer_menu(&mut self, menu: ComposerMenu) {
+    pub(crate) fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.composer.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
+    pub(crate) fn open_composer_menu(
+        &mut self,
+        menu: ComposerMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.composer_menu = if self.composer_menu == Some(menu) {
             None
         } else {
@@ -125,6 +189,12 @@ impl AlphaDesktop {
                 self.local_status = Some(error.to_string());
             }
             self.model_choices = self.runtime.providers().model_choices();
+            if menu == ComposerMenu::Model {
+                self.model_search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                let focus = self.model_search.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+            }
             Some(menu)
         };
     }
@@ -192,6 +262,8 @@ impl AlphaDesktop {
                 self.session_status = None;
                 self.session_search
                     .update(cx, |state, cx| state.set_value("", window, cx));
+                let focus = self.session_search.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
                 self.sessions_open = true;
                 self.local_status = None;
             }
@@ -267,15 +339,14 @@ impl AlphaDesktop {
     }
 
     pub(crate) fn open_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.more_open = false;
         match self.runtime.refresh_providers() {
             Ok(()) => {
-                self.provider_kind = self
-                    .runtime
-                    .providers()
-                    .kinds
+                let providers = self.runtime.providers();
+                self.provider_kind = providers
+                    .instances
                     .first()
-                    .map(|kind| kind.kind.clone());
+                    .map(|instance| instance.kind.clone())
+                    .or_else(|| providers.kinds.first().map(|kind| kind.kind.clone()));
                 self.provider_status = None;
                 self.providers_open = true;
                 let first_instance = self.provider_kind.as_deref().and_then(|kind| {

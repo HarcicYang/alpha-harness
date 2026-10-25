@@ -5,167 +5,16 @@ impl AlphaDesktop {
         if !self.providers_open {
             return div().into_any_element();
         }
+
         let providers = self.runtime.providers();
-        let selected_kind = self.provider_kind.as_deref();
-        let kind = selected_kind.and_then(|kind| providers.kind(kind));
-        let selected_instance = self
-            .provider_selected
-            .as_deref()
-            .and_then(|id| providers.instance(id));
-        let instances = selected_kind.map_or_else(Vec::new, |kind| {
-            providers
-                .instances
-                .iter()
-                .filter(|instance| instance.kind == kind)
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-
-        let kinds = if providers.kinds.is_empty() {
-            vec![
-                div()
-                    .p(px(12.))
-                    .text_size(px(11.))
-                    .text_color(rgb(MUTED))
-                    .child("No provider kinds registered")
-                    .into_any_element(),
-            ]
-        } else {
-            providers
-                .kinds
-                .iter()
-                .map(|kind| {
-                    let selected = selected_kind == Some(kind.kind.as_str());
-                    let kind_id = kind.kind.clone();
-                    Button::new(format!("provider-kind:{}", kind.kind))
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_col()
-                                .items_start()
-                                .child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(rgb(TEXT))
-                                        .child(kind.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(8.))
-                                        .text_color(rgb(MUTED))
-                                        .child(kind.kind.clone()),
-                                ),
-                        )
-                        .selected(selected)
-                        .ghost()
-                        .w_full()
-                        .rounded(px(16.))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_provider_kind(kind_id.clone(), window, cx);
-                        }))
-                        .into_any_element()
-                })
-                .collect()
-        };
-
-        let instance_rows = if instances.is_empty() {
-            vec![
-                div()
-                    .py(px(18.))
-                    .text_center()
-                    .text_size(px(10.))
-                    .text_color(rgb(MUTED))
-                    .child("No configured instances")
-                    .into_any_element(),
-            ]
-        } else {
-            instances
-                .into_iter()
-                .map(|instance| {
-                    let id = instance.id.clone();
-                    let selected = self.provider_selected.as_deref() == Some(id.as_str());
-                    let has_credential = instance.auth_ref.is_some();
-                    Button::new(format!("provider-instance:{id}"))
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .size(px(24.))
-                                        .flex_none()
-                                        .rounded_full()
-                                        .bg(if instance.disabled {
-                                            rgb(0x2a3038)
-                                        } else {
-                                            rgb(0x12333c)
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(9.))
-                                        .text_color(if instance.disabled {
-                                            rgb(MUTED)
-                                        } else {
-                                            rgb(ACCENT)
-                                        })
-                                        .child(if instance.disabled { "!" } else { "✓" }),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .flex()
-                                        .flex_col()
-                                        .items_start()
-                                        .child(
-                                            div()
-                                                .max_w_full()
-                                                .truncate()
-                                                .font_family("monospace")
-                                                .text_size(px(9.))
-                                                .text_color(rgb(TEXT))
-                                                .child(id.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(8.))
-                                                .text_color(if has_credential {
-                                                    rgb(0x72d69a)
-                                                } else {
-                                                    rgb(MUTED)
-                                                })
-                                                .child(if has_credential {
-                                                    "credential ready"
-                                                } else {
-                                                    "credential required"
-                                                }),
-                                        ),
-                                ),
-                        )
-                        .selected(selected)
-                        .ghost()
-                        .w_full()
-                        .rounded(px(16.))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_provider_instance(id.clone(), window, cx);
-                            cx.notify();
-                        }))
-                        .into_any_element()
-                })
-                .collect()
-        };
-
+        let kinds = providers.kinds.clone();
+        let instances = providers.instances.clone();
         let credential_backend = providers
             .credential_status
             .as_ref()
             .map(|status| {
                 format!(
-                    "{} backend: {}",
+                    "{} · {}",
                     status.backend,
                     match status.status {
                         CredentialBackendStatus::Available => "available",
@@ -174,441 +23,346 @@ impl AlphaDesktop {
                 )
             })
             .unwrap_or_else(|| "credential backend unknown".to_owned());
+        let selected_kind = self.provider_kind.as_deref();
+        let kind = selected_kind
+            .and_then(|kind| kinds.iter().find(|descriptor| descriptor.kind == kind))
+            .cloned();
+        let selected_instance = self
+            .provider_selected
+            .as_deref()
+            .and_then(|id| instances.iter().find(|instance| instance.id == id))
+            .cloned();
+        let kind_instances = selected_kind.map_or_else(Vec::new, |kind| {
+            instances
+                .iter()
+                .filter(|instance| instance.kind == kind)
+                .cloned()
+                .collect::<Vec<_>>()
+        });
 
-        let details = if let Some(instance) = selected_instance {
-            let selected_id = instance.id.clone();
-            let remove_pending =
-                self.provider_remove_confirm.as_deref() == Some(selected_id.as_str());
-            div()
-                .flex()
-                .flex_col()
-                .gap_4()
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .font_family("monospace")
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(selected_id.clone()),
-                                )
-                                .child(div().text_size(px(9.)).text_color(rgb(MUTED)).child(
-                                    format!(
-                                        "{} · config v{} · {}",
-                                        instance.kind, instance.config_version, credential_backend,
-                                    ),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .rounded(px(999.))
-                                .border_1()
-                                .border_color(rgb(BORDER))
-                                .bg(rgb(SURFACE))
-                                .px(px(10.))
-                                .py(px(5.))
-                                .text_size(px(8.))
-                                .text_color(if instance.disabled {
-                                    rgb(0xff7888)
-                                } else {
-                                    rgb(0x72d69a)
-                                })
-                                .child(if instance.disabled {
-                                    "Disabled"
-                                } else {
-                                    "Ready"
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(9.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(MUTED))
-                                .child("Credential"),
-                        )
-                        .child(
-                            div()
-                                .rounded(px(18.))
-                                .border_1()
-                                .border_color(rgb(BORDER))
-                                .bg(rgb(SURFACE))
-                                .p(px(6.))
-                                .child(
-                                    Textarea::new(&self.provider_credential)
-                                        .appearance(false)
-                                        .bordered(false)
-                                        .h(px(42.))
-                                        .aria_label("Provider credential"),
-                                ),
-                        )
-                        .child(
-                            div().flex().justify_end().child(
-                                Button::new("save-provider-credential")
-                                    .label("Store credential")
-                                    .secondary()
-                                    .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.authenticate_selected_provider(window, cx);
-                                    })),
-                            ),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_size(px(9.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(rgb(MUTED))
-                                        .child("Configuration JSON"),
-                                )
-                                .child(
-                                    Button::new("save-provider-config")
-                                        .label("Save config")
-                                        .secondary()
-                                        .rounded(px(999.))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.save_provider_config(cx);
-                                        })),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .rounded(px(20.))
-                                .border_1()
-                                .border_color(rgb(BORDER))
-                                .bg(rgb(SURFACE))
-                                .p(px(8.))
-                                .child(
-                                    Textarea::new(&self.provider_config)
-                                        .appearance(false)
-                                        .bordered(false)
-                                        .h(px(170.))
-                                        .aria_label("Provider configuration JSON"),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Button::new("test-selected-provider")
-                                .label("Test connection")
-                                .ghost()
-                                .rounded(px(999.))
-                                .on_click(cx.listener({
-                                    let id = selected_id.clone();
-                                    move |this, _, _, cx| {
-                                        this.test_provider_instance(id.clone(), cx);
-                                    }
-                                })),
-                        )
-                        .child(
-                            Button::new("default-selected-provider")
-                                .label("Set default")
-                                .ghost()
-                                .rounded(px(999.))
-                                .on_click(cx.listener({
-                                    let id = selected_id.clone();
-                                    move |this, _, _, cx| {
-                                        this.set_default_provider_instance(id.clone(), cx);
-                                    }
-                                })),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            Button::new("remove-selected-provider")
-                                .label(if remove_pending {
-                                    "Confirm remove"
-                                } else {
-                                    "Remove"
-                                })
-                                .ghost()
-                                .rounded(px(999.))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.remove_selected_provider(window, cx);
-                                })),
-                        )
-                        .when(remove_pending, |this| {
-                            this.child(
-                                Button::new("cancel-remove-provider")
-                                    .label("Cancel")
-                                    .secondary()
-                                    .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.provider_remove_confirm = None;
-                                        cx.notify();
-                                    })),
-                            )
-                        }),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .py(px(60.))
-                .child(
-                    div()
-                        .size(px(42.))
-                        .rounded_full()
-                        .bg(rgb(0x102e37))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(16.))
-                        .text_color(rgb(ACCENT))
-                        .child("+"),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child("No provider instance selected"),
-                )
-                .child(
-                    div()
-                        .text_size(px(9.))
-                        .text_color(rgb(MUTED))
-                        .child("Create an instance or select one from the list."),
-                )
-                .into_any_element()
-        };
+        let (kind_rows, instance_rows) =
+            self.render_provider_rows(&kinds, &instances, &kind_instances, selected_kind, cx);
 
-        div()
-            .absolute()
-            .inset_0()
+        let provider_content = self.render_provider_content(
+            selected_instance.as_ref(),
+            kind.as_ref(),
+            &kind_instances,
+            instance_rows,
+            &credential_backend,
+            cx,
+        );
+
+        let dialog = div()
+            .relative()
+            .w(px(980.))
+            .max_w_full()
+            .h(px(690.))
+            .max_h_full()
+            .rounded(px(28.))
+            .border_1()
+            .border_color(rgba(BORDER))
+            .bg(rgb(SURFACE))
+            .shadow_lg()
+            .overflow_hidden()
             .flex()
-            .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(0x00000099)))
+            .flex_col()
             .child(
                 div()
-                    .relative()
-                    .mt(px(48.))
-                    .w(px(900.))
-                    .h(px(640.))
-                    .rounded(px(26.))
-                    .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(SURFACE_RAISED))
-                    .shadow_lg()
+                    .h(px(78.))
+                    .flex_none()
+                    .px(px(20.))
+                    .border_b_1()
+                    .border_color(rgba(BORDER_SUBTLE))
                     .flex()
-                    .flex_col()
-                    .overflow_hidden()
+                    .items_center()
+                    .justify_between()
                     .child(
                         div()
-                            .h(px(58.))
-                            .flex_none()
-                            .px(px(16.))
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .border_b_1()
-                            .border_color(rgb(BORDER))
+                            .gap(px(11.))
+                            .child(icon_badge(IconName::Server, ACCENT, ACCENT_SOFT, 34.))
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .child(
                                         div()
-                                            .text_size(px(14.))
+                                            .text_size(px(13.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child("Providers"),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(9.))
+                                            .text_size(px(9.5))
                                             .text_color(rgb(MUTED))
-                                            .child(
-                                                "Credentials, configuration, and model routes",
-                                            ),
+                                            .child("Manage instances, credentials, and routes"),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        icon_button("close-providers", IconName::X, "Close").on_click(cx.listener(
+                            |this, _, window, cx| {
+                                this.providers_open = false;
+                                this.provider_remove_confirm = None;
+                                this.focus_composer(window, cx);
+                                cx.notify();
+                            },
+                        )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .child(
+                        div()
+                            .w(px(210.))
+                            .flex_none()
+                            .border_r_1()
+                            .border_color(rgba(BORDER_SUBTLE))
+                            .bg(rgb(SURFACE_INSET))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .h(px(43.))
+                                    .px(px(12.))
+                                    .border_b_1()
+                                    .border_color(rgba(BORDER_SUBTLE))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(9.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(MUTED))
+                                    .child("Provider kinds")
+                                    .child(
+                                        icon_button(
+                                            "refresh-providers",
+                                            IconName::RefreshCw,
+                                            "Refresh providers",
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                match this.runtime.refresh_providers() {
+                                                    Ok(()) => {
+                                                        this.model_choices = this
+                                                            .runtime
+                                                            .providers()
+                                                            .model_choices();
+                                                        this.provider_status =
+                                                            Some("providers refreshed".to_owned());
+                                                    }
+                                                    Err(error) => {
+                                                        this.provider_status =
+                                                            Some(error.to_string())
+                                                    }
+                                                }
+                                                cx.notify();
+                                            }),
+                                        ),
                                     ),
                             )
                             .child(
-                                Button::new("close-providers")
-                                    .label("×")
-                                    .ghost()
-                                    .rounded(px(999.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.providers_open = false;
-                                        cx.notify();
-                                    })),
+                                div()
+                                    .p(px(7.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .children(kind_rows),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .p(px(9.))
+                                    .border_t_1()
+                                    .border_color(rgba(BORDER_SUBTLE))
+                                    .child(
+                                        Button::new("create-provider")
+                                            .label("+  Add instance")
+                                            .secondary()
+                                            .w_full()
+                                            .h(px(34.))
+                                            .rounded_full()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.create_provider_instance(window, cx);
+                                            })),
+                                    ),
                             ),
                     )
                     .child(
                         div()
+                            .id("provider-content")
                             .flex_1()
+                            .min_w(px(0.))
                             .min_h(px(0.))
-                            .flex()
-                            .child(
-                                div()
-                                    .w(px(230.))
-                                    .flex_none()
-                                    .border_r_1()
-                                    .border_color(rgb(BORDER))
-                                    .bg(rgb(SURFACE))
-                                    .p(px(7.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .children(kinds),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .px(px(18.))
-                                            .pt(px(16.))
-                                            .pb(px(10.))
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .child(
-                                                div()
-                                                    .text_size(px(15.))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(
-                                                        kind.map(|kind| kind.name.clone())
-                                                            .unwrap_or_else(|| {
-                                                                "Provider".to_owned()
-                                                            }),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        Button::new("refresh-providers")
-                                                            .label("Refresh")
-                                                            .ghost()
-                                                            .rounded(px(999.))
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    match this
-                                                                        .runtime
-                                                                        .refresh_providers()
-                                                                    {
-                                                                        Ok(()) => this
-                                                                            .provider_status =
-                                                                            Some(
-                                                                                "providers refreshed"
-                                                                                    .to_owned(),
-                                                                            ),
-                                                                        Err(error) => {
-                                                                            this.provider_status =
-                                                                                Some(
-                                                                                    error
-                                                                                        .to_string(),
-                                                                                )
-                                                                        }
-                                                                    }
-                                                                    cx.notify();
-                                                                },
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        Button::new("create-provider")
-                                                            .custom(accent_button_variant(cx))
-                                                            .label("New instance")
-                                                            .rounded(px(999.))
-                                                            .on_click(cx.listener(
-                                                                |this, _, window, cx| {
-                                                                    this.create_provider_instance(
-                                                                        window, cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                    ),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("provider-instance-list")
-                                            .h(px(126.))
-                                            .flex_none()
-                                            .overflow_y_scrollbar()
-                                            .px(px(14.))
-                                            .pb(px(8.))
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .children(instance_rows),
-                                    )
-                                    .child(
-                                        div().h(px(1.)).flex_none().bg(rgb(BORDER)),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("provider-details")
-                                            .flex_1()
-                                            .min_h(px(0.))
-                                            .overflow_y_scrollbar()
-                                            .p(px(18.))
-                                            .child(details),
-                                    )
-                                    .child(
-                                        div()
-                                            .h(px(42.))
-                                            .flex_none()
-                                            .border_t_1()
-                                            .border_color(rgb(BORDER))
-                                            .px(px(16.))
-                                            .flex()
-                                            .items_center()
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(px(9.))
-                                                    .text_color(if self.provider_status.is_some() {
-                                                        rgb(ACCENT)
-                                                    } else {
-                                                        rgb(MUTED)
-                                                    })
-                                                    .child(
-                                                        self.provider_status.clone().unwrap_or_else(
-                                                            || {
-                                                                "Select an instance to edit its route."
-                                                                    .to_owned()
-                                                            },
-                                                        ),
-                                                    ),
-                                            ),
-                                    ),
-                            ),
+                            .overflow_y_scrollbar()
+                            .child(provider_content),
                     ),
             )
+            .child(
+                div()
+                    .h(px(52.))
+                    .flex_none()
+                    .px(px(16.))
+                    .border_t_1()
+                    .border_color(rgba(BORDER_SUBTLE))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                Icon::new(IconName::ShieldCheck)
+                                    .size(px(12.))
+                                    .text_color(rgb(MUTED)),
+                            )
+                            .text_size(px(8.5))
+                            .text_color(rgb(FAINT))
+                            .child(self.provider_status.clone().unwrap_or_else(|| {
+                                "Credentials are write-only and stored in the platform keyring"
+                                    .to_owned()
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(7.))
+                            .child(
+                                Button::new("test-provider-footer")
+                                    .label("Test connection")
+                                    .ghost()
+                                    .disabled(self.provider_selected.is_none())
+                                    .h(px(32.))
+                                    .rounded_full()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(id) = this.provider_selected.clone() {
+                                            this.test_provider_instance(id, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("done-providers")
+                                    .accent()
+                                    .label("Done")
+                                    .h(px(32.))
+                                    .rounded_full()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.providers_open = false;
+                                        this.provider_remove_confirm = None;
+                                        this.focus_composer(window, cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+
+        div()
+            .absolute()
+            .inset_0()
+            .p(px(28.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.providers_open = false;
+                    this.provider_remove_confirm = None;
+                    this.focus_composer(window, cx);
+                    cx.notify();
+                }),
+            ))
+            .child(modal_enter(dialog, "providers-dialog"))
             .into_any_element()
     }
+}
+
+pub(crate) fn provider_logo(name: &str, color: u32, background: u32) -> AnyElement {
+    let initials = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(3)
+        .collect::<String>()
+        .to_uppercase();
+    let background: Hsla = if background > 0x00ff_ffff {
+        rgba(background).into()
+    } else {
+        rgb(background).into()
+    };
+    div()
+        .size(px(30.))
+        .flex_none()
+        .rounded_full()
+        .border_1()
+        .border_color(rgba(BORDER))
+        .bg(background)
+        .flex()
+        .items_center()
+        .justify_center()
+        .font_family("monospace")
+        .text_size(px(8.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(color))
+        .child(initials)
+        .into_any_element()
+}
+
+pub(crate) fn section_heading(title: &'static str, detail: impl Into<String>) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .child(
+            div()
+                .text_size(px(10.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(TEXT_SECONDARY))
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(8.5))
+                .text_color(rgb(MUTED))
+                .child(detail.into()),
+        )
+        .into_any_element()
+}
+
+pub(crate) fn field_label(label: &'static str) -> AnyElement {
+    div()
+        .text_size(px(8.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(MUTED))
+        .child(label)
+        .into_any_element()
+}
+
+pub(crate) fn detail_stat(label: &'static str, value: impl Into<String>) -> AnyElement {
+    div()
+        .rounded(px(16.))
+        .border_1()
+        .border_color(rgba(BORDER_SUBTLE))
+        .bg(rgb(SURFACE_INSET))
+        .px(px(10.))
+        .py(px(8.))
+        .flex()
+        .flex_col()
+        .child(div().text_size(px(8.)).text_color(rgb(MUTED)).child(label))
+        .child(
+            div()
+                .mt(px(3.))
+                .truncate()
+                .font_family("monospace")
+                .text_size(px(8.5))
+                .text_color(rgb(TEXT_SECONDARY))
+                .child(value.into()),
+        )
+        .into_any_element()
 }

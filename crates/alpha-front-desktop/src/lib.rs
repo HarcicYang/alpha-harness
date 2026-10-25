@@ -6,33 +6,24 @@ use std::time::{Duration, Instant};
 
 use alpha_front_runtime::{
     ActivityState, COMMANDS, CommandOutcome, CommandSpec, ContextView, FileChange, FileChangeKind,
-    FrontRuntime, InteractionDecision, ModelChoice, TranscriptItem, parse_command,
-    supported_reasoning_levels,
+    FrontRuntime, InteractionDecision, InteractionPrompt, ModelChoice, TranscriptItem,
+    parse_command, supported_reasoning_levels,
 };
 use alpha_schema::{
     AssistantContentBlock, CredentialBackendStatus, PermissionMode, ReasoningLevel, SessionId,
     SessionListEntry, ToolCallId, ToolStatus,
 };
-use gpui_kit::base::Selectable as _;
+use gpui_kit::assets::IconName;
+use gpui_kit::base::{Disableable as _, Selectable as _};
 use gpui_kit::component::{
-    Sizable as _, Theme, ThemeMode,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    Icon, Theme, ThemeMode,
+    button::{Button, ButtonVariants as _},
     input::{InputEvent, Textarea, TextareaState},
     scroll::ScrollableElement as _,
-    spinner::Spinner,
     text::markdown,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-
-const CANVAS: u32 = 0x08090a;
-const SURFACE: u32 = 0x101215;
-const SURFACE_RAISED: u32 = 0x14171b;
-const BORDER: u32 = 0x24282e;
-const TEXT: u32 = 0xf0f2f4;
-const TEXT_SECONDARY: u32 = 0xa7adb5;
-const MUTED: u32 = 0x707780;
-const ACCENT: u32 = 0x5cc8e6;
 
 /// Desktop frontend startup failure.
 #[derive(Debug, thiserror::Error)]
@@ -44,9 +35,13 @@ pub enum DesktopError {
 
 struct AlphaDesktop {
     runtime: FrontRuntime,
+    focus_handle: FocusHandle,
     composer: Entity<TextareaState>,
+    model_search: Entity<TextareaState>,
     model_choices: Vec<ModelChoice>,
     composer_menu: Option<ComposerMenu>,
+    command_palette_query: Entity<TextareaState>,
+    command_palette_open: bool,
     submit_requested: bool,
     context_open: bool,
     context_tab: ContextTab,
@@ -67,14 +62,18 @@ struct AlphaDesktop {
     provider_status: Option<String>,
     provider_credential: Entity<TextareaState>,
     provider_config: Entity<TextareaState>,
+    capabilities_open: bool,
+    capabilities_text: Entity<TextareaState>,
     transcript_scroll: ScrollHandle,
     jump_to_latest_hidden_until: Option<Instant>,
-    more_open: bool,
     help_open: bool,
     local_status: Option<String>,
     _poll_task: Option<Task<()>>,
     _composer_subscription: Subscription,
+    _model_search_subscription: Subscription,
+    _command_palette_subscription: Subscription,
     _session_search_subscription: Subscription,
+    _capabilities_subscription: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,35 +107,56 @@ struct ToolSummary {
 }
 
 mod actions;
+mod capabilities;
 mod change_review;
+mod command_palette;
 mod composer;
 mod context_panel;
+mod desktop_commands;
 mod helpers;
 mod model;
+mod model_picker;
 mod overlays;
+mod permission;
+mod provider_content;
+mod provider_rows;
 mod providers;
+mod session_summary;
 mod sessions;
 mod shell;
+mod slash_palette;
+mod theme;
 mod transcript;
+mod ui;
 
+use desktop_commands::*;
 use helpers::*;
 use model::*;
+use session_summary::*;
+use theme::*;
+use ui::*;
 
 /// Run the desktop application until its window closes.
 pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
     let mut runtime = Some(runtime);
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            Theme::change(ThemeMode::Dark, None, cx);
+            apply_theme(cx);
             let runtime = runtime
                 .take()
                 .ok_or_else(|| DesktopError::Startup("desktop runtime consumed".to_owned()))
                 .expect("desktop runtime is initialized once");
-            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
-                cx.new(|cx| AlphaDesktop::new(runtime, window, cx))
-            })
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
+                    window_min_size: Some(size(px(560.), px(560.))),
+                    ..WindowOptions::default()
+                },
+                cx,
+                move |window, cx| cx.new(|cx| AlphaDesktop::new(runtime, window, cx)),
+            )
             .expect("desktop window opens");
         });
     Ok(())

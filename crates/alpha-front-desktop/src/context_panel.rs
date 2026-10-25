@@ -59,7 +59,7 @@ impl AlphaDesktop {
                                                     .size(px(24.))
                                                     .flex_none()
                                                     .rounded_full()
-                                                    .bg(rgb(0x102e37))
+                                                    .bg(rgba(ACCENT_SOFT))
                                                     .text_center()
                                                     .text_size(px(9.))
                                                     .font_weight(FontWeight::SEMIBOLD)
@@ -101,11 +101,11 @@ impl AlphaDesktop {
                                                     .font_family("monospace")
                                                     .text_size(px(8.))
                                                     .child(
-                                                        div().text_color(rgb(0x72d69a)).child(
+                                                        div().text_color(rgb(ACCENT)).child(
                                                             format!("+{}", change.added_lines),
                                                         ),
                                                     )
-                                                    .child(div().text_color(rgb(0xff7888)).child(
+                                                    .child(div().text_color(rgb(MUTED)).child(
                                                         format!("-{}", change.removed_lines),
                                                     )),
                                             ),
@@ -153,13 +153,9 @@ impl AlphaDesktop {
                                     .gap_1()
                                     .font_family("monospace")
                                     .text_size(px(9.))
+                                    .child(div().text_color(rgb(ACCENT)).child(format!("+{added}")))
                                     .child(
-                                        div().text_color(rgb(0x72d69a)).child(format!("+{added}")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(rgb(0xff7888))
-                                            .child(format!("-{removed}")),
+                                        div().text_color(rgb(MUTED)).child(format!("-{removed}")),
                                     ),
                             ),
                     )
@@ -200,8 +196,8 @@ impl AlphaDesktop {
                         .map(|activity| {
                             let color = match activity.state {
                                 ActivityState::Running => ACCENT,
-                                ActivityState::Completed => 0x72d69a,
-                                ActivityState::Failed => 0xff7888,
+                                ActivityState::Completed => ACCENT,
+                                ActivityState::Failed => DANGER,
                             };
                             div()
                                 .flex()
@@ -275,15 +271,16 @@ impl AlphaDesktop {
                 .into_any_element()
         };
 
-        div()
+        let panel = div()
             .absolute()
             .top(px(58.))
             .right(px(18.))
             .w(px(336.))
             .h(px(560.))
-            .rounded(px(28.))
+            .max_h_full()
+            .rounded(px(22.))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgba(BORDER))
             .bg(rgb(SURFACE_RAISED))
             .shadow_lg()
             .overflow_hidden()
@@ -300,30 +297,40 @@ impl AlphaDesktop {
                     .child(
                         div()
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .gap(px(10.))
                             .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Context"),
+                                Icon::new(IconName::Layers)
+                                    .size(px(15.))
+                                    .text_color(rgb(ACCENT)),
                             )
                             .child(
                                 div()
-                                    .text_size(px(9.))
-                                    .text_color(rgb(MUTED))
-                                    .child("Session working set"),
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Context"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(rgb(MUTED))
+                                            .child("Session working set"),
+                                    ),
                             ),
                     )
                     .child(
-                        Button::new("close-context")
-                            .label("×")
-                            .ghost()
-                            .rounded(px(999.))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                        icon_button("close-context", IconName::X, "Close context").on_click(
+                            cx.listener(|this, _, window, cx| {
                                 this.context_open = false;
                                 this.change_review_open = false;
+                                this.focus_composer(window, cx);
                                 cx.notify();
-                            })),
+                            }),
+                        ),
                     ),
             )
             .child(
@@ -332,7 +339,7 @@ impl AlphaDesktop {
                     .px(px(16.))
                     .pb(px(12.))
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgba(BORDER_SUBTLE))
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -439,7 +446,7 @@ impl AlphaDesktop {
                 div()
                     .flex_none()
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgba(BORDER_SUBTLE))
                     .px(px(16.))
                     .py(px(12.))
                     .flex()
@@ -447,13 +454,30 @@ impl AlphaDesktop {
                     .gap_2()
                     .child(
                         div()
-                            .text_size(px(9.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(MUTED))
-                            .child("Capabilities"),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(9.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(MUTED))
+                                    .child("Capabilities"),
+                            )
+                            .child(
+                                Button::new("edit-capabilities")
+                                    .label("Edit")
+                                    .ghost()
+                                    .h(px(24.))
+                                    .rounded_full()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.context_open = false;
+                                        this.open_capabilities(window, cx);
+                                    })),
+                            ),
                     )
                     .child(capability_chips),
-            )
-            .into_any_element()
+            );
+        popover_enter(panel, "context-panel")
     }
 }

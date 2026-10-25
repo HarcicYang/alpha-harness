@@ -117,10 +117,19 @@ pub(crate) fn tool_status_label(status: Option<ToolStatus>) -> &'static str {
 
 pub(crate) fn tool_status_color(status: Option<ToolStatus>) -> u32 {
     status.map_or(ACCENT, |status| match status {
-        ToolStatus::Completed => 0x72d69a,
-        ToolStatus::Failed => 0xff7888,
-        ToolStatus::Interrupted => 0xf1c56b,
+        ToolStatus::Completed => ACCENT,
+        ToolStatus::Failed => DANGER,
+        ToolStatus::Interrupted => MUTED,
     })
+}
+
+pub(crate) fn tool_status_icon(status: Option<ToolStatus>) -> IconName {
+    match status {
+        Some(ToolStatus::Completed) => IconName::Check,
+        Some(ToolStatus::Failed) => IconName::X,
+        Some(ToolStatus::Interrupted) => IconName::CircleStop,
+        None => IconName::LoaderCircle,
+    }
 }
 
 pub(crate) fn compact_tool_content(content: &str) -> String {

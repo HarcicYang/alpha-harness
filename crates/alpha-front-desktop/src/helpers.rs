@@ -16,35 +16,6 @@ pub(crate) fn session_matches_query(session: &SessionListEntry, query: &str) -> 
     .contains(&query.to_lowercase())
 }
 
-pub(crate) fn session_meta_row(label: &str, value: String) -> AnyElement {
-    div()
-        .flex()
-        .items_start()
-        .justify_between()
-        .gap_3()
-        .border_b_1()
-        .border_color(rgb(BORDER))
-        .py(px(6.))
-        .child(
-            div()
-                .flex_none()
-                .text_size(px(9.))
-                .text_color(rgb(MUTED))
-                .child(label.to_owned()),
-        )
-        .child(
-            div()
-                .min_w(px(0.))
-                .truncate()
-                .text_align(TextAlign::Right)
-                .font_family("monospace")
-                .text_size(px(9.))
-                .text_color(rgb(TEXT_SECONDARY))
-                .child(value),
-        )
-        .into_any_element()
-}
-
 pub(crate) fn workspace_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
@@ -52,6 +23,14 @@ pub(crate) fn workspace_name(path: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("workspace")
         .to_owned()
+}
+
+pub(crate) fn display_value(value: String) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => value,
+    }
 }
 
 pub(crate) fn command_suggestions(query: &str) -> Vec<CommandSpec> {
@@ -196,12 +175,4 @@ pub(crate) fn help_row(label: &str, shortcut: &str) -> AnyElement {
                 .child(shortcut.to_owned()),
         )
         .into_any_element()
-}
-
-pub(crate) fn accent_button_variant(cx: &App) -> ButtonCustomVariant {
-    ButtonCustomVariant::new(cx)
-        .color(rgb(ACCENT).into())
-        .foreground(rgb(CANVAS).into())
-        .hover(rgb(0x84dcf3).into())
-        .active(rgb(0x84dcf3).into())
 }

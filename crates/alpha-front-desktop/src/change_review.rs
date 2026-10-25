@@ -30,7 +30,7 @@ impl AlphaDesktop {
                                     .size(px(24.))
                                     .flex_none()
                                     .rounded_full()
-                                    .bg(rgb(0x102e37))
+                                    .bg(rgba(ACCENT_SOFT))
                                     .text_center()
                                     .text_size(px(9.))
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -81,19 +81,22 @@ impl AlphaDesktop {
         div()
             .absolute()
             .inset_0()
+            .p(px(28.))
             .flex()
+            .items_center()
             .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(0x000000bb)))
+            .child(div().absolute().inset_0().bg(rgba(SCRIM)))
             .child(
                 div()
                     .relative()
-                    .mt(px(56.))
                     .w(px(860.))
+                    .max_w_full()
                     .h(px(620.))
+                    .max_h_full()
                     .rounded(px(28.))
                     .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(SURFACE_RAISED))
+                    .border_color(rgba(BORDER))
+                    .bg(rgb(SURFACE))
                     .shadow_lg()
                     .overflow_hidden()
                     .flex()
@@ -107,29 +110,40 @@ impl AlphaDesktop {
                             .items_center()
                             .justify_between()
                             .border_b_1()
-                            .border_color(rgb(BORDER))
+                            .border_color(rgba(BORDER_SUBTLE))
                             .child(
                                 div()
                                     .flex()
-                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(icon_badge(
+                                        IconName::FilePen,
+                                        ACCENT,
+                                        ACCENT_SOFT,
+                                        32.,
+                                    ))
                                     .child(
                                         div()
-                                            .text_size(px(14.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("Workspace changes"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(9.))
-                                            .text_color(rgb(MUTED))
-                                            .child("Files inferred from completed session tools"),
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child("Workspace changes"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(9.5))
+                                                    .text_color(rgb(MUTED))
+                                                    .child(
+                                                        "Files inferred from completed session tools",
+                                                    ),
+                                            ),
                                     ),
                             )
                             .child(
-                                Button::new("close-change-review")
-                                    .label("×")
-                                    .ghost()
-                                    .rounded(px(999.))
+                                icon_button("close-change-review", IconName::X, "Close")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.change_review_open = false;
                                         cx.notify();
@@ -194,11 +208,11 @@ impl AlphaDesktop {
                                                     .font_family("monospace")
                                                     .text_size(px(9.))
                                                     .child(
-                                                        div().text_color(rgb(0x72d69a)).child(
+                                                        div().text_color(rgb(ACCENT)).child(
                                                             format!("+{}", change.added_lines),
                                                         ),
                                                     )
-                                                    .child(div().text_color(rgb(0xff7888)).child(
+                                                    .child(div().text_color(rgb(MUTED)).child(
                                                         format!("-{}", change.removed_lines),
                                                     )),
                                             ),
@@ -246,7 +260,7 @@ impl AlphaDesktop {
                             .child(
                                 Button::new("done-change-review")
                                     .label("Done")
-                                    .custom(accent_button_variant(cx))
+                                    .accent()
                                     .rounded(px(999.))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.change_review_open = false;
