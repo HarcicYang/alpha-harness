@@ -220,6 +220,7 @@ fn run_command(args: RunArgs) -> ExitCode {
         };
         for event in events {
             match event {
+                FrontEvent::StateChanged => {}
                 FrontEvent::Live { event } => match event {
                     LiveAgentEvent::TextDelta { text } => {
                         print!("{text}");

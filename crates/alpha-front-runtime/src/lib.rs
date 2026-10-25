@@ -98,6 +98,8 @@ impl Default for FrontRuntimeConfig {
 /// Runtime event surfaced to a frontend.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FrontEvent {
+    /// Durable front state changed without a more specific event.
+    StateChanged,
     /// One live agent event.
     Live {
         /// Live payload.
@@ -769,6 +771,7 @@ impl FrontRuntime {
                         .into_iter()
                         .map(map_chat_update),
                 );
+                out.push(FrontEvent::StateChanged);
             }
             ConnectionEvent::Request(request) if request.method == "interaction.request" => {
                 let Some(params) = request.params else {
