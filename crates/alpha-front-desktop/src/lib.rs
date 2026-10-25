@@ -16,10 +16,11 @@ use alpha_schema::{
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, Selectable as _};
 use gpui_kit::component::{
-    Icon, Theme, ThemeMode,
+    Icon, Sizable as _, Theme, ThemeMode,
     button::{Button, ButtonVariants as _},
     input::{InputEvent, Textarea, TextareaState},
     scroll::ScrollableElement as _,
+    spinner::Spinner,
     text::markdown,
 };
 use gpui_kit::prelude::FluentBuilder as _;

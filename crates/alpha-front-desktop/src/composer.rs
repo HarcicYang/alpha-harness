@@ -152,6 +152,14 @@ impl AlphaDesktop {
                                     .when(running, |this| {
                                         this.child(
                                             div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(5.))
+                                                .child(
+                                                    Spinner::new()
+                                                        .xsmall()
+                                                        .color(rgb(ACCENT).into()),
+                                                )
                                                 .text_size(px(9.))
                                                 .text_color(rgb(FAINT))
                                                 .child(status),
