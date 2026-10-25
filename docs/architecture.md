@@ -480,7 +480,10 @@ cancellation, mode and route changes, provider configuration, model selection,
 transcript reduction, interaction timeouts, slash-command behavior, and
 recovery after a core restart. It depends on the protocol client, supervisor,
 and schema, not on a terminal or desktop library. Frontends consume typed
-state and events instead of parsing protocol JSON themselves.
+state and events instead of parsing protocol JSON themselves. Durable session
+notifications always surface a `FrontEvent::StateChanged` signal, even when no
+more specific live or turn event exists, so polling adapters can redraw after
+every durable projection update.
 
 Provider management is a shared runtime workflow backed by
 `provider.list_kinds`, `provider.list_instances`, and
@@ -499,29 +502,51 @@ shared runtime.
 
 `alpha-front-desktop` owns GPUI Kit window lifecycle, layout, keyboard and
 pointer mapping, selection, and rendering. It consumes typed front state and
-does not duplicate session, turn, provider, command, or timeout behavior.
+does not duplicate session, turn, provider, command, or timeout behavior. Its
+source is split by presentation concern: `shell` owns the ambient workspace
+frame, `composer` owns the composer and route popovers, `transcript` owns
+message and tool rendering, `permission` owns inline approval decisions,
+`sessions`, `providers`, and `context_panel` own their on-demand surfaces, and
+`model_picker`, `command_palette`, and `slash_palette` own their selection
+surfaces. Shared color and motion tokens are presentation-only.
 
-The chat screen shows the effective provider/model route, reasoning effort, and
-permission mode as `provider/model effort | mode`. `Ctrl-L` selects a
-configured provider and model, `Shift-Tab` cycles the model's configured
-reasoning effort, and `Ctrl-T` opens the effort picker. `/model`, `/effort`,
-and `/thinking` provide the same controls. Route changes affect the next model
-step and are durable, so resume restores the effective provider, model, and
-reasoning effort. Selecting a model also stores it as the provider instance's
-default model and stores the provider as the default, so new sessions start
-with the same route. Thinking content is rendered separately from assistant
-text without role prefixes. Assistant Markdown supports GFM tables. User
-messages use a full-width dark-gray band with one row of padding above and
-below on a near-black blue canvas. The transcript has no frame, title, or
-empty-state placeholder. Dragging over transcript text highlights the
-selection and copies it to the terminal host clipboard with OSC 52 when the
-user releases the mouse.
-Messages and slash commands share one multiline composer with command and
-argument completions. `Enter` sends, `Ctrl-Enter` inserts a newline, and the
-arrow keys, `Home`, `End`, `Backspace`, and `Delete` move the cursor or edit
-text. `Ctrl-R` opens a session manager that shows the first user message as a
-preview, switches sessions with the keyboard, and deletes idle sessions after
-confirmation. A session cannot be deleted while a turn is running.
+The terminal chat screen shows the effective route, reasoning effort, and
+permission mode as `provider/model effort | mode`. `Ctrl-L` selects a configured
+provider and model, `Shift-Tab` cycles the model's configured reasoning effort,
+and `Ctrl-T` opens the effort picker. `/model`, `/effort`, and `/thinking`
+provide the same controls. Route changes affect the next model step and are
+durable, so resume restores the effective provider, model, and reasoning
+effort. Selecting a model also stores it as the provider instance's default
+model and stores the provider as the default, so new sessions start with the
+same route. Thinking content is rendered separately from assistant text
+without role prefixes. Assistant Markdown supports GFM tables. User messages
+use a full-width dark-gray band on a near-black blue canvas. Dragging over
+transcript text highlights the selection and copies it to the terminal host
+clipboard with OSC 52 when the user releases the mouse. Messages and slash
+commands share one multiline composer with command and argument completions.
+`Ctrl-R` opens the terminal session manager, which shows the first user message
+as a preview and deletes idle sessions after confirmation. A session cannot be
+deleted while a turn is running.
+
+The desktop shell uses one centered conversation column, an ambient workspace
+header, and on-demand surfaces rather than persistent sidebar chrome. Sessions,
+context, command palette, model route, reasoning effort, permission mode, and
+provider management open from keyboard commands or inline controls. The
+transcript renders durable user, thinking, assistant, tool, error, queued-steer,
+and permission states. Tool calls group into a compact disclosure, permission
+requests expose deny, once, and session decisions in place, and the context
+panel projects token usage, changes, activity, and capabilities. The composer
+accepts attached paths as explicit `@path` references but leaves prompt
+semantics to the shared runtime. Provider-native capabilities can be replaced
+from the context panel or command palette; the desktop sends the resulting
+list through the runtime's durable capability workflow. Presentation entry,
+popover, and modal motion use the desktop motion tokens and defer
+reduced-motion handling to GPUI.
+
+Desktop shortcuts are `Ctrl-N` for a draft, `Ctrl-R` for sessions, `Ctrl-P` for
+providers, `Ctrl-L` for models, `Ctrl-T` for reasoning effort, `Ctrl-K` for the
+global command palette, and `?` for the shortcut reference. `Enter` sends,
+`Shift-Enter` inserts a newline, and `Tab` accepts slash-command completion.
 
 ### D26: Credential storage
 
