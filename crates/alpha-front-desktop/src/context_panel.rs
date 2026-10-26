@@ -114,8 +114,7 @@ impl AlphaDesktop {
                                     .w_full()
                                     .rounded(px(16.))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.selected_change = index;
-                                        this.change_review_open = true;
+                                        this.open_change_review(index);
                                         cx.notify();
                                     }))
                                     .into_any_element()
@@ -168,8 +167,7 @@ impl AlphaDesktop {
                                 .w_full()
                                 .rounded(px(999.))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.selected_change = 0;
-                                    this.change_review_open = true;
+                                    this.open_change_review(0);
                                     cx.notify();
                                 })),
                         )
@@ -417,6 +415,8 @@ impl AlphaDesktop {
                             .rounded(px(999.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.context_tab = ContextTab::Changes;
+                                this.context_tab_generation =
+                                    this.context_tab_generation.wrapping_add(1);
                                 cx.notify();
                             })),
                     )
@@ -428,19 +428,36 @@ impl AlphaDesktop {
                             .rounded(px(999.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.context_tab = ContextTab::Activity;
+                                this.context_tab_generation =
+                                    this.context_tab_generation.wrapping_add(1);
                                 cx.notify();
                             })),
                     ),
             )
             .child(
                 div()
-                    .id("context-body")
+                    .id("context-body-shell")
+                    .relative()
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_y_scrollbar()
-                    .px(px(16.))
-                    .pb(px(12.))
-                    .child(body),
+                    .smooth_scroll_shell(ScrollRegion::Context, cx)
+                    .child(
+                        div()
+                            .id("context-body")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.context_scroll)
+                            .vertical_scrollbar(&self.context_scroll)
+                            .px(px(16.))
+                            .pb(px(12.))
+                            .child(popover_enter(
+                                div().child(body),
+                                format!(
+                                    "context-view:{:?}:{}",
+                                    self.context_tab, self.context_tab_generation
+                                ),
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -478,6 +495,6 @@ impl AlphaDesktop {
                     )
                     .child(capability_chips),
             );
-        popover_enter(panel, "context-panel")
+        popover_enter(panel, format!("context-panel:{}", self.overlay_generation))
     }
 }

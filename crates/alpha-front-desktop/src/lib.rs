@@ -65,7 +65,23 @@ struct AlphaDesktop {
     provider_config: Entity<TextareaState>,
     capabilities_open: bool,
     capabilities_text: Entity<TextareaState>,
+    overlay_generation: u64,
+    slash_palette_open: bool,
+    draft_epoch: u64,
+    context_tab_generation: u64,
+    model_scroll: ScrollHandle,
+    session_scroll: ScrollHandle,
+    provider_kind_scroll: ScrollHandle,
+    provider_scroll: ScrollHandle,
+    context_scroll: ScrollHandle,
+    command_scroll: ScrollHandle,
+    slash_scroll: ScrollHandle,
+    change_file_scroll: ScrollHandle,
+    change_diff_scroll: ScrollHandle,
+    tool_scroll: ScrollHandle,
+    composer_menu_scroll: ScrollHandle,
     transcript_scroll: ScrollHandle,
+    scroll_motion: [SmoothScroll; SCROLL_REGION_COUNT],
     jump_to_latest_hidden_until: Option<Instant>,
     help_open: bool,
     local_status: Option<String>,
@@ -119,9 +135,12 @@ mod model;
 mod model_picker;
 mod overlays;
 mod permission;
+mod provider_actions;
 mod provider_content;
 mod provider_rows;
 mod providers;
+mod scroll;
+mod session_actions;
 mod session_summary;
 mod sessions;
 mod shell;

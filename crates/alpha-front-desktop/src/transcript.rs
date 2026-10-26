@@ -7,12 +7,21 @@ impl AlphaDesktop {
             return self.render_empty_transcript(cx);
         }
 
+        let namespace = self
+            .runtime
+            .chat()
+            .session_id
+            .map(|session_id| session_id.to_string())
+            .unwrap_or_else(|| format!("draft-{}", self.draft_epoch));
         let children = items
             .into_iter()
             .enumerate()
             .map(|(index, item)| {
-                let rendered = self.render_desktop_transcript_item(item, cx);
-                enter_from_below(rendered, format!("transcript-item:{index}"))
+                let rendered = self.render_desktop_transcript_item(index, item, cx);
+                enter_from_below(
+                    div().child(rendered),
+                    format!("transcript:{namespace}:{index}"),
+                )
             })
             .collect::<Vec<_>>();
 
@@ -128,6 +137,7 @@ impl AlphaDesktop {
 
     fn render_desktop_transcript_item(
         &self,
+        index: usize,
         item: DesktopTranscriptItem,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -206,14 +216,15 @@ impl AlphaDesktop {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let follow = transcript_is_at_bottom(&this.transcript_scroll);
                                 this.thinking_expanded = !this.thinking_expanded;
+                                this.bump_overlay_generation();
                                 if follow {
-                                    this.transcript_scroll.scroll_to_bottom();
+                                    this.scroll_to_bottom(ScrollRegion::Transcript);
                                 }
                                 cx.notify();
                             })),
                     )
                     .when(expanded, |this| {
-                        this.child(
+                        this.child(popover_enter(
                             div()
                                 .ml(px(3.))
                                 .border_l_2()
@@ -225,7 +236,8 @@ impl AlphaDesktop {
                                 .italic()
                                 .text_color(rgb(TEXT_SECONDARY))
                                 .child(text),
-                        )
+                            format!("thought-expansion:{index}:{}", self.overlay_generation),
+                        ))
                     })
                     .into_any_element()
             }
@@ -300,14 +312,25 @@ impl AlphaDesktop {
                             .when_some(tool.content.as_deref(), |this, content| {
                                 this.child(
                                     div()
+                                        .id(format!("tool-scroll-shell:{}", tool.id))
+                                        .relative()
                                         .mt(px(2.))
                                         .max_h(px(160.))
-                                        .overflow_y_scrollbar()
-                                        .font_family("monospace")
-                                        .text_size(px(8.5))
-                                        .line_height(px(15.))
-                                        .text_color(rgb(MUTED))
-                                        .child(tool_detail_content(content)),
+                                        .smooth_scroll_shell(ScrollRegion::ToolOutput, cx)
+                                        .child(
+                                            div()
+                                                .id(format!("tool-scroll:{}", tool.id))
+                                                .w_full()
+                                                .max_h(px(160.))
+                                                .overflow_y_scroll()
+                                                .track_scroll(&self.tool_scroll)
+                                                .vertical_scrollbar(&self.tool_scroll)
+                                                .font_family("monospace")
+                                                .text_size(px(8.5))
+                                                .line_height(px(15.))
+                                                .text_color(rgb(MUTED))
+                                                .child(tool_detail_content(content)),
+                                        ),
                                 )
                             }),
                     )
@@ -376,26 +399,29 @@ impl AlphaDesktop {
                             if this.expanded_tool_group.as_deref() == Some(group_id.as_str()) {
                                 None
                             } else {
+                                this.bump_overlay_generation();
+                                this.reset_scroll(ScrollRegion::ToolOutput);
                                 Some(group_id.clone())
                             };
                         if follow {
-                            this.transcript_scroll.scroll_to_bottom();
+                            this.scroll_to_bottom(ScrollRegion::Transcript);
                         }
                         cx.notify();
                     })),
             )
             .when(expanded, |this| {
-                this.child(
+                this.child(popover_enter(
                     div()
                         .p(px(4.))
                         .flex()
                         .flex_col()
                         .gap(px(4.))
                         .children(history_rows),
-                )
+                    format!("tool-expansion:{id}:{}", self.overlay_generation),
+                ))
             })
             .when(!expanded, |this| {
-                this.child(
+                this.child(enter_from_below(
                     div()
                         .rounded(px(16.))
                         .px(px(10.))
@@ -437,7 +463,8 @@ impl AlphaDesktop {
                                 .size(px(12.))
                                 .text_color(rgb(FAINT)),
                         ),
-                )
+                    format!("tool-latest:{id}:{}", latest.id),
+                ))
             })
             .into_any_element()
     }

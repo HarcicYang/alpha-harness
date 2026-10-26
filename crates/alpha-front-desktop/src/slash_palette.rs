@@ -73,42 +73,54 @@ impl AlphaDesktop {
             .justify_center()
             .child(popover_enter(
                 div()
+                    .id("slash-palette-shell")
+                    .relative()
                     .w(px(650.))
                     .max_w_full()
-                    .max_h(px(360.))
-                    .overflow_y_scrollbar()
+                    .h(px(360.))
+                    .max_h_full()
                     .rounded(px(22.))
                     .border_1()
                     .border_color(rgba(BORDER))
                     .bg(rgb(SURFACE_RAISED))
                     .shadow_lg()
-                    .p(px(5.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
+                    .overflow_hidden()
+                    .smooth_scroll_shell(ScrollRegion::SlashCommands, cx)
                     .child(
                         div()
-                            .px(px(8.))
-                            .py(px(7.))
+                            .id("slash-palette-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.slash_scroll)
+                            .vertical_scrollbar(&self.slash_scroll)
+                            .p(px(5.))
                             .flex()
-                            .items_center()
-                            .justify_between()
+                            .flex_col()
+                            .gap(px(1.))
                             .child(
                                 div()
-                                    .text_size(px(9.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(MUTED))
-                                    .child("Commands"),
+                                    .px(px(8.))
+                                    .py(px(7.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(MUTED))
+                                            .child("Commands"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(8.))
+                                            .text_color(rgb(FAINT))
+                                            .child("Tab to complete"),
+                                    ),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(8.))
-                                    .text_color(rgb(FAINT))
-                                    .child("Tab to complete"),
-                            ),
-                    )
-                    .children(rows),
-                "slash-command-palette",
+                            .children(rows),
+                    ),
+                format!("slash-command-palette:{}", self.overlay_generation),
             ))
             .into_any_element()
     }

@@ -421,15 +421,24 @@ impl AlphaDesktop {
                             )
                             .child(
                                 div()
-                                    .id("session-list")
+                                    .id("session-list-shell")
+                                    .relative()
                                     .flex_1()
                                     .min_h(px(0.))
-                                    .overflow_y_scrollbar()
-                                    .p(px(7.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .children(rows),
+                                    .smooth_scroll_shell(ScrollRegion::Sessions, cx)
+                                    .child(
+                                        div()
+                                            .id("session-list")
+                                            .size_full()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.session_scroll)
+                                            .vertical_scrollbar(&self.session_scroll)
+                                            .p(px(7.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .children(rows),
+                                    ),
                             ),
                     )
                     .child(
@@ -521,16 +530,22 @@ impl AlphaDesktop {
             .flex()
             .items_center()
             .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.sessions_open = false;
-                    this.session_delete_confirm = None;
-                    this.focus_composer(window, cx);
-                    cx.notify();
-                }),
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.sessions_open = false;
+                        this.session_delete_confirm = None;
+                        this.focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ),
+                format!("sessions-backdrop:{}", self.overlay_generation),
             ))
-            .child(modal_enter(dialog, "sessions-dialog"))
+            .child(modal_enter(
+                dialog,
+                format!("sessions-dialog:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }

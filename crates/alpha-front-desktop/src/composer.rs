@@ -215,15 +215,25 @@ impl AlphaDesktop {
         } else {
             250.
         };
-        let panel = div()
+        let shell = div()
+            .id(format!("composer-menu-shell:{menu:?}"))
+            .relative()
             .w(px(width))
             .max_h(px(370.))
-            .overflow_y_scrollbar()
             .rounded(px(22.))
             .border_1()
             .border_color(rgba(BORDER))
             .bg(rgb(SURFACE_RAISED))
             .shadow_lg()
+            .overflow_hidden()
+            .smooth_scroll_shell(ScrollRegion::ComposerMenu, cx);
+        let panel = div()
+            .id(format!("composer-menu-scroll:{menu:?}"))
+            .w_full()
+            .max_h(px(370.))
+            .overflow_y_scroll()
+            .track_scroll(&self.composer_menu_scroll)
+            .vertical_scrollbar(&self.composer_menu_scroll)
             .p(px(5.))
             .flex()
             .flex_col()
@@ -296,7 +306,10 @@ impl AlphaDesktop {
             .absolute()
             .bottom(px(68.))
             .left(px(left))
-            .child(popover_enter(panel, format!("composer-menu:{menu:?}")))
+            .child(popover_enter(
+                shell.child(panel),
+                format!("composer-menu:{menu:?}:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 
@@ -326,7 +339,7 @@ impl AlphaDesktop {
         match result {
             Ok(()) => {
                 self.local_status = None;
-                self.transcript_scroll.scroll_to_bottom();
+                self.scroll_to_bottom(ScrollRegion::Transcript);
                 match outcome {
                     Some(CommandOutcome::OpenProviders) => self.open_providers(window, cx),
                     Some(CommandOutcome::OpenModels) => {
@@ -336,7 +349,7 @@ impl AlphaDesktop {
                         self.open_composer_menu(ComposerMenu::Effort, window, cx);
                     }
                     Some(CommandOutcome::OpenSessions) => self.open_sessions(window, cx),
-                    Some(CommandOutcome::Help) => self.help_open = true,
+                    Some(CommandOutcome::Help) => self.open_help(),
                     Some(CommandOutcome::Quit) => cx.quit(),
                     _ => {}
                 }

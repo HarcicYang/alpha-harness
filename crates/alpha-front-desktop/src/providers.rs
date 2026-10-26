@@ -167,13 +167,25 @@ impl AlphaDesktop {
                             )
                             .child(
                                 div()
-                                    .p(px(7.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .children(kind_rows),
+                                    .id("provider-kind-list-shell")
+                                    .relative()
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .smooth_scroll_shell(ScrollRegion::ProviderKinds, cx)
+                                    .child(
+                                        div()
+                                            .id("provider-kind-list")
+                                            .size_full()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.provider_kind_scroll)
+                                            .vertical_scrollbar(&self.provider_kind_scroll)
+                                            .p(px(7.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .children(kind_rows),
+                                    ),
                             )
-                            .child(div().flex_1())
                             .child(
                                 div()
                                     .p(px(9.))
@@ -194,12 +206,21 @@ impl AlphaDesktop {
                     )
                     .child(
                         div()
-                            .id("provider-content")
+                            .id("provider-content-shell")
+                            .relative()
                             .flex_1()
                             .min_w(px(0.))
                             .min_h(px(0.))
-                            .overflow_y_scrollbar()
-                            .child(provider_content),
+                            .smooth_scroll_shell(ScrollRegion::Providers, cx)
+                            .child(
+                                div()
+                                    .id("provider-content")
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.provider_scroll)
+                                    .vertical_scrollbar(&self.provider_scroll)
+                                    .child(provider_content),
+                            ),
                     ),
             )
             .child(
@@ -270,16 +291,22 @@ impl AlphaDesktop {
             .flex()
             .items_center()
             .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.providers_open = false;
-                    this.provider_remove_confirm = None;
-                    this.focus_composer(window, cx);
-                    cx.notify();
-                }),
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.providers_open = false;
+                        this.provider_remove_confirm = None;
+                        this.focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ),
+                format!("providers-backdrop:{}", self.overlay_generation),
             ))
-            .child(modal_enter(dialog, "providers-dialog"))
+            .child(modal_enter(
+                dialog,
+                format!("providers-dialog:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }

@@ -1,6 +1,15 @@
 use super::*;
 
 impl AlphaDesktop {
+    pub(crate) fn open_help(&mut self) {
+        if !self.help_open {
+            self.bump_overlay_generation();
+        }
+        self.help_open = true;
+        self.composer_menu = None;
+        self.context_open = false;
+    }
+
     pub(crate) fn render_help(&self, cx: &mut Context<Self>) -> AnyElement {
         if !self.help_open {
             return div().into_any_element();
@@ -139,15 +148,21 @@ impl AlphaDesktop {
             .flex()
             .items_center()
             .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.help_open = false;
-                    this.focus_composer(window, cx);
-                    cx.notify();
-                }),
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.help_open = false;
+                        this.focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ),
+                format!("help-backdrop:{}", self.overlay_generation),
             ))
-            .child(modal_enter(dialog, "help-dialog"))
+            .child(modal_enter(
+                dialog,
+                format!("help-dialog:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }

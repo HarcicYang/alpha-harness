@@ -508,7 +508,9 @@ frame, `composer` owns the composer and route popovers, `transcript` owns
 message and tool rendering, `permission` owns inline approval decisions,
 `sessions`, `providers`, and `context_panel` own their on-demand surfaces, and
 `model_picker`, `command_palette`, and `slash_palette` own their selection
-surfaces. Shared color and motion tokens are presentation-only.
+surfaces. `scroll` owns scroll-handle selection, wheel smoothing, and reset
+behavior. `session_actions` and `provider_actions` keep surface workflows out
+of adapter construction. Shared color and motion tokens are presentation-only.
 
 The terminal chat screen shows the effective route, reasoning effort, and
 permission mode as `provider/model effort | mode`. `Ctrl-L` selects a configured
@@ -540,8 +542,15 @@ accepts attached paths as explicit `@path` references but leaves prompt
 semantics to the shared runtime. Provider-native capabilities can be replaced
 from the context panel or command palette; the desktop sends the resulting
 list through the runtime's durable capability workflow. Presentation entry,
-popover, and modal motion use the desktop motion tokens and defer
-reduced-motion handling to GPUI.
+popover, expansion, context-tab, toast, and modal motion use the desktop motion
+tokens and defer reduced-motion handling to GPUI. Every desktop scroll surface
+uses one explicit `ScrollHandle` for its viewport and scrollbar. Pressing or
+dragging the scrollbar moves that same handle. Discrete wheel deltas are
+accumulated into a target and sampled through GPUI's keyed `Spring`, preserving
+velocity across rapid wheel events and scheduling frames through
+`request_animation_frame`. Precise touchpad deltas remain on GPUI's native
+immediate path. Scrollbars stay visible with the reference shell's transparent
+track and muted thumb.
 
 Desktop shortcuts are `Ctrl-N` for a draft, `Ctrl-R` for sessions, `Ctrl-P` for
 providers, `Ctrl-L` for models, `Ctrl-T` for reasoning effort, `Ctrl-K` for the

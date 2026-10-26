@@ -10,12 +10,25 @@ impl AlphaDesktop {
                 .auto_grow(1, 6)
                 .submit_on_enter(true)
         });
-        let composer_subscription = cx.subscribe(&composer, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.submit_requested = true;
-            }
-            cx.notify();
-        });
+        let composer_subscription =
+            cx.subscribe(&composer, |this, composer, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.submit_requested = true;
+                }
+                if matches!(event, InputEvent::Change) {
+                    let value = composer.read(cx).value();
+                    let slash_open = value
+                        .trim_start()
+                        .strip_prefix('/')
+                        .is_some_and(|query| !query.contains(char::is_whitespace));
+                    if slash_open && !this.slash_palette_open {
+                        this.bump_overlay_generation();
+                        this.reset_scroll(ScrollRegion::SlashCommands);
+                    }
+                    this.slash_palette_open = slash_open;
+                }
+                cx.notify();
+            });
         let session_search = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Search sessions")
@@ -107,7 +120,23 @@ impl AlphaDesktop {
             provider_config,
             capabilities_open: false,
             capabilities_text,
+            overlay_generation: 0,
+            slash_palette_open: false,
+            draft_epoch: 0,
+            context_tab_generation: 0,
+            model_scroll: ScrollHandle::new(),
+            session_scroll: ScrollHandle::new(),
+            provider_kind_scroll: ScrollHandle::new(),
+            provider_scroll: ScrollHandle::new(),
+            context_scroll: ScrollHandle::new(),
+            command_scroll: ScrollHandle::new(),
+            slash_scroll: ScrollHandle::new(),
+            change_file_scroll: ScrollHandle::new(),
+            change_diff_scroll: ScrollHandle::new(),
+            tool_scroll: ScrollHandle::new(),
+            composer_menu_scroll: ScrollHandle::new(),
             transcript_scroll: ScrollHandle::new(),
+            scroll_motion: std::array::from_fn(|_| SmoothScroll::default()),
             jump_to_latest_hidden_until: None,
             help_open: false,
             local_status: None,
@@ -149,7 +178,7 @@ impl AlphaDesktop {
                         }
                         if changed {
                             if follow_transcript {
-                                this.transcript_scroll.scroll_to_bottom();
+                                this.scroll_to_bottom(ScrollRegion::Transcript);
                             }
                             cx.notify();
                         }
@@ -168,6 +197,31 @@ impl AlphaDesktop {
         window.focus(&focus, cx);
     }
 
+    pub(crate) fn bump_overlay_generation(&mut self) {
+        self.overlay_generation = self.overlay_generation.wrapping_add(1).max(1);
+    }
+
+    pub(crate) fn toggle_context(&mut self) {
+        if self.context_open {
+            self.context_open = false;
+            self.change_review_open = false;
+        } else {
+            self.bump_overlay_generation();
+            self.reset_scroll(ScrollRegion::Context);
+            self.context_open = true;
+        }
+    }
+
+    pub(crate) fn open_change_review(&mut self, index: usize) {
+        if !self.change_review_open {
+            self.bump_overlay_generation();
+        }
+        self.reset_scroll(ScrollRegion::ChangeFiles);
+        self.reset_scroll(ScrollRegion::ChangeDiff);
+        self.selected_change = index;
+        self.change_review_open = true;
+    }
+
     pub(crate) fn open_composer_menu(
         &mut self,
         menu: ComposerMenu,
@@ -177,6 +231,7 @@ impl AlphaDesktop {
         self.composer_menu = if self.composer_menu == Some(menu) {
             None
         } else {
+            self.bump_overlay_generation();
             if menu == ComposerMenu::Model
                 && let Err(error) = self.runtime.refresh_providers()
             {
@@ -189,7 +244,9 @@ impl AlphaDesktop {
                 self.local_status = Some(error.to_string());
             }
             self.model_choices = self.runtime.providers().model_choices();
+            self.reset_scroll(ScrollRegion::ComposerMenu);
             if menu == ComposerMenu::Model {
+                self.reset_scroll(ScrollRegion::ModelPicker);
                 self.model_search
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 let focus = self.model_search.read(cx).focus_handle(cx);
@@ -246,299 +303,6 @@ impl AlphaDesktop {
                 self.local_status = None;
             }
             Err(error) => self.local_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn open_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.runtime.list_sessions() {
-            Ok(sessions) => {
-                let active = self.runtime.chat().session_id;
-                self.session_selected = active
-                    .filter(|id| sessions.iter().any(|session| session.id == *id))
-                    .or_else(|| sessions.first().map(|session| session.id));
-                self.sessions = sessions;
-                self.session_delete_confirm = None;
-                self.session_status = None;
-                self.session_search
-                    .update(cx, |state, cx| state.set_value("", window, cx));
-                let focus = self.session_search.read(cx).focus_handle(cx);
-                window.focus(&focus, cx);
-                self.sessions_open = true;
-                self.local_status = None;
-            }
-            Err(error) => self.local_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn resume_session(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
-        match self.runtime.resume_session(session_id) {
-            Ok(_) => {
-                self.sessions_open = false;
-                self.session_delete_confirm = None;
-                self.session_status = None;
-                self.change_review_open = false;
-                self.selected_change = 0;
-                self.context_tab = ContextTab::Changes;
-                self.thinking_expanded = false;
-                self.expanded_tool_group = None;
-                self.jump_to_latest_hidden_until = None;
-                self.transcript_scroll.scroll_to_bottom();
-                self.local_status = None;
-            }
-            Err(error) => self.local_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn new_session(&mut self, cx: &mut Context<Self>) {
-        self.runtime.new_session();
-        self.sessions_open = false;
-        self.session_delete_confirm = None;
-        self.session_status = None;
-        self.composer_menu = None;
-        self.change_review_open = false;
-        self.selected_change = 0;
-        self.context_tab = ContextTab::Changes;
-        self.thinking_expanded = false;
-        self.expanded_tool_group = None;
-        self.jump_to_latest_hidden_until = None;
-        self.transcript_scroll.scroll_to_bottom();
-        self.local_status = None;
-        cx.notify();
-    }
-
-    pub(crate) fn delete_selected_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session_id) = self.session_selected else {
-            return;
-        };
-        if self.session_delete_confirm != Some(session_id) {
-            self.session_delete_confirm = Some(session_id);
-            self.session_status = Some("delete confirmation required".to_owned());
-            cx.notify();
-            return;
-        }
-        match self.runtime.delete_session(session_id) {
-            Ok(()) => {
-                self.session_status = Some(format!("deleted {}", short_id(session_id)));
-                match self.runtime.list_sessions() {
-                    Ok(sessions) => {
-                        self.sessions = sessions;
-                        self.session_selected = self.sessions.first().map(|session| session.id);
-                    }
-                    Err(error) => self.session_status = Some(error.to_string()),
-                }
-                self.session_delete_confirm = None;
-                self.session_search
-                    .update(cx, |state, cx| state.set_value("", window, cx));
-            }
-            Err(error) => self.session_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn open_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.runtime.refresh_providers() {
-            Ok(()) => {
-                let providers = self.runtime.providers();
-                self.provider_kind = providers
-                    .instances
-                    .first()
-                    .map(|instance| instance.kind.clone())
-                    .or_else(|| providers.kinds.first().map(|kind| kind.kind.clone()));
-                self.provider_status = None;
-                self.providers_open = true;
-                let first_instance = self.provider_kind.as_deref().and_then(|kind| {
-                    self.runtime
-                        .providers()
-                        .instances
-                        .iter()
-                        .find(|instance| instance.kind == kind)
-                        .map(|instance| instance.id.clone())
-                });
-                if let Some(id) = first_instance {
-                    self.select_provider_instance(id, window, cx);
-                } else {
-                    self.provider_selected = None;
-                    self.provider_remove_confirm = None;
-                }
-            }
-            Err(error) => self.local_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn select_provider_kind(
-        &mut self,
-        kind: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.provider_kind = Some(kind.clone());
-        self.provider_status = None;
-        let first_instance = self
-            .runtime
-            .providers()
-            .instances
-            .iter()
-            .find(|instance| instance.kind == kind)
-            .map(|instance| instance.id.clone());
-        if let Some(id) = first_instance {
-            self.select_provider_instance(id, window, cx);
-        } else {
-            self.provider_selected = None;
-            self.provider_remove_confirm = None;
-            self.provider_config
-                .update(cx, |state, cx| state.set_value("", window, cx));
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn select_provider_instance(
-        &mut self,
-        id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(instance) = self
-            .runtime
-            .providers()
-            .instances
-            .iter()
-            .find(|instance| instance.id == id)
-            .cloned()
-        else {
-            return;
-        };
-        self.provider_selected = Some(id);
-        self.provider_remove_confirm = None;
-        let config = pretty_provider_config(&instance.config);
-        self.provider_config
-            .update(cx, |state, cx| state.set_value(&config, window, cx));
-        self.provider_credential
-            .update(cx, |state, cx| state.set_value("", window, cx));
-    }
-
-    pub(crate) fn create_provider_instance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(kind) = self.provider_kind.clone() else {
-            return;
-        };
-        match self.runtime.create_provider_instance(&kind) {
-            Ok(id) => {
-                self.provider_status = Some(format!("created {id}"));
-                let _ = self.runtime.refresh_providers();
-                self.select_provider_instance(id, window, cx);
-            }
-            Err(error) => self.provider_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn authenticate_selected_provider(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (Some(id), secret) = (
-            self.provider_selected.clone(),
-            self.provider_credential.read(cx).value().trim().to_owned(),
-        ) else {
-            return;
-        };
-        match self.runtime.authenticate_provider(&id, secret) {
-            Ok(()) => {
-                self.provider_status = Some(format!("credential stored for {id}"));
-                self.provider_credential
-                    .update(cx, |state, cx| state.set_value("", window, cx));
-                let _ = self.runtime.refresh_providers();
-            }
-            Err(error) => self.provider_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn save_provider_config(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.provider_selected.clone() else {
-            return;
-        };
-        let Some(mut instance) = self
-            .runtime
-            .providers()
-            .instances
-            .iter()
-            .find(|instance| instance.id == id)
-            .cloned()
-        else {
-            return;
-        };
-        let text = self.provider_config.read(cx).value();
-        match parse_provider_config(&text) {
-            Ok(config) => {
-                instance.config = config;
-                match self.runtime.update_provider(instance) {
-                    Ok(()) => self.provider_status = Some(format!("configuration saved for {id}")),
-                    Err(error) => self.provider_status = Some(error.to_string()),
-                }
-            }
-            Err(error) => self.provider_status = Some(error),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn remove_selected_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.provider_selected.clone() else {
-            return;
-        };
-        if self.provider_remove_confirm.as_deref() != Some(id.as_str()) {
-            self.provider_remove_confirm = Some(id);
-            cx.notify();
-            return;
-        }
-        match self.runtime.remove_provider_instance(&id) {
-            Ok(removed) => {
-                self.provider_status = Some(if removed.credential_removed {
-                    format!("removed {id}")
-                } else {
-                    format!(
-                        "removed {id}; credential cleanup failed: {}",
-                        removed
-                            .credential_error
-                            .unwrap_or_else(|| "unknown error".to_owned())
-                    )
-                });
-                self.provider_selected = None;
-                self.provider_remove_confirm = None;
-                let _ = self.runtime.refresh_providers();
-                let first_instance = self.provider_kind.as_deref().and_then(|kind| {
-                    self.runtime
-                        .providers()
-                        .instances
-                        .iter()
-                        .find(|instance| instance.kind == kind)
-                        .map(|instance| instance.id.clone())
-                });
-                if let Some(id) = first_instance {
-                    self.select_provider_instance(id, window, cx);
-                }
-            }
-            Err(error) => self.provider_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn test_provider_instance(&mut self, id: String, cx: &mut Context<Self>) {
-        match self.runtime.test_provider(&id) {
-            Ok(()) => self.provider_status = Some(format!("connection passed: {id}")),
-            Err(error) => self.provider_status = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn set_default_provider_instance(&mut self, id: String, cx: &mut Context<Self>) {
-        match self.runtime.set_default_provider(&id) {
-            Ok(()) => self.provider_status = Some(format!("default provider: {id}")),
-            Err(error) => self.provider_status = Some(error.to_string()),
         }
         cx.notify();
     }

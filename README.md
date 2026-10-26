@@ -114,6 +114,12 @@ and color tokens live in the desktop presentation layer; session control,
 provider workflows, commands, transcript reduction, and interaction timeouts
 remain in `alpha-front-runtime`.
 
+Desktop scroll surfaces use explicit GPUI scroll handles shared by the viewport
+and visible scrollbar. Discrete wheel input is animated with GPUI's keyed
+spring and frame scheduler, while precise touchpad input keeps GPUI's native
+pixel path. Session and provider action modules keep those workflows separate
+from adapter construction.
+
 ## Prompting and context
 
 - The workspace root and fixed cwd are searched for `AGENTS.md` and

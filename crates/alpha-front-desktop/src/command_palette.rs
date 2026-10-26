@@ -2,6 +2,8 @@ use super::*;
 
 impl AlphaDesktop {
     pub(crate) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.bump_overlay_generation();
+        self.reset_scroll(ScrollRegion::Commands);
         self.command_palette_open = true;
         self.composer_menu = None;
         self.sessions_open = false;
@@ -42,9 +44,15 @@ impl AlphaDesktop {
             DesktopCommand::Providers => self.open_providers(window, cx),
             DesktopCommand::Capabilities => self.open_capabilities(window, cx),
             DesktopCommand::ReviewChanges => {
+                self.bump_overlay_generation();
+                self.reset_scroll(ScrollRegion::Context);
                 self.context_open = true;
                 self.context_tab = ContextTab::Changes;
-                self.change_review_open = !self.runtime.context().changes.is_empty();
+                if self.runtime.context().changes.is_empty() {
+                    self.change_review_open = false;
+                } else {
+                    self.open_change_review(0);
+                }
                 self.focus_composer(window, cx);
             }
             DesktopCommand::Diagnostics => {
@@ -56,7 +64,7 @@ impl AlphaDesktop {
                 self.focus_composer(window, cx);
             }
             DesktopCommand::Help => {
-                self.help_open = true;
+                self.open_help();
                 self.focus_composer(window, cx);
             }
         }
@@ -163,13 +171,17 @@ impl AlphaDesktop {
         }
 
         if key == "?" {
-            self.help_open = true;
+            self.open_help();
             cx.stop_propagation();
             cx.notify();
         }
     }
 
-    pub(crate) fn render_global_command_palette(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_global_command_palette(
+        &self,
+        viewport_height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let query = self.command_palette_query.read(cx).value().to_lowercase();
         let query = query.trim();
         let commands = filtered_commands(query);
@@ -292,7 +304,8 @@ impl AlphaDesktop {
             .relative()
             .w(px(650.))
             .max_w_full()
-            .max_h(px(760.))
+            .h(px(660.))
+            .max_h(px((viewport_height - 124.).max(320.)))
             .rounded(px(28.))
             .border_1()
             .border_color(rgba(BORDER))
@@ -343,13 +356,23 @@ impl AlphaDesktop {
             )
             .child(
                 div()
-                    .id("command-results")
-                    .max_h(px(560.))
-                    .overflow_y_scrollbar()
-                    .p(px(7.))
-                    .flex()
-                    .flex_col()
-                    .child(div().children(result_rows)),
+                    .id("command-results-shell")
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .smooth_scroll_shell(ScrollRegion::Commands, cx)
+                    .child(
+                        div()
+                            .id("command-results")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.command_scroll)
+                            .vertical_scrollbar(&self.command_scroll)
+                            .p(px(7.))
+                            .flex()
+                            .flex_col()
+                            .child(div().children(result_rows)),
+                    ),
             )
             .child(
                 div()
@@ -375,15 +398,21 @@ impl AlphaDesktop {
             .justify_center()
             .pt(px(96.))
             .px(px(28.))
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.command_palette_open = false;
-                    this.focus_composer(window, cx);
-                    cx.notify();
-                }),
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.command_palette_open = false;
+                        this.focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ),
+                format!("command-backdrop:{}", self.overlay_generation),
             ))
-            .child(modal_enter(dialog, "command-dialog"))
+            .child(modal_enter(
+                dialog,
+                format!("command-dialog:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }

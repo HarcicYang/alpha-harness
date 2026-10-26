@@ -2,6 +2,7 @@ use super::*;
 
 impl AlphaDesktop {
     pub(crate) fn open_capabilities(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.bump_overlay_generation();
         let tools = self.runtime.chat().provider_tools.join(", ");
         self.capabilities_text.update(cx, |state, cx| {
             state.set_value(&tools, window, cx);
@@ -185,15 +186,21 @@ impl AlphaDesktop {
             .flex()
             .items_center()
             .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.capabilities_open = false;
-                    this.focus_composer(window, cx);
-                    cx.notify();
-                }),
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.capabilities_open = false;
+                        this.focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ),
+                format!("capabilities-backdrop:{}", self.overlay_generation),
             ))
-            .child(modal_enter(dialog, "capabilities-dialog"))
+            .child(modal_enter(
+                dialog,
+                format!("capabilities-dialog:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }

@@ -1,7 +1,11 @@
 use super::*;
 
 impl AlphaDesktop {
-    pub(crate) fn render_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_model_picker(
+        &self,
+        viewport_height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let query = self.model_search.read(cx).value().to_lowercase();
         let query = query.trim();
         let chat = self.runtime.chat();
@@ -154,7 +158,8 @@ impl AlphaDesktop {
             .relative()
             .w(px(680.))
             .max_w_full()
-            .max_h(px(760.))
+            .h(px(714.))
+            .max_h(px((viewport_height - 56.).max(360.)))
             .rounded(px(28.))
             .border_1()
             .border_color(rgba(BORDER))
@@ -239,16 +244,24 @@ impl AlphaDesktop {
             )
             .child(
                 div()
-                    .id("model-list")
+                    .id("model-list-shell")
+                    .relative()
                     .flex_1()
                     .min_h(px(0.))
-                    .max_h(px(550.))
-                    .overflow_y_scrollbar()
-                    .p(px(9.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .children(rows),
+                    .smooth_scroll_shell(ScrollRegion::ModelPicker, cx)
+                    .child(
+                        div()
+                            .id("model-list")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.model_scroll)
+                            .vertical_scrollbar(&self.model_scroll)
+                            .p(px(9.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(rows),
+                    ),
             )
             .child(
                 div()
@@ -286,15 +299,21 @@ impl AlphaDesktop {
             .items_center()
             .justify_center()
             .p(px(28.))
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.composer_menu = None;
-                    this.focus_composer(window, cx);
-                    cx.notify();
-                }),
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.composer_menu = None;
+                        this.focus_composer(window, cx);
+                        cx.notify();
+                    }),
+                ),
+                format!("models-backdrop:{}", self.overlay_generation),
             ))
-            .child(modal_enter(dialog, "models-dialog"))
+            .child(modal_enter(
+                dialog,
+                format!("models-dialog:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }

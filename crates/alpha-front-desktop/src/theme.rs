@@ -35,6 +35,10 @@ pub(crate) const MOTION_SLOW: Duration = Duration::from_millis(320);
 pub(crate) fn apply_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     Theme::update(cx, |theme| {
+        theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
+        theme.scrollbar = rgba(0x00000000).into();
+        theme.scrollbar_thumb = rgba(0x70778073).into();
+        theme.scrollbar_thumb_hover = rgba(0xa7adb5b8).into();
         theme.font_size = px(13.);
         theme.mono_font_size = px(10.);
         theme.radius = px(RADIUS_SM);

@@ -85,8 +85,11 @@ impl AlphaDesktop {
             .flex()
             .items_center()
             .justify_center()
-            .child(div().absolute().inset_0().bg(rgba(SCRIM)))
-            .child(
+            .child(backdrop_enter(
+                div().absolute().inset_0().bg(rgba(SCRIM)),
+                format!("change-review-backdrop:{}", self.overlay_generation),
+            ))
+            .child(modal_enter(
                 div()
                     .relative()
                     .w(px(860.))
@@ -157,16 +160,28 @@ impl AlphaDesktop {
                             .flex()
                             .child(
                                 div()
+                                    .id("change-review-files-shell")
+                                    .relative()
                                     .w(px(238.))
                                     .flex_none()
+                                    .min_h(px(0.))
                                     .border_r_1()
                                     .border_color(rgb(BORDER))
                                     .bg(rgb(SURFACE))
-                                    .p(px(7.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .children(rows),
+                                    .smooth_scroll_shell(ScrollRegion::ChangeFiles, cx)
+                                    .child(
+                                        div()
+                                            .id("change-review-files")
+                                            .size_full()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.change_file_scroll)
+                                            .vertical_scrollbar(&self.change_file_scroll)
+                                            .p(px(7.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .children(rows),
+                                    ),
                             )
                             .child(
                                 div()
@@ -219,12 +234,21 @@ impl AlphaDesktop {
                                     )
                                     .child(
                                         div()
-                                            .id("change-review-diff")
+                                            .id("change-review-diff-shell")
+                                            .relative()
                                             .flex_1()
                                             .min_h(px(0.))
-                                            .overflow_y_scrollbar()
-                                            .p(px(14.))
-                                            .child(render_change_diff(change)),
+                                            .smooth_scroll_shell(ScrollRegion::ChangeDiff, cx)
+                                            .child(
+                                                div()
+                                                    .id("change-review-diff")
+                                                    .size_full()
+                                                    .overflow_y_scroll()
+                                                    .track_scroll(&self.change_diff_scroll)
+                                                    .vertical_scrollbar(&self.change_diff_scroll)
+                                                    .p(px(14.))
+                                                    .child(render_change_diff(change)),
+                                            ),
                                     ),
                             ),
                     )
@@ -268,7 +292,8 @@ impl AlphaDesktop {
                                     })),
                             ),
                     ),
-            )
+                format!("change-review:{}", self.overlay_generation),
+            ))
             .into_any_element()
     }
 }
