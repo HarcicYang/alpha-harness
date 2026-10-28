@@ -545,12 +545,21 @@ list through the runtime's durable capability workflow. Presentation entry,
 popover, expansion, context-tab, toast, and modal motion use the desktop motion
 tokens and defer reduced-motion handling to GPUI. Every desktop scroll surface
 uses one explicit `ScrollHandle` for its viewport and scrollbar. Pressing or
-dragging the scrollbar moves that same handle. Discrete wheel deltas are
-accumulated into a target and sampled through GPUI's keyed `Spring`, preserving
-velocity across rapid wheel events and scheduling frames through
-`request_animation_frame`. Precise touchpad deltas remain on GPUI's native
-immediate path. Scrollbars stay visible with the reference shell's transparent
-track and muted thumb.
+dragging the scrollbar moves that same handle. The scrollbar is a sibling
+overlay outside the scrolled content, with a reserved content gutter, so rows
+cannot paint beneath the thumb. Wheel and touchpad deltas are both accumulated
+into a target and sampled through GPUI's keyed `Spring`, preserving velocity
+across rapid events and scheduling frames through `request_animation_frame`.
+Scrollbars stay visible with the reference shell's transparent track and muted
+thumb.
+
+The transcript projection is cached behind one `Arc<Vec<...>>` and refreshed
+only after runtime events mutate front state. Its key is the desktop
+conversation epoch rather than the eventual durable session ID, so the first
+turn does not remount when a draft becomes a stored session. Item text is held
+as `SharedString`, and every assistant item owns a stable keyed `TextView`
+state. Markdown parsing can therefore extend the live document incrementally
+without rebuilding all transcript content on scroll or animation frames.
 
 Desktop shortcuts are `Ctrl-N` for a draft, `Ctrl-R` for sessions, `Ctrl-P` for
 providers, `Ctrl-L` for models, `Ctrl-T` for reasoning effort, `Ctrl-K` for the

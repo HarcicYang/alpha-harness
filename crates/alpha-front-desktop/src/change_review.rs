@@ -175,13 +175,17 @@ impl AlphaDesktop {
                                             .size_full()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.change_file_scroll)
-                                            .vertical_scrollbar(&self.change_file_scroll)
                                             .p(px(7.))
+                                            .pr(px(SCROLLBAR_GUTTER))
                                             .flex()
                                             .flex_col()
                                             .gap_1()
                                             .children(rows),
-                                    ),
+                                    )
+                                    .child(scrollbar_rail(
+                                        "change-files".to_owned(),
+                                        &self.change_file_scroll,
+                                    )),
                             )
                             .child(
                                 div()
@@ -245,10 +249,14 @@ impl AlphaDesktop {
                                                     .size_full()
                                                     .overflow_y_scroll()
                                                     .track_scroll(&self.change_diff_scroll)
-                                                    .vertical_scrollbar(&self.change_diff_scroll)
                                                     .p(px(14.))
+                                                    .pr(px(SCROLLBAR_GUTTER))
                                                     .child(render_change_diff(change)),
-                                            ),
+                                            )
+                                            .child(scrollbar_rail(
+                                                "change-diff".to_owned(),
+                                                &self.change_diff_scroll,
+                                            )),
                                     ),
                             ),
                     )

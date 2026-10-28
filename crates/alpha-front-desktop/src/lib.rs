@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alpha_front_runtime::{
@@ -16,12 +17,11 @@ use alpha_schema::{
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, Selectable as _};
 use gpui_kit::component::{
-    Icon, Sizable as _, Theme, ThemeMode,
+    Icon, Theme, ThemeMode,
     button::{Button, ButtonVariants as _},
     input::{InputEvent, Textarea, TextareaState},
-    scroll::ScrollableElement as _,
-    spinner::Spinner,
-    text::markdown,
+    scroll::{Scrollbar, ScrollbarMode},
+    text::TextView,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -67,7 +67,7 @@ struct AlphaDesktop {
     capabilities_text: Entity<TextareaState>,
     overlay_generation: u64,
     slash_palette_open: bool,
-    draft_epoch: u64,
+    transcript_epoch: u64,
     context_tab_generation: u64,
     model_scroll: ScrollHandle,
     session_scroll: ScrollHandle,
@@ -82,6 +82,8 @@ struct AlphaDesktop {
     composer_menu_scroll: ScrollHandle,
     transcript_scroll: ScrollHandle,
     scroll_motion: [SmoothScroll; SCROLL_REGION_COUNT],
+    transcript_items: Arc<Vec<DesktopTranscriptItem>>,
+    transcript_dirty: bool,
     jump_to_latest_hidden_until: Option<Instant>,
     help_open: bool,
     local_status: Option<String>,
@@ -108,11 +110,13 @@ enum ContextTab {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DesktopTranscriptItem {
-    User(String),
-    Assistant(String),
-    Thinking(String),
+    User(SharedString),
+    Assistant(SharedString),
+    StreamingAssistant(SharedString),
+    Thinking(SharedString),
+    StreamingThinking(SharedString),
     Tools { id: String, tools: Vec<ToolSummary> },
-    Error(String),
+    Error(SharedString),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,8 +257,27 @@ mod tests {
         assert_eq!(
             rendered,
             vec![
-                DesktopTranscriptItem::Thinking("inspect the workspace".to_owned()),
-                DesktopTranscriptItem::Assistant("The workspace is ready.".to_owned()),
+                DesktopTranscriptItem::Thinking("inspect the workspace".into()),
+                DesktopTranscriptItem::Assistant("The workspace is ready.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn live_text_keeps_a_streaming_presentation_variant() {
+        let rendered = desktop_transcript_items(&[
+            TranscriptItem::AssistantDelta {
+                text: "streaming".to_owned(),
+            },
+            TranscriptItem::ThinkingDelta {
+                text: "reasoning".to_owned(),
+            },
+        ]);
+        assert_eq!(
+            rendered,
+            vec![
+                DesktopTranscriptItem::StreamingAssistant("streaming".into()),
+                DesktopTranscriptItem::StreamingThinking("reasoning".into()),
             ]
         );
     }

@@ -255,13 +255,17 @@ impl AlphaDesktop {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.model_scroll)
-                            .vertical_scrollbar(&self.model_scroll)
                             .p(px(9.))
+                            .pr(px(SCROLLBAR_GUTTER))
                             .flex()
                             .flex_col()
                             .gap(px(2.))
                             .children(rows),
-                    ),
+                    )
+                    .child(scrollbar_rail(
+                        "model-picker".to_owned(),
+                        &self.model_scroll,
+                    )),
             )
             .child(
                 div()

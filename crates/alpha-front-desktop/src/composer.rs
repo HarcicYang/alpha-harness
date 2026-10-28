@@ -16,7 +16,14 @@ impl AlphaDesktop {
                     .flex()
                     .items_center()
                     .gap(px(5.))
-                    .child(Icon::new(icon).size(px(12.)).text_color(rgb(ACCENT)))
+                    .child(if id == "mode" {
+                        pulse_dot()
+                    } else {
+                        Icon::new(icon)
+                            .size(px(12.))
+                            .text_color(rgb(ACCENT))
+                            .into_any_element()
+                    })
                     .child(label),
             )
             .ghost()
@@ -155,11 +162,7 @@ impl AlphaDesktop {
                                                 .flex()
                                                 .items_center()
                                                 .gap(px(5.))
-                                                .child(
-                                                    Spinner::new()
-                                                        .xsmall()
-                                                        .color(rgb(ACCENT).into()),
-                                                )
+                                                .child(streaming_dots())
                                                 .text_size(px(9.))
                                                 .text_color(rgb(FAINT))
                                                 .child(status),
@@ -233,8 +236,8 @@ impl AlphaDesktop {
             .max_h(px(370.))
             .overflow_y_scroll()
             .track_scroll(&self.composer_menu_scroll)
-            .vertical_scrollbar(&self.composer_menu_scroll)
             .p(px(5.))
+            .pr(px(SCROLLBAR_GUTTER))
             .flex()
             .flex_col()
             .gap(px(1.));
@@ -301,13 +304,17 @@ impl AlphaDesktop {
             }
             ComposerMenu::Model => unreachable!(),
         };
+        let panel = shell.child(panel).child(scrollbar_rail(
+            format!("composer-menu:{menu:?}"),
+            &self.composer_menu_scroll,
+        ));
 
         div()
             .absolute()
             .bottom(px(68.))
             .left(px(left))
             .child(popover_enter(
-                shell.child(panel),
+                panel,
                 format!("composer-menu:{menu:?}:{}", self.overlay_generation),
             ))
             .into_any_element()
@@ -338,6 +345,7 @@ impl AlphaDesktop {
 
         match result {
             Ok(()) => {
+                self.transcript_dirty = true;
                 self.local_status = None;
                 self.scroll_to_bottom(ScrollRegion::Transcript);
                 match outcome {

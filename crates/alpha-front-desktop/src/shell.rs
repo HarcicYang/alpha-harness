@@ -320,7 +320,7 @@ impl Render for AlphaDesktop {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.transcript_scroll)
-                            .vertical_scrollbar(&self.transcript_scroll)
+                            .pr(px(SCROLLBAR_GUTTER))
                             .child(
                                 div()
                                     .w(px(CONTENT_WIDTH))
@@ -341,7 +341,11 @@ impl Render for AlphaDesktop {
                                         ))
                                     }),
                             ),
-                    ),
+                    )
+                    .child(scrollbar_rail(
+                        "transcript".to_owned(),
+                        &self.transcript_scroll,
+                    )),
             )
             .when(!queued_steers.is_empty(), |this| {
                 this.child(self.render_queued_steer(&queued_steers, cx))

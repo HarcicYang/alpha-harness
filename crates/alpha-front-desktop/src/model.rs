@@ -41,14 +41,18 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                 flush_tools(&mut rendered, &mut tools);
                 match other {
                     TranscriptItem::User { text } => {
-                        rendered.push(DesktopTranscriptItem::User(text.clone()));
+                        rendered.push(DesktopTranscriptItem::User(text.clone().into()));
                     }
                     TranscriptItem::QueuedSteer { .. } => continue,
                     TranscriptItem::AssistantDelta { text } => {
-                        rendered.push(DesktopTranscriptItem::Assistant(text.clone()));
+                        rendered.push(DesktopTranscriptItem::StreamingAssistant(
+                            text.clone().into(),
+                        ));
                     }
                     TranscriptItem::ThinkingDelta { text } => {
-                        rendered.push(DesktopTranscriptItem::Thinking(text.clone()));
+                        rendered.push(DesktopTranscriptItem::StreamingThinking(
+                            text.clone().into(),
+                        ));
                     }
                     TranscriptItem::AssistantMessage { blocks } => {
                         let thinking = blocks
@@ -58,7 +62,7 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                             .collect::<Vec<_>>()
                             .join("\n");
                         if !thinking.is_empty() {
-                            rendered.push(DesktopTranscriptItem::Thinking(thinking));
+                            rendered.push(DesktopTranscriptItem::Thinking(thinking.into()));
                         }
                         let text = blocks
                             .iter()
@@ -66,11 +70,11 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                             .collect::<Vec<_>>()
                             .join("\n");
                         if !text.is_empty() {
-                            rendered.push(DesktopTranscriptItem::Assistant(text));
+                            rendered.push(DesktopTranscriptItem::Assistant(text.into()));
                         }
                     }
                     TranscriptItem::Error { message } => {
-                        rendered.push(DesktopTranscriptItem::Error(message.clone()));
+                        rendered.push(DesktopTranscriptItem::Error(message.clone().into()));
                     }
                     TranscriptItem::ToolCall { .. } | TranscriptItem::ToolResult { .. } => {}
                 }

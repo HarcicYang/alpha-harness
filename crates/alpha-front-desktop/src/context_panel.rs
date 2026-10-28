@@ -447,8 +447,8 @@ impl AlphaDesktop {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.context_scroll)
-                            .vertical_scrollbar(&self.context_scroll)
                             .px(px(16.))
+                            .pr(px(SCROLLBAR_GUTTER))
                             .pb(px(12.))
                             .child(popover_enter(
                                 div().child(body),
@@ -457,7 +457,8 @@ impl AlphaDesktop {
                                     self.context_tab, self.context_tab_generation
                                 ),
                             )),
-                    ),
+                    )
+                    .child(scrollbar_rail("context".to_owned(), &self.context_scroll)),
             )
             .child(
                 div()

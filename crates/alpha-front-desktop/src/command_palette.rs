@@ -367,12 +367,13 @@ impl AlphaDesktop {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.command_scroll)
-                            .vertical_scrollbar(&self.command_scroll)
                             .p(px(7.))
+                            .pr(px(SCROLLBAR_GUTTER))
                             .flex()
                             .flex_col()
                             .child(div().children(result_rows)),
-                    ),
+                    )
+                    .child(scrollbar_rail("commands".to_owned(), &self.command_scroll)),
             )
             .child(
                 div()

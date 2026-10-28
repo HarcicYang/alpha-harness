@@ -115,10 +115,13 @@ provider workflows, commands, transcript reduction, and interaction timeouts
 remain in `alpha-front-runtime`.
 
 Desktop scroll surfaces use explicit GPUI scroll handles shared by the viewport
-and visible scrollbar. Discrete wheel input is animated with GPUI's keyed
-spring and frame scheduler, while precise touchpad input keeps GPUI's native
-pixel path. Session and provider action modules keep those workflows separate
-from adapter construction.
+and visible scrollbar. The scrollbar overlays the viewport from outside its
+scrolled content and reserves a content gutter. Wheel and touchpad input is
+animated with GPUI's keyed spring and frame scheduler. The transcript keeps a
+cached `SharedString` projection and stable per-item Markdown state so the first
+live turn does not remount when its draft receives a durable session ID.
+Session and provider action modules keep those workflows separate from adapter
+construction.
 
 ## Prompting and context
 

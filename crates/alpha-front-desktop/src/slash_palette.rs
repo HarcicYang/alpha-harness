@@ -92,8 +92,8 @@ impl AlphaDesktop {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.slash_scroll)
-                            .vertical_scrollbar(&self.slash_scroll)
                             .p(px(5.))
+                            .pr(px(SCROLLBAR_GUTTER))
                             .flex()
                             .flex_col()
                             .gap(px(1.))
@@ -119,7 +119,11 @@ impl AlphaDesktop {
                                     ),
                             )
                             .children(rows),
-                    ),
+                    )
+                    .child(scrollbar_rail(
+                        "slash-commands".to_owned(),
+                        &self.slash_scroll,
+                    )),
                 format!("slash-command-palette:{}", self.overlay_generation),
             ))
             .into_any_element()

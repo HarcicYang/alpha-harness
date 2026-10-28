@@ -47,11 +47,11 @@ impl AlphaDesktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if event.delta.precise() {
+        let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
+        if delta == 0. {
             return;
         }
 
-        let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
         let handle = self.scroll_handle(region).clone();
         self.scroll_motion[region.index()].push(&handle, delta);
         window.prevent_default();

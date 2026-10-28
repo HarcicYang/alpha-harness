@@ -29,9 +29,6 @@ pub(crate) const RADIUS_MD: f32 = 24.;
 pub(crate) const CONTENT_WIDTH: f32 = 780.;
 pub(crate) const HEADER_HEIGHT: f32 = 56.;
 
-pub(crate) const MOTION_BASE: Duration = Duration::from_millis(220);
-pub(crate) const MOTION_SLOW: Duration = Duration::from_millis(320);
-
 pub(crate) fn apply_theme(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
     Theme::update(cx, |theme| {

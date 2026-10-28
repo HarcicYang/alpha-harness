@@ -178,13 +178,17 @@ impl AlphaDesktop {
                                             .size_full()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.provider_kind_scroll)
-                                            .vertical_scrollbar(&self.provider_kind_scroll)
                                             .p(px(7.))
+                                            .pr(px(SCROLLBAR_GUTTER))
                                             .flex()
                                             .flex_col()
                                             .gap(px(2.))
                                             .children(kind_rows),
-                                    ),
+                                    )
+                                    .child(scrollbar_rail(
+                                        "provider-kinds".to_owned(),
+                                        &self.provider_kind_scroll,
+                                    )),
                             )
                             .child(
                                 div()
@@ -218,9 +222,13 @@ impl AlphaDesktop {
                                     .size_full()
                                     .overflow_y_scroll()
                                     .track_scroll(&self.provider_scroll)
-                                    .vertical_scrollbar(&self.provider_scroll)
+                                    .pr(px(SCROLLBAR_GUTTER))
                                     .child(provider_content),
-                            ),
+                            )
+                            .child(scrollbar_rail(
+                                "provider-content".to_owned(),
+                                &self.provider_scroll,
+                            )),
                     ),
             )
             .child(

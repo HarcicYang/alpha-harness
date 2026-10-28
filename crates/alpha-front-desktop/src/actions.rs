@@ -122,7 +122,7 @@ impl AlphaDesktop {
             capabilities_text,
             overlay_generation: 0,
             slash_palette_open: false,
-            draft_epoch: 0,
+            transcript_epoch: 0,
             context_tab_generation: 0,
             model_scroll: ScrollHandle::new(),
             session_scroll: ScrollHandle::new(),
@@ -137,6 +137,8 @@ impl AlphaDesktop {
             composer_menu_scroll: ScrollHandle::new(),
             transcript_scroll: ScrollHandle::new(),
             scroll_motion: std::array::from_fn(|_| SmoothScroll::default()),
+            transcript_items: Arc::new(Vec::new()),
+            transcript_dirty: true,
             jump_to_latest_hidden_until: None,
             help_open: false,
             local_status: None,
@@ -173,6 +175,7 @@ impl AlphaDesktop {
                             Ok(events) => changed |= !events.is_empty(),
                             Err(error) => this.local_status = Some(error.to_string()),
                         }
+                        this.transcript_dirty |= changed;
                         if this.runtime.chat().interaction.is_some() {
                             cx.notify();
                         }

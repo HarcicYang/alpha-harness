@@ -432,13 +432,17 @@ impl AlphaDesktop {
                                             .size_full()
                                             .overflow_y_scroll()
                                             .track_scroll(&self.session_scroll)
-                                            .vertical_scrollbar(&self.session_scroll)
                                             .p(px(7.))
+                                            .pr(px(SCROLLBAR_GUTTER))
                                             .flex()
                                             .flex_col()
                                             .gap(px(2.))
                                             .children(rows),
-                                    ),
+                                    )
+                                    .child(scrollbar_rail(
+                                        "sessions".to_owned(),
+                                        &self.session_scroll,
+                                    )),
                             ),
                     )
                     .child(
