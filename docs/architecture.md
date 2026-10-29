@@ -1,794 +1,526 @@
-# alpha-harness Architecture
+# alpha-harness architecture
 
-Status: frozen for M1. This is the authoritative architecture document.
+alpha-harness is a Rust coding agent. The `alpha` binary exposes the command
+line and starts a local core process for interactive and one-shot work. A small
+kernel supplies the component runtime. Agent behavior, providers, tools,
+sessions, permissions, prompts, and frontends are modules.
 
-## 1. Vision
+The durable session log determines model history, restart recovery, and every
+frontend projection. Any value the model can observe is stored as a session
+event or reconstructed from stored events.
 
-alpha-harness is a lightweight coding agent harness. It uses a small kernel
-and replaceable modules, with the same approach to composition that NixOS uses.
+## Repository boundaries
 
-Two ideas guide the design:
+- `apps/alpha-harness` builds the `alpha` binary and command-line interface.
+- `crates/alpha-kernel` contains contexts, services, typed events, effects,
+  scopes, and scope-bound tasks.
+- `crates/alpha-schema` contains protocol DTOs, public shared types, and durable
+  session payloads.
+- `crates/alpha-protocol` implements JSON-RPC 2.0 over newline-delimited JSON.
+- `crates/alpha-front-*` contains the supervised core client, shared frontend
+  runtime, and presentation adapters.
+- `crates/alpha-provider-api` and `crates/alpha-api-*` contain provider and API
+  adapter contracts.
+- `crates/alpha-module-*` contains replaceable behavior modules.
+- `crates/alpha-bundle-default` selects the default module set through Cargo
+  dependencies and contains no behavior.
 
-1. Keep the kernel small and make every substantial feature opt-in.
-2. Everything is a module. Every capability is atomic, self-contained, and
-   independently replaceable.
+The workspace is a Rust 2024 Cargo workspace. `rust-toolchain.toml` selects the
+stable toolchain, and `Cargo.lock` is committed.
 
-## 2. Hard principles
+## Process model
 
-- P1: Substantive behavior lives in modules. The kernel contains only the
-  component runtime and basic stdio. User-visible behavior, including the
-  agent loop, providers, tools, sessions, permissions, and UI, belongs in a
-  module.
-- P2: The repository does not use the JavaScript or TypeScript ecosystem. No
-  Node.js, npm, pnpm, or JS tooling may enter the build chain, documentation
-  tooling, shipped modules, or runtime dependencies. Language-neutral
-  protocols such as JSON-RPC and MCP remain allowed.
+The public commands are:
 
-## 3. Architecture decisions
+| Command | Process behavior |
+| --- | --- |
+| `alpha run` | Starts a managed core for one prompt, streams output, then exits |
+| `alpha chat` | Starts a managed core and uses the line-oriented terminal front |
+| `alpha tui` | Starts a managed core and uses the alternate-screen terminal front |
+| `alpha desktop` | Starts a managed core and opens the GPUI window |
+| `alpha sessions` | Starts a managed core to list durable sessions |
 
-### D1: Kernel scope
+The hidden command `alpha __core --stdio` implements the core side of the
+front protocol. It is an internal debugging entry point.
 
-The kernel provides the component runtime. It manages contexts, service
-registries, declared dependencies (reactive coeffects), typed events,
-reversible effects, scopes, lifecycle, and scope-bound task spawning. Its only
-IO is terminal and stdio.
+A front supervisor starts the hidden core child, performs the protocol
+handshake, and owns the child lifetime. The default policy allows three retries
+after the initial startup attempt. A restarted core reads durable sessions
+again. It does not replay an interrupted turn automatically.
 
-### D2: Agent loop is a module
+Each front uses its own core instance. A front does not attach to another
+front's core. A second writer for an active session receives `session_busy`.
 
-The default ReAct loop is a module, not part of the kernel. Consumers depend on
-the `AgentDriver` trait. The default `AgentLoop` registers under the same
-service key, which lets a composition replace it with another driver. Each
-turn receives its agent-scoped `Ctx`, so progress is emitted as typed live
-events instead of through a loop-specific observer callback.
+## Kernel
 
-### D3: Compile-time composition
+The kernel owns the component runtime and basic terminal and stdio support.
+Substantial behavior does not live there.
 
-Modules are Rust crates and composition happens at compile time. M1 has no
-runtime plugin loader, dynamic library ABI, or WASM host.
+The runtime provides:
 
-### D4: Module granularity
+- Typed contexts and service lookup through parent scopes.
+- Singleton services and named registries.
+- Declared module requirements and provisions.
+- Reversible registrations through disposers.
+- Five event dispatch modes: `emit`, `waterfall`, `parallel`, `serial`, and
+  `bail`.
+- Scope-bound task spawning and cancellation.
 
-A capability is the unit of replacement. One module may provide several
-capabilities, such as tools, adapters, or policies, as long as each has a
-stable key and can be enabled, disabled, or replaced on its own. A module
-boundary is not a replacement boundary. Bundles only wire dependencies
-together and contain no behavior.
+Runtime scopes form this chain:
 
-### D5: Singleton and registry capabilities
+| Scope | Contents |
+| --- | --- |
+| Global | Composition-level services such as provider registries and credential storage |
+| Location | Workspace-bound filesystem, process, configuration, prompt, compaction, and session services |
+| Agent | One session actor, route override, mode, tool overlay, and steer queue |
+| Call | Ephemeral call state and cancellation |
 
-- Singleton capabilities have exactly one provider. A second provider is a
-  build error unless the composition declares an override.
-- Registry capabilities, such as tools, adapters, and commands, accept
-  multiple providers keyed by name. Static name collisions fail the build.
-  Dynamic sources use namespaces such as `mcp__<server>__<tool>`.
+Location contexts are cached by workspace root and fixed cwd. Removing an idle
+Location releases its services. Agent actors are hosted separately from the
+Location cache and may be evicted while idle.
 
-### D6: Composition source is the Cargo dependency graph
+## Composition
 
-The app declares modules as ordinary dependencies in `Cargo.toml`. Each module
-crate lists its capabilities in `[package.metadata.alpha]`. During the build,
-`build.rs` calls `alpha_build::check()`, which:
+Modules are ordinary Rust crates selected by the app's Cargo dependency graph.
+`alpha-bundle-default` supplies the default dependencies. Module features can
+remove individual tools or providers from a crate.
 
-1. reads the resolved dependency graph and enabled features,
-2. validates the composition (missing requirements, singleton conflicts,
-   invalid overrides, static registry name collisions, metadata version),
-3. generates an explicit module table into `OUT_DIR`.
+Each module declares its key, requirements, provisions, and capabilities in
+`[package.metadata.alpha]`. The app build script calls `alpha_build::check()`,
+which reads the resolved graph and validates:
 
-`main.rs` includes the generated table through `alpha_kernel::bootstrap!()`.
-Build-time tooling writes only to `OUT_DIR` and reports problems as
-diagnostics. It does not edit manifests or source files, so any suggested fix
-must be applied by the user. If an `alpha fix` helper is added later, it must
-default to a dry run and require confirmation before making changes.
+- Missing requirements.
+- Duplicate singleton providers.
+- Invalid composition overrides.
+- Static registry name collisions.
+- Module metadata and version compatibility.
 
-### D7: Options are runtime configuration
+The build writes an explicit module table to `OUT_DIR`. It does not modify
+manifests or source files at build time. `alpha_kernel::bootstrap!()` includes
+that generated table.
 
-Composition and module presence are fixed at compile time. Tunable values such
-as model names, timeouts, and limits live in TOML and follow this precedence:
+Runtime plugin loading, dynamic-library modules, and WASM hosting are absent
+from the architecture. Modules are trusted compiled Rust code.
 
-module defaults < user config < project config < environment < CLI flags.
+## Protocol and schema
 
-Modules declare a serde schema and metadata for their options, including
-documentation, whether a value is secret, whether a restart is required, and
-its scope. The CLI, TUI, and generated documentation use that metadata.
-Unknown keys are rejected. Effective values keep their provenance so
-`alpha config show` can report which layer supplied each value.
+The front protocol is JSON-RPC 2.0 over stdio with newline-delimited JSON.
+Protocol stdout contains messages only. Logs and diagnostics use stderr.
 
-### D8: The session log is the single source of truth
+`alpha-schema` defines the shared request, notification, durable event, live
+event, provider, session, and interaction payloads. Frontends consume these
+typed values. They do not parse raw protocol JSON into application state.
 
-If the model can observe something, it must be in the log. Everything the
-model sees has to be reconstructible from durable, append-only session events.
-The UI, statistics, resume, fork, compaction, and telemetry are projections
-over that log. New model-visible behavior needs new event types and versioned
-migrations. Compaction appends events instead of rewriting history.
+The protocol covers session creation, resume, attach, event replay, prompt
+submission, cancellation, steering, permission decisions, provider management,
+model discovery, route changes, capabilities, and core information.
 
-### D9: IO boundaries
+### Durable and live events
 
-The kernel provides stdio only. Filesystem, process, and network access are
-seam modules with swappable drivers:
+Durable events are serializable session facts with monotonically increasing
+sequence numbers. Live events report in-process progress and may be dropped.
+Persistent state must remain reconstructible from durable events.
 
-- filesystem: local driver first; remote-workspace, memory, unavailable later
-- process: local driver first; remote and unavailable later
-- network: local HTTP driver first; record/replay driver for tests
+The current durable event schema is version 7. The session header schema is
+version 1. Older supported events are migrated while reading. A session newer
+than the current schema is rejected.
 
-Modules must not call `std::fs`, `std::process`, or sockets directly. This is
-both a contract and a CI check. Tools assert permissions explicitly, and the
-tool registry does not wrap calls in implicit permission checks. Trusted
-built-ins capture the services they need; application tools receive only the
-capabilities they require.
+## Session storage
 
-### D10: Scopes
+The session directory defaults to:
 
-Runtime scopes form a chain: Global, Location, Agent, and Call.
-
-- Global contains composition-level singletons such as telemetry and the
-  credential store.
-- Location contains the project service graph: filesystem root, permission
-  policy, execution world, project config, watchers, and session storage.
-- Agent contains one session or agent: loop, model route, session state, and
-  tool overlay.
-- Call contains cancellation tokens and other ephemeral effects.
-
-Location graphs are created when needed and can be reclaimed while idle.
-
-### D11: Workspace determines cwd
-
-A workspace defines where execution happens, either at a local root or on a
-remote target. Nothing below the workspace may choose its own cwd:
-
-- The Location cwd is fixed when the Location is created, either at the
-  workspace root or at a subdirectory.
-- Processes, filesystem, git, search, and watchers all derive paths from the
-  Location.
-- The harness process's own OS cwd is never consulted. CI lint bans
-  `current_dir` and `set_current_dir` outside the workspace module.
-- Changing cwd requires explicitly rebinding to a new Location, recorded as a
-  durable event.
-- Agents, tools, and individual calls have no cwd override parameter.
-
-### D12: Delivery form
-
-Headless and SDK first:
-
-- `alpha run`: one-shot and streaming stdout, for scripts and CI.
-- `alpha chat`: interactive managed-core chat front.
-- `alpha tui`: full-screen terminal profile backed by a managed core.
-- `alpha desktop`: GPUI Kit desktop profile backed by the same managed core.
-- `alpha __core --stdio`: hidden core process managed by a front.
-- Rust SDK embeds the core crates directly.
-
-`chat`, `tui`, and `desktop` share the same UI-independent front runtime and
-differ only in their presentation adapter. A daemon can be added later because
-the protocol and transport are separate.
-
-### D13: External protocol
-
-The protocol is JSON-RPC 2.0 over stdio with newline-delimited JSON framing.
-stdout carries protocol messages only, and logs go to stderr. The
-`alpha-schema` crate owns public shapes, durable payloads, provider metadata,
-and typed front protocol messages such as `SessionEventNotification`. The
-first carrier is the private stdio pipe between a front supervisor and its
-core child. Other carriers can be added without changing the protocol.
-
-Methods include session lifecycle (`session.create`, `session.list`,
-`session.resume`, `session.attach`, `session.events`), message submission,
-cancellation, and approval requests (`permission.request` as a server-initiated
-request).
-
-### D14: Events
-
-Events fall into two classes:
-
-- Durable events record session facts. They are serde-serializable, versioned,
-  and carry a monotonically increasing `seq`. Resume, replay, projections, and
-  telemetry use them.
-- Live events support process-local observation and interception. They may
-  contain values that cannot be serialized, such as handles or cancellation
-  tokens, and the runtime may drop them. Any state worth keeping must be
-  reconstructible from durable events.
-
-Each event uses one of five dispatch modes: `emit`, `waterfall`, `parallel`,
-`serial`, or `bail`. The mode is part of the event's type contract and is
-enforced with sealed marker traits. Event domains are namespaced as
-`session/*`, `agent/*`, `tools/*`, `fs/*`, and `perm/*`. A scope owns listener
-registrations, and removing the scope reverses them.
-
-### D15: Concurrency and writing
-
-- Each agent has one driver task with a bounded mailbox. Agent state is
-  mutated only inside that task.
-- Each session has one writer. The driver owns the write handle, and the
-  session module flushes batches through an internal writer task. Sequence
-  numbers are assigned when an event is appended.
-- Tool calls run with bounded parallelism (default 4). Tools declare
-  `parallel-safe` or are exclusive by default; exclusive calls act as ordering
-  barriers. Durable results commit in call order; live progress is immediate.
-- Cancellation uses a token tree with scope, turn, step, and call levels.
-- Background work must use `ctx.spawn` (scope-bound, cancelled and joined on
-  scope close). Raw `tokio::spawn` is banned by lint.
-
-### D16: Repository layout
-
-The repository is a Cargo workspace. The app package `alpha-harness` lives in
-`apps/alpha-harness` and produces the `alpha` binary. Modules and libraries
-live under `crates/`, and the toolchain is pinned in `rust-toolchain.toml`.
-
-### D17: Module distribution
-
-Modules are ordinary crates that can be distributed through crates.io, git, or
-path dependencies. The `alpha-module` keyword is used for discovery. The
-kernel API follows semver, and during 0.x a breaking change bumps the minor
-version. The app commits `Cargo.lock`. Third-party modules are trusted,
-compiled code; capability discipline comes from contracts and linting, not
-from a sandbox. CI runs supply-chain checks with cargo-deny and cargo-audit.
-
-### D18: Tools
-
-Built-in and third-party tools use the same contract:
-
-- Typed input via serde plus schemars; typed machine output; non-empty
-  model-visible content; optional UI metadata (three-value result).
-- Errors are classified: `ToolFailure` (expected, model-visible),
-  operational errors, and cancellation (never a tool result).
-- Tools may prepare model-facing metadata before schemas are generated. The
-  loop awaits preparation once per turn, and tools cache it until the runtime
-  scope is rebuilt.
-- Execution follows one pipeline: a per-request tool snapshot is frozen in
-  `request/header`, input validation, `tools/pre-execute` waterfall, explicit
-  permission assertion, execution, `tools/post-execute`, normalization and
-  bounding (head plus tail truncation), durable commit in call order.
-- Registrations are Location-scoped with Agent overlays. Static names are
-  build-checked; dynamic names are namespaced.
-- Tool-level pruning uses Cargo features inside a module crate.
-
-M1 tools: `read`, `grep`, `write`, `edit`, `shell`.
-
-The tool input and output types:
-
-```rust
-pub struct ShellInput {
-    pub shell: Option<ShellKind>, // defaults to the Location default shell
-    pub command: String,
-    pub timeout_ms: Option<u64>,
-    pub description: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct ShellOutput {
-    pub shell: ShellKind,
-    pub exit_code: i32,
-    pub duration_ms: u64,
-    pub truncated: bool,
-}
+```text
+$ALPHA_HARNESS_STATE_DIR/sessions
 ```
 
-`shell` replaces a separate bash tool. The process seam detects available
-shells per Location, so a remote workspace reports its own list. The tool
-description and schema list the available shells and the default. If a shell
-is unavailable or unknown, the model receives a failure that lists the valid
-options. Shell kinds are registry entries (`bash`, `zsh`, `fish`, `sh`,
-`pwsh`, `powershell`, `cmd`, and third-party kinds) with per-kind argv
-templates. The default shell is resolved from module config, then `$SHELL`,
-then a platform fallback. Shell calls are exclusive, assert `shell.exec`,
-inherit the parent environment with an optional denylist, cancel by killing
-the process group, and stream stdout and stderr as tagged live progress.
-Shell discovery runs before the first schema is advertised, so the description
-does not switch from an unprepared placeholder to a populated list in a later
-turn.
+When that base directory is unset, the store uses:
 
-### D19: Permission modes and sandbox
-
-Four user-facing modes:
-
-| Mode | Sandbox | Boundary behavior |
-| --- | --- | --- |
-| `read` | read-only, network off, no execution | mutate requests denied, no prompts |
-| `auto` (default) | workspace-write plus temp dirs, network off, protected paths read-only | sandbox-contained actions run automatically; requests outside the sandbox ask for synchronous approval |
-| `reviewed` | same as `auto` | two-stage review chain, high risk prompts the user |
-| `free` | full access, network on | no prompts |
-
-Filesystem and process tools choose their execution boundary from the
-effective mode on every call. `auto` and `reviewed` use workspace-rooted
-filesystem access and sandboxed process runners. `free` uses full-access local
-filesystem and process runners. A mode change therefore takes effect without
-rebuilding the session runtime.
-
-M1 ships `read`, `auto`, `reviewed`, and `free`.
-
-Approval prompts offer three choices: deny, allow once, and allow for this
-session. There is no "always allow" option. Session grants are durable events,
-survive resume, and expire with the session. Persistent grants exist only when
-the user edits a policy file.
-
-Never auto-approved: critical-path deletions, credential files, policy and
-sandbox configuration, push and publish/deploy operations, and cross-session
-messaging.
-
-The `reviewed` mode makes decisions in this order:
-
-1. Static rules; deny wins; protected classes are intercepted.
-2. The intent classifier decides whether the request can proceed directly. By
-   default, sandbox-contained requests are allowed and everything else goes to
-   review.
-3. After classifier handoff, the automatic approval reviewer makes the final
-   decision. An `allow` proceeds; a `deny` is final and the action does not
-   run.
-4. The default reviewer allows local read-only actions and denies other
-   unsandboxed requests. Custom classifier and reviewer providers can be
-   mounted through the permission module; reviewer failures fail closed by
-   returning `deny`.
-5. Verdicts and their decision sources are recorded as durable events.
-
-The classifier and reviewer are replaceable service seams. A model-backed
-implementation can classify intent and assess risk, while the built-in
-providers use deterministic, conservative rules. Reviewer requests contain the
-action, resources, model-provided reason, and sandbox-boundary status. Raw tool
-output and repository content are not included.
-
-The sandbox matrix follows Codex. Linux uses bubblewrap plus seccomp, and
-bubblewrap is already available in the development environment. WSL2 reuses
-the Linux driver. macOS Seatbelt and Windows MXC drivers come after M1.
-Network access is off by default. When enabled, it goes through a
-domain-allowlist proxy; deny rules win, and local or private destinations are
-blocked unless configured otherwise.
-
-The session header records the initial mode. Switching modes is an explicit
-user action and appends a durable event. Agents cannot change their own mode.
-`free` requires an explicit flag or confirmation and cannot be granted by
-project policy. A future managed policy layer can disable it.
-
-### D20: Resume
-
-Session storage:
-
-```
-~/.local/state/alpha-harness/sessions/<uuidv7>/
-  header.json        identity, workspace/location binding, format version
-  session.v0.jsonl   append-only durable events, one per line
-  session.vN.jsonl   successor generation published only on write-open
-  session.lock       writer lease (pid plus boot id)
+```text
+$XDG_STATE_HOME/alpha-harness/sessions
 ```
 
-The storage layer guarantees:
+Without `XDG_STATE_HOME`, it uses:
 
-- Opening a session for reading applies migrations in memory and writes
-  nothing.
-- Repair and migration write a new generation beside the unchanged source.
-  Existing generations are never renamed or deleted.
-- One writer holds the lease. A stale lease can be taken over after
-  confirmation.
-- Recovery drops a torn tail line, closes interrupted turns with a durable
-  `turn/end` repair event, and records missing tool results as interrupted.
-  Assistant text that was never delivered before a hard crash is not
-  reconstructed.
-- Model history and the inbox are rebuilt from the log.
-
-`alpha run --resume <id>` opens an idle session and shows its last state.
-`--continue`, or new input, claims pending inbox work and resumes unfinished
-tasks. `session.attach { afterSeq }` joins the event stream, replays durable
-events, then releases live events that arrived during replay before returning
-to normal delivery. Read-only observers such as a TUI therefore see an ordered
-stream without gaps.
-
-### D21: Testing
-
-- Golden replay: the same log produces identical model history and
-  projections.
-- Crash injection: random truncation and torn lines recover with only the
-  unsettled tail lost.
-- Migration tests: read-open writes nothing; write-open publishes a successor
-  without touching the source bytes.
-- Lease tests: second writer rejected, stale lease takeover.
-- Provider cassette replay: HTTP traffic recorded once and replayed
-  deterministically.
-- Protocol end to end: a local TCP carrier runs `alpha-protocol` against the
-  managed core while an injected HTTP seam returns a deterministic SSE stream.
-- Negative build tests: missing requirement, duplicate singleton, invalid
-  override, and static registry collision each fail `cargo check` with
-  actionable diagnostics.
-- Build read-only snapshot test: a build changes only `target/`.
-
-### D22: Prompt assembly
-
-The prompt module assembles one deterministic system prompt from ordered
-sections. Framework, policy, output, tool, project, capability, and persona
-sections have stable keys and priorities. Persona is rendered last. Tool
-schemas remain the canonical tool descriptions and are not copied into the
-prompt. Runtime values such as the permission mode and workspace binding are
-not rendered into the system prompt.
-
-Project instructions are discovered through the filesystem seam from
-`AGENTS.md` and `.alpha/AGENTS.md` between the workspace root and fixed cwd.
-They are size-limited and labeled with their source path.
-
-The complete prompt is recorded as a durable `system_prompt_set` event before
-the first turn that uses it. Resume and replay use that snapshot instead of
-rendering a new prompt in the background. Prompt changes therefore remain
-explicit session facts.
-
-Dynamic context sections render into `context_injected` user messages. The
-runtime section is injected before the first user message of a session and is
-re-injected only when its rendered content changes. The projection ignores an
-older context message when compaction hides it, causing the current snapshot to
-be injected again. This keeps the stable system prefix intact while making
-later environment changes explicit and append-only.
-
-### D23: Context compaction
-
-The compaction module is an optional pre-turn context transformation. It uses a
-replaceable token estimator and conservative defaults because exact provider
-usage is not part of the event contract. The active context window comes from
-provider model metadata when available; `context_window_tokens` is only the
-fallback for providers that do not report one. When the configured threshold is
-exceeded, it summarizes an older, complete turn prefix and keeps recent raw
-history.
-
-The default `body_after_prefix` scope counts growth after the stable system and
-compacted-history prefix, avoiding repeated rewrites when a large carried prefix
-is still below the model's hard limit. `total` counts the full active context.
-
-The model-generated summary is produced without tools. If summarization fails,
-the compactor commits a bounded deterministic excerpt instead of leaving an
-oversized history untouched. `context_compacted` records the resulting summary
-and the durable sequence range it replaces. History rebuilding inserts the
-summary before records after that range.
-
-### D24: Streaming
-
-`ModelProvider::stream` is the default turn path. A provider without native
-streaming falls back to `complete`, so the contract remains incremental
-without requiring every adapter to implement SSE.
-
-The HTTP seam exposes response bodies as byte streams. The OpenAI-compatible
-adapter parses SSE text and tool-call fragments. The loop emits `agent/*` live
-events for steps, text deltas, thinking deltas, tool lifecycle, completion,
-and errors. It then commits one canonical assistant message and the completed
-tool calls to the durable log. Thinking deltas are emitted separately from
-visible text. If a stream fails, partial thinking and text are preserved as
-structured interrupted content.
-
-The CLI subscribes to live events: stdout receives assistant deltas and stderr
-receives progress. Protocol stdio mode keeps stdout protocol-only.
-
-### D25: Front and core
-
-The public `alpha` binary is the only user entry point. `alpha-core` and
-`alpha-front` are internal crate layers, not separate executables. A front
-supervisor starts one hidden `alpha __core --stdio` child, performs the
-`body.hello` handshake, and manages that child's lifecycle.
-
-All front modes (`run`, `chat`, `tui`, `desktop`, and `sessions`) use the same
-managed-core path. `alpha run`, `alpha chat`, `alpha tui`, and `alpha desktop`
-start their own core process. `alpha sessions` uses the managed core to read
-durable state.
-Each front and core pair is independent. A front never attaches to another
-instance's core, and a second writer for the same session fails with
-`session_busy`.
-
-Core startup defaults to three retries after the first attempt. A runtime crash
-uses the same policy. A retry restarts the core and restores durable session
-state, but it never replays an interrupted turn automatically. The hidden core
-command exists for manual debugging and is not a supported user workflow.
-
-The core caches Location contexts by `(workspace root, fixed cwd)`. Sessions in
-the same Location share filesystem, process, prompt, and compaction services.
-Each session actor adds its own mode, tools, approval channel, steer queue, and
-provider override. The shared front runtime ignores events from sessions other
-than the active one.
-
-`alpha-front-runtime` owns frontend state and behavior that does not depend on
-a UI toolkit. This includes session lifecycle, turn submission, steering,
-cancellation, mode and route changes, provider configuration, model selection,
-transcript reduction, interaction timeouts, slash-command behavior, and
-recovery after a core restart. It depends on the protocol client, supervisor,
-and schema, not on a terminal or desktop library. Frontends consume typed
-state and events instead of parsing protocol JSON themselves. Durable session
-notifications always surface a `FrontEvent::StateChanged` signal, even when no
-more specific live or turn event exists, so polling adapters can redraw after
-every durable projection update.
-
-Provider management is a shared runtime workflow backed by
-`provider.list_kinds`, `provider.list_instances`, and
-`provider.credential_status`. The runtime can create and remove instances,
-choose the default instance, store an API key through the credential module,
-validate an instance, edit provider configuration as JSON, refresh provider
-state, and confirm a removal. Provider reads never return secrets, and secrets
-do not remain in front state after submission. A new chat starts as an
-in-memory draft. The runtime calls `session.create` only when the first
-non-empty message is submitted.
-
-`alpha-front-tui` handles terminal input, layout, rendering, selection,
-clipboard support, and terminal lifecycle. The `chat` profile stays in the
-current terminal, while `tui` enters the alternate screen. Both consume the
-shared runtime.
-
-`alpha-front-desktop` owns GPUI Kit window lifecycle, layout, keyboard and
-pointer mapping, selection, and rendering. It consumes typed front state and
-does not duplicate session, turn, provider, command, or timeout behavior. Its
-source is split by presentation concern: `shell` owns the ambient workspace
-frame, `composer` owns the composer and route popovers, `transcript` owns
-message and tool rendering, `permission` owns inline approval decisions,
-`sessions`, `providers`, and `context_panel` own their on-demand surfaces, and
-`model_picker`, `command_palette`, and `slash_palette` own their selection
-surfaces. `scroll` owns scroll-handle selection, wheel smoothing, and reset
-behavior. `session_actions` and `provider_actions` keep surface workflows out
-of adapter construction. Shared color and motion tokens are presentation-only.
-
-The terminal chat screen shows the effective route, reasoning effort, and
-permission mode as `provider/model effort | mode`. `Ctrl-L` selects a configured
-provider and model, `Shift-Tab` cycles the model's configured reasoning effort,
-and `Ctrl-T` opens the effort picker. `/model`, `/effort`, and `/thinking`
-provide the same controls. Route changes affect the next model step and are
-durable, so resume restores the effective provider, model, and reasoning
-effort. Selecting a model also stores it as the provider instance's default
-model and stores the provider as the default, so new sessions start with the
-same route. Thinking content is rendered separately from assistant text
-without role prefixes. Assistant Markdown supports GFM tables. User messages
-use a full-width dark-gray band on a near-black blue canvas. Dragging over
-transcript text highlights the selection and copies it to the terminal host
-clipboard with OSC 52 when the user releases the mouse. Messages and slash
-commands share one multiline composer with command and argument completions.
-`Ctrl-R` opens the terminal session manager, which shows the first user message
-as a preview and deletes idle sessions after confirmation. A session cannot be
-deleted while a turn is running.
-
-The desktop shell uses one centered conversation column, an ambient workspace
-header, and on-demand surfaces rather than persistent sidebar chrome. Sessions,
-context, command palette, model route, reasoning effort, permission mode, and
-provider management open from keyboard commands or inline controls. The
-transcript renders durable user, thinking, assistant, tool, error, queued-steer,
-and permission states. Tool calls group into a compact disclosure, permission
-requests expose deny, once, and session decisions in place, and the context
-panel projects token usage, changes, activity, and capabilities. The composer
-accepts attached paths as explicit `@path` references but leaves prompt
-semantics to the shared runtime. Provider-native capabilities can be replaced
-from the context panel or command palette; the desktop sends the resulting
-list through the runtime's durable capability workflow. Presentation entry,
-popover, expansion, context-tab, toast, and modal motion use the desktop motion
-tokens and defer reduced-motion handling to GPUI. Every desktop scroll surface
-uses one explicit `ScrollHandle` for its viewport and scrollbar. Pressing or
-dragging the scrollbar moves that same handle. The scrollbar is a sibling
-overlay outside the scrolled content, with a reserved content gutter, so rows
-cannot paint beneath the thumb. Wheel and touchpad deltas are both accumulated
-into a target and sampled through GPUI's keyed `Spring`, preserving velocity
-across rapid events and scheduling frames through `request_animation_frame`.
-Scrollbars stay visible with the reference shell's transparent track and muted
-thumb.
-
-The transcript projection is cached behind one `Arc<Vec<...>>` and refreshed
-only after runtime events mutate front state. Its key is the desktop
-conversation epoch rather than the eventual durable session ID, so the first
-turn does not remount when a draft becomes a stored session. Item text is held
-as `SharedString`, and every assistant item owns a stable keyed `TextView`
-state. Markdown parsing can therefore extend the live document incrementally
-without rebuilding all transcript content on scroll or animation frames.
-
-Desktop shortcuts are `Ctrl-N` for a draft, `Ctrl-R` for sessions, `Ctrl-P` for
-providers, `Ctrl-L` for models, `Ctrl-T` for reasoning effort, `Ctrl-K` for the
-global command palette, and `?` for the shortcut reference. `Enter` sends,
-`Shift-Enter` inserts a newline, and `Tab` accepts slash-command completion.
-
-### D26: Credential storage
-
-Provider secrets are stored only through the credential module. The module
-exposes one `CredentialStore` service backed by Secret Service on Linux,
-Keychain on macOS, or Credential Manager on Windows. Tests use an in-memory
-backend.
-
-Provider instances store only an opaque `auth_ref`. They never contain secret
-values, environment-variable names, or platform-specific credential details.
-If the keyring backend is unavailable, credential operations fail closed and
-the front reports `keyring_unavailable`. There is no plaintext-file fallback.
-
-The workspace MSRV is Rust 1.99 because the GPUI Kit desktop stack uses
-current GPUI platform, text, and credential dependencies that require it.
-
-### D27: Provider API adapters
-
-Provider kinds and API adapters are separate module layers. A provider kind
-owns authentication, provider configuration, model metadata, compatibility
-options, and request hooks. An API adapter owns one wire protocol: message
-conversion, streaming, tool-call accumulation, usage normalization, and
-provider error mapping.
-
-Adapters register under the global `api.adapter` registry capability. Provider
-modules declare required and optional adapter keys and choose an adapter for
-each instance or model. Adapter crates do not depend on provider modules, and
-provider modules do not copy an adapter's protocol implementation.
-
-The first provider set includes generic OpenAI Chat Completions, OpenAI
-Responses, and Anthropic Messages kinds, along with dedicated DeepSeek and
-OpenCode Go kinds. DeepSeek uses the Anthropic Messages adapter so
-provider-native web search follows the same request path.
-
-Model catalogs are layered. The core uses the provider's `/models` endpoint
-with the stored credential when it can. Known ids keep their static metadata,
-while newly discovered ids receive fallback metadata. Static provider metadata
-remains the offline fallback. `model_overrides` in the user TOML can change a
-model name, adapter, context window, output limit, reasoning flag,
-`reasoning_levels` (or `thinking_levels`), provider tools, or default model.
-
-Provider requests carry the selected reasoning level. OpenAI Chat Completions
-and Responses map it to `reasoning_effort` and `reasoning.effort`; Anthropic
-Messages maps it to a thinking mode and token budget. `auto` omits the explicit
-control.
-
-OpenCode Go requests also receive the durable session id in
-`x-opencode-session`. This is the provider's required per-conversation routing
-header; an explicitly configured header still takes precedence.
-
-If provider config migration fails, the previous config is kept, the instance
-is marked disabled, and provider construction rejects it until the user
-repairs or replaces the configuration.
-
-The hidden core exposes provider kind discovery, instance CRUD, validation, and
-credential operations through `alpha-protocol`. Runtime instances live in the
-global provider instance registry. The configuration layer persists that
-projection to user TOML without changing the protocol surface. The core
-creates `auth_ref` values and removes credentials when an instance is removed.
-If keyring cleanup fails, the instance is still removed and the front reports
-the cleanup warning.
-
-Session loops hold a dynamic provider handle instead of a provider built once
-at session creation. Updates to a provider instance therefore appear on the
-next model step. A session does not need to restart when an endpoint, header,
-or adapter changes.
-
-Provider instances are persisted under `[providers.instances.<id>]` in the
-user configuration file. Writes use last-write-wins and an atomic rename. The
-in-memory registry is updated after the write succeeds.
-
-### D28: Structured assistant content
-
-Assistant messages are durable sequences of `AssistantContentBlock` values:
-text, thinking, local tool calls, provider tool calls, provider tool results,
-and citations. Local tool calls also produce separate `ToolCall` and
-`ToolResult` events. Provider-native tools stay inside the assistant message
-and never enter the local tool registry.
-
-Adapters preserve provider thinking when replaying history. OpenAI Chat
-Completions sends assistant `reasoning_content`. OpenAI Responses sends
-`reasoning` items with encrypted content. Anthropic Messages sends signed
-`thinking` blocks and falls back to text when a signature is unavailable.
-Provider-facing history therefore keeps the structured content exposed by the
-session log and frontends.
-
-Schema 1 assistant messages with a plain `text` field are migrated into a
-single text block when read. The current durable schema is version 7.
-Provider-native tools, including Anthropic `web_search`, use provider tool
-blocks, so the transcript and replay path do not need provider-specific event
-types.
-
-Each session has an effective provider/model route and thinking level. The
-initial route comes from session creation metadata. Later changes append
-`route_changed` events and apply to the next model step. Resume rebuilds the
-route from the durable projection.
-
-Before each model step, the loop appends a durable `request_header` event with
-the provider, model, thinking level, local tool names, and provider-native tool
-names. That event is the capability snapshot for the request.
-
-`session.set_capabilities` can override provider-native tools for one session.
-The override is recorded as a durable `capabilities_set` event and applies to
-later model requests.
-
-Session actors stay resident only while active or recently used.
-`alpha-module-agent-host` evicts idle actors. A later `session.resume` rebuilds
-the projection from the durable log and starts a new actor.
-
-Steers sent outside an active turn remain pending until
-`session.confirm_steers` accepts or discards them. Accepted steers start a new
-turn. Discarded steers are removed without entering model history. The pending
-steer queue is bounded and rejects overflow. Queued and settled steer
-identities are durable, so a resumed actor rebuilds the pending set from the
-log and waits for confirmation before executing anything. Discarding returns
-the removed messages to the frontend, allowing an active queued steer to be
-restored to the composer instead of being injected.
-
-## 4. Runtime contract sketch
-
-A module implements the `Module` contract. It declares its requirements and
-provisions, defines a typed config, and provides an `activate` function that
-registers services, tools, listeners, and tasks. Every registration returns a
-disposer owned by the module scope. Deactivation unwinds the disposers in
-reverse order.
-
-Capabilities declare a scope level (global, location, or agent) and a kind
-(singleton or registry). The composition binds singleton providers; modules do
-not bind them directly. Registry entries receive their names when registered.
-
-The sketch below is not a final API:
-
-```rust
-pub trait Module: Send + Sync + 'static {
-    type Requirements;
-    type Config: serde::de::DeserializeOwned + Default;
-    const KEY: &'static str;
-
-    fn activate(&self, ctx: &Ctx, config: &Self::Config) -> Result<(), ActivateError>;
-}
+```text
+~/.local/state/alpha-harness/sessions
 ```
 
-## 5. Crates
+One session directory contains:
+
+```text
+header.json
+session.vN.jsonl
+session.lock
+```
+
+`header.json` stores the header schema, UUIDv7 session id, creation time,
+initial permission mode, workspace binding, provider, and model. The JSONL file
+contains append-only event envelopes. The lock file contains the writer lease.
+
+The session writer assigns sequence numbers when it appends events. One process
+holds the writer lease. A stale lease can be replaced after recovery checks.
+
+Read-open applies supported event migrations in memory and leaves stored files
+unchanged. Repair or migration writes a successor generation next to the source
+file. Existing generations are not renamed or deleted.
+
+Recovery drops a torn final line, closes an interrupted turn with a durable
+repair event, and records unfinished tool calls as interrupted. Model history,
+pending steers, route state, capabilities, prompt snapshots, compacted context,
+file changes, and activity are rebuilt from events.
+
+## Agent loop
+
+`alpha-module-loop` provides the default `AgentDriver`. The driver is a module
+service and can be replaced by composition.
+
+The default loop processes one turn in this order:
+
+1. Inject pending steers at a step boundary.
+2. Run the context injector and compactor hooks.
+3. Append a durable `request_header` event with provider, model, reasoning
+   level, local tools, and provider-native tools.
+4. Stream the model response and publish live step, text, thinking, tool, and
+   error events.
+5. Append the canonical assistant message with structured content blocks.
+6. Execute returned tool calls in response order.
+7. Continue until the model returns no tool calls or the step limit is reached.
+
+When the step limit is reached, the loop makes one final request without tools
+so the model can summarize the work.
+
+Tool calls and results are durable events and are also represented in model
+history. A tool failure that is visible to the model settles as `failed`.
+Operational failures end the turn as failed and emit an agent error.
+
+Cancellation is scope-bound. Dropping a scope cancels its spawned work and
+unwinds its listeners and services.
+
+### Steering
+
+Steers sent while a turn is active enter a bounded queue. The loop injects
+queued steers before the next model step. A steer sent outside an active turn
+remains pending until a frontend confirms or discards it.
+
+Accepted pending steers start a new turn. Discarded steers are removed from the
+model path but remain identifiable in durable events. The frontend can restore
+a discarded message to the composer.
+
+## Providers and models
+
+Provider kinds and API adapters are separate layers.
+
+A provider kind owns authentication, provider configuration, model metadata,
+compatibility options, and provider-specific request hooks. An API adapter owns
+one wire protocol and its message conversion, streaming parser, tool-call
+accumulation, usage mapping, and error mapping.
+
+The default composition includes:
+
+- Generic OpenAI Chat Completions.
+- Generic OpenAI Responses.
+- Generic Anthropic Messages.
+- DeepSeek.
+- OpenCode Go.
+
+The available protocol adapters are OpenAI Chat Completions, OpenAI Responses,
+and Anthropic Messages.
+
+Provider and adapter registrations use global registries. Provider modules
+declare required and optional adapter keys. API adapter crates do not depend on
+provider modules.
+
+The core reads model catalogs from a provider's `/models` endpoint when the
+stored credential allows it. Known model ids use bundled metadata. New ids use
+fallback metadata. The bundled catalog remains the offline fallback.
+
+User configuration can override a model display name, adapter, context window,
+output limit, reasoning support, reasoning levels, provider tools, and default
+model.
+
+Each session has an effective provider, model, and reasoning level. The initial
+route is stored in session creation data. Route changes append durable events
+and apply to the next model step. Selecting a model also updates the provider
+instance default for new sessions.
+
+Provider requests carry the session id. Adapters that need conversation routing
+headers receive it, including OpenCode Go's `x-opencode-session`.
+
+Provider instances use dynamic handles inside session actors. Changing an
+endpoint, header, adapter, or other provider configuration affects the next
+model step without restarting the session.
+
+## Tools
+
+The default local tools are `read`, `grep`, `write`, `edit`, and `shell`.
+
+A tool implements a typed contract with serde and JSON Schema input, typed
+output, model-visible content, and optional UI metadata. Expected failures are
+returned to the model. Operational failures end the turn. Cancellation does not
+create a tool result.
+
+Tool execution uses this pipeline:
+
+1. Freeze the request's tool snapshot in `request_header`.
+2. Validate input.
+3. Run the tool pre-execute event.
+4. Assert permissions for the requested resources and execution boundary.
+5. Execute through the declared seams.
+6. Run the post-execute event.
+7. Bound model-visible output.
+8. Append the durable tool result.
+
+Tools do not call `std::fs`, `std::process`, or sockets directly. The filesystem
+and process modules provide swappable drivers. The HTTP module provides the
+network seam and cassette recording and replay for tests.
+
+`shell` supports the shell kinds available in the active Location. Linux desktop
+builds use bubblewrap for sandboxed process execution when it is available.
+There is no macOS or Windows sandbox driver in the current tree.
+
+## Permissions
+
+The permission modes are:
+
+| Mode | Read | Workspace write | Outside workspace | Network |
+| --- | --- | --- | --- | --- |
+| `read` | Allowed | Denied | Denied | Denied |
+| `auto` | Allowed | Sandbox rules | Approval required | Denied by default |
+| `reviewed` | Allowed | Sandbox rules plus automated review | Review and approval rules | Denied by default |
+| `free` | Allowed | Allowed | Allowed | Allowed |
+
+Approval prompts offer deny, allow once, and allow for the session. Session
+grants are durable and end with the session. Persistent grants come from policy
+configuration.
+
+Static deny rules take precedence. In `read`, `auto`, and `reviewed` modes,
+protected paths and destructive operations remain guarded when a broader rule
+would otherwise allow them.
+
+In `reviewed` mode, static policy runs first. A classifier can pass a request
+directly under the configured rules. Requests that need more scrutiny go to the
+automatic reviewer. Reviewer denial is final. Reviewer failure fails closed.
+
+Permission decisions and their sources are durable session events. Agents cannot
+change their own permission mode. Mode changes come from a frontend action.
+
+## Credentials
+
+Provider secrets are stored through `alpha-module-credential`. The module uses:
+
+- Secret Service on Linux.
+- Keychain on macOS.
+- Credential Manager on Windows.
+
+Tests use an in-memory store. Provider instances store only an opaque
+credential reference. Frontend responses do not return secret values. Removing
+an instance also requests credential deletion. A failed keyring cleanup is
+reported while the instance removal still completes.
+
+If the platform store is unavailable, credential operations fail closed. The
+repository has no plaintext credential fallback.
+
+## Configuration
+
+The provider configuration path defaults to
+`$XDG_CONFIG_HOME/alpha-harness/config.toml`, or
+`~/.config/alpha-harness/config.toml` when `XDG_CONFIG_HOME` is unset.
+
+The file stores provider instances, defaults, and model overrides. Writes use
+an atomic replacement and update the in-memory registry after the file write
+succeeds.
+
+The shared configuration stack supports these layers, from lowest to highest:
+
+1. Module defaults.
+2. User configuration.
+3. Project configuration.
+4. Environment variables.
+5. Command-line flags.
+
+Unknown keys are rejected. Resolved values keep provenance.
+
+## Prompt and context
+
+The prompt module builds a deterministic system prompt from ordered sections.
+Sections have stable keys and priorities. Tool schemas remain the canonical tool
+descriptions.
+
+Project instructions are read through the filesystem seam from `AGENTS.md` and
+`.alpha/AGENTS.md` between the workspace root and fixed cwd. The source path and
+size limit are retained.
+
+Before the first model request, the complete system prompt is appended as a
+durable `system_prompt_set` event. Resume uses that stored text.
+
+Dynamic context messages are appended as durable `context_injected` events.
+They are injected before the first user message and again when their rendered
+content changes. Compaction can hide an older injection, causing the current
+context to be appended again.
+
+## Compaction
+
+The compaction module runs before model steps. It uses a replaceable token
+estimator. The active model's context window takes precedence over the fallback
+configuration value.
+
+The default trigger counts growth after the system and compacted-history prefix.
+It also enforces the hard context limit. A compaction summarizes a complete
+older turn prefix and keeps recent messages.
+
+The summary request runs without tools. If summarization fails, the module stores
+a bounded deterministic excerpt. `context_compacted` records the summary and the
+sequence range it replaces. History rebuilding inserts the summary before later
+events.
+
+## Front runtime
+
+`alpha-front-runtime` contains UI-independent frontend state and workflows. It
+depends on the protocol client, supervisor, and schema. It does not depend on a
+terminal or desktop toolkit.
+
+The runtime owns:
+
+- Session creation, resume, listing, deletion, and active-session selection.
+- Prompt submission, cancellation, steering, and interaction responses.
+- Model, reasoning, permission-mode, capabilities, and provider operations.
+- Transcript reduction.
+- Provider instance and credential workflows.
+- Core restart recovery.
+- Slash-command behavior and interaction timeout state.
+- Durable `StateChanged` signals used by polling adapters.
+
+Provider reads return instance metadata and credential status without secrets.
+Secrets are consumed by the credential workflow and are not retained in front
+state.
+
+A chat starts as an in-memory draft. The runtime calls `session.create` only
+when the first non-empty prompt is submitted.
+
+## Terminal frontend
+
+`alpha-front-tui` owns terminal lifecycle, layout, input mapping, selection,
+clipboard integration, and rendering. It consumes the shared runtime.
+
+`chat` remains in the current terminal. `tui` uses the alternate screen. The
+terminal header displays the route and mode. Markdown tables are rendered for
+assistant text, and transcript text selection copies through the terminal host
+clipboard on release.
+
+The composer supports multiline editing and command completion. The session
+manager, provider manager, model picker, reasoning picker, permission decisions,
+and text prompts are terminal presentation states over shared runtime actions.
+
+## Desktop frontend
+
+`alpha-front-desktop` owns the GPUI Kit window, layout, pointer and keyboard
+mapping, rendering, scrolling, selection, and UI-local animation. Shared session,
+turn, provider, command, and timeout behavior stays in `alpha-front-runtime`.
+
+The presentation modules are:
+
+| Module | Responsibility |
+| --- | --- |
+| `shell` | Ambient header, transcript frame, composer placement, and top-level overlays |
+| `composer` | Multiline composer and route or mode popovers |
+| `transcript` | User, assistant, thinking, tool, error, and permission content |
+| `permission` | Inline interaction decisions |
+| `sessions` | Session list, search, preview, and deletion |
+| `providers` | Provider kind and instance management |
+| `provider_content` | Provider configuration, credentials, validation, and actions |
+| `context_panel` | Usage, changes, activity, and capabilities |
+| `model_picker` | Model selection and search |
+| `command_palette` | Global command search and execution |
+| `slash_palette` | Composer command completion |
+| `change_review` | File list and diff review |
+| `scroll` | Scroll handles, wheel displacement, resets, and scrollbar behavior |
+| `session_actions` | Session surface actions |
+| `provider_actions` | Provider surface actions |
+| `ui` and `theme` | Shared presentation helpers and visual tokens |
+
+Every desktop scroll surface owns an explicit GPUI `ScrollHandle`. The visible
+scrollbar is an official GPUI scrollbar placed as a sibling overlay outside the
+scrolled content. The content reserves a gutter for the bar.
+
+Wheel and touchpad input adds pending vertical displacement instead of assigning
+the handle immediately. Each animation frame consumes part of that displacement
+using the frame's elapsed time. New wheel events extend the pending distance.
+Scrollbar dragging changes the handle directly; the next render detects the
+external movement and discards pending wheel displacement.
+
+Desktop markdown views use stable, per-item `TextView` state. The transcript
+projection is cached in an `Arc<Vec<...>>`, and text values are `SharedString`
+instances. The cache refreshes after runtime state changes. Its key remains
+stable when an in-memory draft receives a durable session id.
+
+Modal, popover, transcript, permission, tool, toast, and streaming-indicator
+motion runs through GPUI animation primitives. The adapter checks GPUI's
+reduced-motion setting for scroll displacement and uses the toolkit's motion
+handling for UI transitions.
+
+## Crates
 
 | Crate | Responsibility |
 | --- | --- |
-| `alpha-kernel` | context, services, events, effects, scopes, structured spawn |
-| `alpha-schema` | public shapes, durable event payloads, protocol method types |
-| `alpha-protocol` | JSON-RPC 2.0 and NDJSON framing, request routing |
-| `alpha-front-client` | blocking alpha-protocol client used by fronts |
-| `alpha-front-supervisor` | managed core child process lifecycle |
-| `alpha-front-runtime` | UI-independent frontend state, controller, and workflows |
-| `alpha-front-tui` | interactive chat and full-screen terminal adapters |
-| `alpha-front-desktop` | GPUI Kit desktop adapter |
-| `alpha-provider-api` | provider descriptors and API adapter contracts |
+| `alpha-harness` | CLI and application composition |
+| `alpha-kernel` | Component runtime |
+| `alpha-schema` | Shared DTOs and durable payloads |
+| `alpha-protocol` | JSON-RPC 2.0 and NDJSON routing |
+| `alpha-macros` | Module and composition macros |
+| `alpha-build` | Cargo graph validation and generated module table |
+| `alpha-bundle-default` | Default module dependencies |
+| `alpha-front-client` | Protocol client |
+| `alpha-front-supervisor` | Core child lifecycle |
+| `alpha-front-runtime` | Shared frontend state and workflows |
+| `alpha-front-tui` | Terminal frontends |
+| `alpha-front-desktop` | GPUI desktop frontend |
+| `alpha-provider-api` | Provider and adapter contracts |
 | `alpha-api-openai-chat` | OpenAI Chat Completions adapter |
 | `alpha-api-openai-responses` | OpenAI Responses adapter |
 | `alpha-api-anthropic-messages` | Anthropic Messages adapter |
-| `alpha-module-provider-openai-chat-completions` | generic OpenAI Chat Completions provider |
-| `alpha-module-provider-openai-responses` | generic OpenAI Responses provider |
-| `alpha-module-provider-anthropic-messages` | generic Anthropic Messages provider |
-| `alpha-module-provider-deepseek` | DeepSeek provider |
-| `alpha-module-provider-opencode-go` | OpenCode Go provider |
-| `alpha-module-provider-config` | user TOML persistence for provider instances |
-| `alpha-macros` | `#[alpha::module]` and composition-related macros |
-| `alpha-build` | dependency-graph validation and module table generation |
-| `alpha-module-config` | layered TOML configuration and provenance |
-| `alpha-module-credential` | cross-platform keyring-backed credential storage |
-| `alpha-module-prompt` | deterministic system-prompt assembly, project instructions, and dynamic context injection |
-| `alpha-module-compaction` | budget estimation and durable context compaction |
-| `alpha-module-session` | append-only session log, projections, migrations |
-| `alpha-module-loop` | default agent driver (replaceable) |
-| `alpha-module-fs` | filesystem seam and local driver |
-| `alpha-module-process` | execution seam and local driver |
-| `alpha-module-http` | network seam and local driver |
-| `alpha-module-permission` | policy, approval flow, sandbox integration |
-| `alpha-module-tools` | `read`, `grep`, `write`, `edit`, `shell` |
-| `alpha-module-provider-openai` | OpenAI-compatible provider adapter |
-| `alpha-bundle-default` | dependencies only: the default M1 composition |
+| `alpha-module-config` | Layered TOML configuration |
+| `alpha-module-credential` | Platform credential storage |
+| `alpha-module-session` | Session log, projections, and migrations |
+| `alpha-module-agent-host` | Session actors and event delivery |
+| `alpha-module-loop` | Default agent driver |
+| `alpha-module-fs` | Filesystem seam and local driver |
+| `alpha-module-process` | Process seam, local runner, and Linux bubblewrap sandbox |
+| `alpha-module-http` | HTTP seam and cassette record or replay |
+| `alpha-module-permission` | Policy, approval, classifier, and reviewer services |
+| `alpha-module-tools` | `read`, `grep`, `write`, `edit`, and `shell` |
+| `alpha-module-prompt` | System prompt, project instructions, and context injection |
+| `alpha-module-compaction` | Token estimation and durable compaction |
+| `alpha-module-provider-config` | Provider instance TOML persistence |
+| `alpha-module-provider-openai` | OpenAI-compatible provider kind |
+| `alpha-module-provider-openai-chat-completions` | Generic Chat Completions provider kind |
+| `alpha-module-provider-openai-responses` | Generic Responses provider kind |
+| `alpha-module-provider-anthropic-messages` | Generic Anthropic Messages provider kind |
+| `alpha-module-provider-deepseek` | DeepSeek provider kind |
+| `alpha-module-provider-opencode-go` | OpenCode Go provider kind |
 
-## 6. M1 scope
+## Verification
 
-The M1 scope includes:
+The repository checks are:
 
-- Kernel primitives, schema, protocol, and build-time composition checks.
-- Session log with resume, lease, repair, and projections.
-- The default loop, an OpenAI-compatible provider, and local fs/process/http
-  drivers.
-- Tools: `read`, `grep`, `write`, `edit`, `shell`.
-- Permission modes `read`, `auto`, `reviewed`, and `free`; policy files;
-  protected paths; durable audit events; and the Linux sandbox driver
-  (bubblewrap plus seccomp).
-- `alpha run` and `alpha serve --stdio` sharing one JSON-RPC/NDJSON schema.
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-The following remain outside M1: macOS and Windows sandbox drivers, MCP,
-subagents, the TUI, multi-Location concurrency, remote drivers, and managed
-policy.
+CI runs the quality job on Ubuntu with the Linux desktop build dependencies. A
+separate matrix runs `cargo check --workspace --all-targets` on Ubuntu, macOS,
+and Windows.
 
-Acceptance criteria:
+The test suite covers:
 
-1. `alpha run "..."` completes a real file-editing task through the seams.
-2. `alpha run` and `alpha serve --stdio` share the same schema; stdout is
-   protocol-only.
-3. Resume works end to end, including lease, repair, and `attach`.
-4. Permission modes behave as specified; prompts offer deny, once, session.
-5. The four negative composition cases fail `cargo check` with actionable
-   diagnostics.
-6. Swapping a loop or provider dependency re-validates and builds.
-7. Provider cassette replay reproduces the same session log.
-8. Builds change only `target/`.
-
-## 7. Milestones
-
-- **M1**: everything in section 6.
-- **Post-M1 A/B**: prompt snapshots, project instructions, context compaction,
-  provider streaming, agent live events, and streamed CLI output.
-- **M1.5**: model-backed reviewer providers, macOS Seatbelt and Windows MXC
-  sandbox drivers, reviewer policy files.
-- **M2**: TUI profile, MCP client module, subagents, multi-Location daemon.
-
-## 8. Open items
-
-- Reviewer model selection and cost policy
-- Project trust UX for project-level policy files
-- Managed policy layer
-- MSRV policy
-- Protocol method catalog and versioning details
+- Cargo graph validation and generated composition.
+- Session append, replay, migration, repair, leases, and deletion.
+- Protocol framing, routing, replay, and server-initiated requests.
+- Prompt assembly, project instruction discovery, and context injection.
+- Compaction thresholds, summaries, and durable replacement ranges.
+- Provider adapters, model metadata, streaming, reasoning, and tool calls.
+- Tool behavior, process sandboxing, filesystem boundaries, and HTTP cassettes.
+- Permission rules, reviewer behavior, and approval outcomes.
+- Terminal rendering, composer editing, session selection, and model selection.
+- Shared frontend state and desktop presentation reduction.
