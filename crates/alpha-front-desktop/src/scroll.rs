@@ -25,7 +25,7 @@ impl AlphaDesktop {
         cx: &mut Context<Self>,
     ) {
         let handle = self.scroll_handle(region).clone();
-        self.scroll_motion[region.index()].prepare(region, &handle, window, cx);
+        self.scroll_motion[region.index()].prepare(&handle, window, cx);
     }
 
     pub(crate) fn reset_scroll(&mut self, region: ScrollRegion) {

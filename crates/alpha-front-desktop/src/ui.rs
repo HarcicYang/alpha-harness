@@ -3,7 +3,8 @@ use std::cell::Cell;
 
 pub(crate) const SCROLL_REGION_COUNT: usize = 12;
 pub(crate) const SCROLLBAR_GUTTER: f32 = 14.;
-const SCROLL_RESPONSE: Duration = Duration::from_millis(110);
+const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(48);
+const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(16);
 const SCROLL_EXTERNAL_DISTANCE: f32 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,16 +44,16 @@ impl ScrollRegion {
 
 #[derive(Debug, Default)]
 pub(crate) struct SmoothScroll {
-    target_y: Cell<f32>,
     applied_y: Cell<f32>,
-    generation: Cell<u64>,
+    remaining_y: Cell<f32>,
+    last_frame: Cell<Option<Instant>>,
 }
 
 impl SmoothScroll {
-    pub(crate) fn reset(&mut self, offset_y: f32) {
-        self.target_y.set(offset_y);
+    pub(crate) fn reset(&self, offset_y: f32) {
         self.applied_y.set(offset_y);
-        self.generation.set(self.generation.get().wrapping_add(1));
+        self.remaining_y.set(0.);
+        self.last_frame.set(Some(Instant::now()));
     }
 
     pub(crate) fn push(&mut self, handle: &ScrollHandle, delta_y: f32) {
@@ -61,36 +62,59 @@ impl SmoothScroll {
             self.reset(actual_y);
         }
         let maximum = f32::from(handle.max_offset().y).max(0.);
-        let target = (self.target_y.get() + delta_y).clamp(-maximum, 0.);
-        self.target_y.set(target);
-        set_vertical_offset(handle, self.applied_y.get());
+        let applied_y = self.applied_y.get();
+        let target_y =
+            (self.applied_y.get() + self.remaining_y.get() + delta_y).clamp(-maximum, 0.);
+        self.remaining_y.set(target_y - applied_y);
+        self.last_frame.set(Some(Instant::now()));
+        set_vertical_offset(handle, applied_y);
     }
 
     pub(crate) fn prepare(
         &self,
-        region: ScrollRegion,
         handle: &ScrollHandle,
         window: &mut Window,
         cx: &mut Context<AlphaDesktop>,
     ) {
+        let now = Instant::now();
         let actual_y = f32::from(handle.offset().y);
         if (actual_y - self.applied_y.get()).abs() > SCROLL_EXTERNAL_DISTANCE {
-            self.target_y.set(actual_y);
-            self.applied_y.set(actual_y);
-            self.generation.set(self.generation.get().wrapping_add(1));
+            self.reset(actual_y);
+            return;
         }
 
-        let target = px(self.target_y.get());
-        let animated = gpui_kit::base::spring(
-            format!("scroll-spring:{}:{}", region.index(), self.generation.get()),
-            target,
-            gpui_kit::base::Spring::new(SCROLL_RESPONSE).with_epsilon(0.25),
-            window,
-            cx,
-        );
-        let animated_y = f32::from(animated);
-        set_vertical_offset(handle, animated_y);
-        self.applied_y.set(animated_y);
+        let remaining_y = self.remaining_y.get();
+        if remaining_y == 0. {
+            self.last_frame.set(Some(now));
+            return;
+        }
+
+        let maximum = f32::from(handle.max_offset().y).max(0.);
+        let next_y = if cx.reduce_motion() {
+            (actual_y + remaining_y).clamp(-maximum, 0.)
+        } else {
+            let elapsed = self.last_frame.get().map_or(Duration::ZERO, |last_frame| {
+                now.saturating_duration_since(last_frame)
+                    .min(SCROLL_MAX_FRAME_TIME)
+            });
+            let progress =
+                1. - (-(elapsed.as_secs_f32()) / SCROLL_TIME_CONSTANT.as_secs_f32()).exp();
+            (actual_y + remaining_y * progress).clamp(-maximum, 0.)
+        };
+
+        let consumed_y = next_y - actual_y;
+        let next_remaining = remaining_y - consumed_y;
+        if next_remaining.abs() <= 0.05 || consumed_y.abs() <= 0.001 {
+            self.remaining_y.set(0.);
+        } else {
+            self.remaining_y.set(next_remaining);
+        }
+        set_vertical_offset(handle, next_y);
+        self.applied_y.set(next_y);
+        self.last_frame.set(Some(now));
+        if self.remaining_y.get() != 0. {
+            window.request_animation_frame();
+        }
     }
 }
 
@@ -112,6 +136,7 @@ pub(crate) fn scrollbar_rail(id: String, handle: &ScrollHandle) -> AnyElement {
                 .id(format!("scrollbar:{id}"))
                 .viewport_from_layout()
                 .mode(ScrollbarMode::Always)
+                .max_fps(60)
                 .styles(|styles| {
                     styles
                         .track(|style| style.bg(transparent_black()).width(px(10.)))
