@@ -4,8 +4,6 @@ alpha-harness is a Rust coding agent. The `alpha` binary starts a local core,
 opens a shared front runtime, and exposes one-shot, terminal, or GPUI desktop
 interfaces. Session state is stored in an append-only event log.
 
-Architecture details are in [docs/architecture.md](docs/architecture.md).
-
 ## Requirements
 
 - Rust 1.99 or newer. The active toolchain is declared in `rust-toolchain.toml`.
