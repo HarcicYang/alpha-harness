@@ -3,7 +3,12 @@ use crate::helpers::*;
 use crate::model::*;
 
 impl AlphaDesktop {
-    pub(crate) fn new(runtime: FrontRuntime, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        runtime: FrontRuntimeManager,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let active_workspace = runtime.active_workspace().to_path_buf();
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Ask alpha to inspect, change, or explain...")
@@ -98,6 +103,10 @@ impl AlphaDesktop {
             composer_menu: None,
             command_palette_query,
             command_palette_open: false,
+            workspace_menu_open: false,
+            workspace_menu_expanded: Some(active_workspace),
+            workspace_menu_sessions: Vec::new(),
+            workspace_menu_workspaces: Vec::new(),
             submit_requested: false,
             context_open: false,
             context_tab: ContextTab::Changes,
@@ -135,6 +144,8 @@ impl AlphaDesktop {
             change_diff_scroll: ScrollHandle::new(),
             tool_scroll: ScrollHandle::new(),
             composer_menu_scroll: ScrollHandle::new(),
+            workspace_list_scroll: ScrollHandle::new(),
+            workspace_session_scroll: ScrollHandle::new(),
             transcript_scroll: ScrollHandle::new(),
             scroll_motion: std::array::from_fn(|_| SmoothScroll::default()),
             transcript_items: Arc::new(Vec::new()),
@@ -171,9 +182,21 @@ impl AlphaDesktop {
                         }
                         let follow_transcript = transcript_is_at_bottom(&this.transcript_scroll);
                         let mut changed = this.runtime.expire_interaction().unwrap_or(false);
-                        match this.runtime.try_receive_events() {
-                            Ok(events) => changed |= !events.is_empty(),
+                        let mut any_workspace_changed = changed;
+                        match this.runtime.poll_workspaces() {
+                            Ok(poll) => {
+                                changed |= poll.active_changed;
+                                any_workspace_changed |= poll.any_changed;
+                            }
                             Err(error) => this.local_status = Some(error.to_string()),
+                        }
+                        for notice in this.runtime.take_notices() {
+                            this.local_status = Some(format!(
+                                "{}: {}",
+                                workspace_name(&notice.workspace.display().to_string()),
+                                notice.message
+                            ));
+                            cx.notify();
                         }
                         this.transcript_dirty |= changed;
                         if this.runtime.chat().interaction.is_some() {
@@ -183,6 +206,8 @@ impl AlphaDesktop {
                             if follow_transcript {
                                 this.scroll_to_bottom(ScrollRegion::Transcript);
                             }
+                            cx.notify();
+                        } else if any_workspace_changed {
                             cx.notify();
                         }
                     })

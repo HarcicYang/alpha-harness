@@ -15,6 +15,8 @@ impl AlphaDesktop {
             ScrollRegion::ChangeDiff => &self.change_diff_scroll,
             ScrollRegion::ToolOutput => &self.tool_scroll,
             ScrollRegion::ComposerMenu => &self.composer_menu_scroll,
+            ScrollRegion::WorkspaceList => &self.workspace_list_scroll,
+            ScrollRegion::WorkspaceSessions => &self.workspace_session_scroll,
         }
     }
 

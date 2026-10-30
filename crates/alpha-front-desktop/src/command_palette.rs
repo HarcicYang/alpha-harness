@@ -81,6 +81,7 @@ impl AlphaDesktop {
         if key == "escape" {
             let had_overlay = self.command_palette_open
                 || self.composer_menu.is_some()
+                || self.workspace_menu_open
                 || self.sessions_open
                 || self.providers_open
                 || self.capabilities_open
@@ -89,6 +90,7 @@ impl AlphaDesktop {
             if had_overlay {
                 self.command_palette_open = false;
                 self.composer_menu = None;
+                self.workspace_menu_open = false;
                 self.sessions_open = false;
                 self.providers_open = false;
                 self.capabilities_open = false;

@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use alpha_front_desktop::run_desktop;
 use alpha_front_runtime::{
-    FrontEvent, FrontRuntime, FrontRuntimeConfig, SessionOptions, read_terminal_approval,
+    FrontEvent, FrontRuntime, FrontRuntimeConfig, FrontRuntimeManager, SessionOptions,
+    read_terminal_approval,
 };
 use alpha_front_tui::{run_chat, run_tui};
 use alpha_schema::LiveAgentEvent;
@@ -77,7 +78,23 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args),
-        command @ (Command::Chat | Command::Tui | Command::Desktop) => {
+        Command::Desktop => {
+            let runtime = match FrontRuntimeManager::start(FrontRuntimeConfig::default()) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("alpha: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match run_desktop(runtime) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("alpha: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        command @ (Command::Chat | Command::Tui) => {
             let runtime = match FrontRuntime::start(FrontRuntimeConfig::default()) {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -88,7 +105,6 @@ fn main() -> ExitCode {
             let result: Result<(), String> = match command {
                 Command::Chat => run_chat(runtime).map_err(|error| error.to_string()),
                 Command::Tui => run_tui(runtime).map_err(|error| error.to_string()),
-                Command::Desktop => run_desktop(runtime).map_err(|error| error.to_string()),
                 _ => unreachable!(),
             };
             match result {

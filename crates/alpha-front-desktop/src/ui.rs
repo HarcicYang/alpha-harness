@@ -1,9 +1,9 @@
 use super::*;
 use std::cell::Cell;
 
-pub(crate) const SCROLL_REGION_COUNT: usize = 12;
+pub(crate) const SCROLL_REGION_COUNT: usize = 14;
 pub(crate) const SCROLLBAR_GUTTER: f32 = 14.;
-const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(48);
+const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(32);
 const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(16);
 const SCROLL_EXTERNAL_DISTANCE: f32 = 0.25;
 
@@ -21,6 +21,8 @@ pub(crate) enum ScrollRegion {
     ChangeDiff,
     ToolOutput,
     ComposerMenu,
+    WorkspaceList,
+    WorkspaceSessions,
 }
 
 impl ScrollRegion {
@@ -38,6 +40,8 @@ impl ScrollRegion {
             Self::ChangeDiff => 9,
             Self::ToolOutput => 10,
             Self::ComposerMenu => 11,
+            Self::WorkspaceList => 12,
+            Self::WorkspaceSessions => 13,
         }
     }
 }
@@ -136,7 +140,7 @@ pub(crate) fn scrollbar_rail(id: String, handle: &ScrollHandle) -> AnyElement {
                 .id(format!("scrollbar:{id}"))
                 .viewport_from_layout()
                 .mode(ScrollbarMode::Always)
-                .max_fps(60)
+                .max_fps(120)
                 .styles(|styles| {
                     styles
                         .track(|style| style.bg(transparent_black()).width(px(10.)))

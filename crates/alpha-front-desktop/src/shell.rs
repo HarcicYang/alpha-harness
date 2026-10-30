@@ -42,10 +42,8 @@ impl AlphaDesktop {
                     .border_1()
                     .border_color(rgba(BORDER_SUBTLE))
                     .bg(rgb(SURFACE))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.local_status =
-                            Some("workspace switching is configured at launch".into());
-                        cx.notify();
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_workspace_menu(window, cx);
                     })),
             )
             .child(
@@ -258,6 +256,7 @@ impl Render for AlphaDesktop {
             && !self.providers_open
             && !self.capabilities_open
             && !self.help_open
+            && !self.workspace_menu_open
             && interaction.is_none();
 
         self.prepare_scroll_motion(ScrollRegion::Transcript, window, cx);
@@ -266,6 +265,10 @@ impl Render for AlphaDesktop {
         }
         if self.command_palette_open {
             self.prepare_scroll_motion(ScrollRegion::Commands, window, cx);
+        }
+        if self.workspace_menu_open {
+            self.prepare_scroll_motion(ScrollRegion::WorkspaceList, window, cx);
+            self.prepare_scroll_motion(ScrollRegion::WorkspaceSessions, window, cx);
         }
         if self.composer_menu == Some(ComposerMenu::Model) {
             self.prepare_scroll_motion(ScrollRegion::ModelPicker, window, cx);
@@ -409,5 +412,6 @@ impl Render for AlphaDesktop {
             })
             .child(self.render_context_panel(&context, cx))
             .child(self.render_change_review(&context, cx))
+            .child(self.render_workspace_menu(cx))
     }
 }

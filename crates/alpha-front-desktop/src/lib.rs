@@ -2,13 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alpha_front_runtime::{
     ActivityState, COMMANDS, CommandOutcome, CommandSpec, ContextView, FileChange, FileChangeKind,
-    FrontRuntime, InteractionDecision, InteractionPrompt, ModelChoice, TranscriptItem,
-    parse_command, supported_reasoning_levels,
+    FrontRuntimeManager, InteractionDecision, InteractionPrompt, ModelChoice, TranscriptItem,
+    WorkspaceStatus, parse_command, supported_reasoning_levels,
 };
 use alpha_schema::{
     AssistantContentBlock, CredentialBackendStatus, PermissionMode, ReasoningLevel, SessionId,
@@ -35,7 +36,7 @@ pub enum DesktopError {
 }
 
 struct AlphaDesktop {
-    runtime: FrontRuntime,
+    runtime: FrontRuntimeManager,
     focus_handle: FocusHandle,
     composer: Entity<TextareaState>,
     model_search: Entity<TextareaState>,
@@ -43,6 +44,10 @@ struct AlphaDesktop {
     composer_menu: Option<ComposerMenu>,
     command_palette_query: Entity<TextareaState>,
     command_palette_open: bool,
+    workspace_menu_open: bool,
+    workspace_menu_expanded: Option<PathBuf>,
+    workspace_menu_sessions: Vec<SessionListEntry>,
+    workspace_menu_workspaces: Vec<PathBuf>,
     submit_requested: bool,
     context_open: bool,
     context_tab: ContextTab,
@@ -80,6 +85,8 @@ struct AlphaDesktop {
     change_diff_scroll: ScrollHandle,
     tool_scroll: ScrollHandle,
     composer_menu_scroll: ScrollHandle,
+    workspace_list_scroll: ScrollHandle,
+    workspace_session_scroll: ScrollHandle,
     transcript_scroll: ScrollHandle,
     scroll_motion: [SmoothScroll; SCROLL_REGION_COUNT],
     transcript_items: Arc<Vec<DesktopTranscriptItem>>,
@@ -152,6 +159,7 @@ mod slash_palette;
 mod theme;
 mod transcript;
 mod ui;
+mod workspace_menu;
 
 use desktop_commands::*;
 use helpers::*;
@@ -161,7 +169,7 @@ use theme::*;
 use ui::*;
 
 /// Run the desktop application until its window closes.
-pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
+pub fn run_desktop(runtime: FrontRuntimeManager) -> Result<(), DesktopError> {
     let mut runtime = Some(runtime);
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
@@ -176,6 +184,7 @@ pub fn run_desktop(runtime: FrontRuntime) -> Result<(), DesktopError> {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
                     window_min_size: Some(size(px(560.), px(560.))),
+                    inactive_frame_interval: Some(Duration::from_millis(8)),
                     ..WindowOptions::default()
                 },
                 cx,

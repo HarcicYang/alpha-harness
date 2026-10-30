@@ -5,6 +5,7 @@
 mod chat;
 mod command;
 mod provider;
+mod workspace;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -28,6 +29,7 @@ pub use provider::{
     ModelChoice, ProviderRemoved, ProviderState, resolve_model_selection,
     supported_reasoning_levels,
 };
+pub use workspace::{FrontRuntimeManager, WorkspaceNotice, WorkspacePoll, WorkspaceStatus};
 
 const EVENT_BATCH_LIMIT: usize = 256;
 
