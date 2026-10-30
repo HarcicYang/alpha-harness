@@ -1,7 +1,11 @@
 use super::*;
 
 impl AlphaDesktop {
-    pub(crate) fn render_transcript(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_transcript(
+        &mut self,
+        viewport_height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if self.transcript_dirty {
             self.transcript_items =
                 Arc::new(desktop_transcript_items(&self.runtime.chat().transcript));
@@ -9,7 +13,7 @@ impl AlphaDesktop {
         }
         let items = self.transcript_items.clone();
         if items.is_empty() {
-            return self.render_empty_transcript(cx);
+            return self.render_empty_transcript(viewport_height, cx);
         }
 
         let namespace = format!("conversation-{}", self.transcript_epoch);
@@ -33,104 +37,52 @@ impl AlphaDesktop {
             .into_any_element()
     }
 
-    fn render_empty_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
-        let suggestions = [
-            (
-                IconName::Layers,
-                "Map the desktop adapter onto the shared front runtime",
-            ),
-            (
-                IconName::Search,
-                "Review the workspace for boundary violations",
-            ),
-            (IconName::Terminal, "Run workspace checks and fix failures"),
-        ];
+    fn render_empty_transcript(&self, viewport_height: f32, cx: &mut Context<Self>) -> AnyElement {
+        let _ = cx;
 
         div()
             .w_full()
-            .pt(px(62.))
+            .h(px((viewport_height - 210.).max(280.)))
             .flex()
-            .flex_col()
+            .flex_row()
             .items_center()
+            .justify_center()
             .child(
                 div()
-                    .size(px(48.))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgba(ACCENT_BORDER))
-                    .bg(rgba(ACCENT_SOFT))
+                    .relative()
+                    .size(px(260.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .font_family("Georgia")
-                    .text_size(px(27.))
-                    .text_color(rgb(ACCENT))
-                    .child("α"),
-            )
-            .child(
-                div()
-                    .mt(px(16.))
-                    .text_size(px(18.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(TEXT))
-                    .child("Start with a task"),
-            )
-            .child(
-                div()
-                    .mt(px(6.))
-                    .text_size(px(10.5))
-                    .text_color(rgb(MUTED))
                     .child(
-                        "Describe a change, ask for an investigation, or reference a file in the workspace.",
+                        empty_alpha_layer(184., ACCENT)
+                            .absolute()
+                            .top(px(-2.))
+                            .left(px(2.))
+                            .with_animation(
+                                "empty-alpha-glow",
+                                Animation::new(Duration::from_millis(5200)).repeat(),
+                                |alpha, progress| {
+                                    let wave = (progress * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+                                    alpha.opacity(0.08 + wave * 0.05)
+                                },
+                            ),
+                    )
+                    .child(empty_alpha_layer(176., 0x526b7b).with_animation(
+                        "empty-alpha-depth",
+                        Animation::new(Duration::from_millis(5200)).repeat(),
+                        |alpha, progress| {
+                            let wave = (progress * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+                            alpha.opacity(0.88 + wave * 0.1)
+                        },
+                    ))
+                    .child(
+                        empty_alpha_layer(174., 0x9bb2bf)
+                            .absolute()
+                            .top(px(-1.))
+                            .left(px(-1.))
+                            .opacity(0.14),
                     ),
-            )
-            .child(
-                div()
-                    .mt(px(18.))
-                    .w_full()
-                    .max_w(px(430.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .children(suggestions.into_iter().map(|(icon, prompt)| {
-                        Button::new(format!("prompt-suggestion:{prompt}"))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .min_h(px(40.))
-                                    .px(px(10.))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(9.))
-                                    .child(
-                                        Icon::new(icon)
-                                            .size(px(14.))
-                                            .text_color(rgb(ACCENT)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_size(px(9.5))
-                                            .text_color(rgb(TEXT_SECONDARY))
-                                            .child(prompt),
-                                    ),
-                            )
-                            .ghost()
-                            .w_full()
-                            .h(px(40.))
-                            .rounded(px(18.))
-                            .border_1()
-                            .border_color(rgba(BORDER_SUBTLE))
-                            .bg(rgb(SURFACE))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.composer.update(cx, |state, cx| {
-                                    state.set_value(prompt, window, cx);
-                                });
-                                let focus = this.composer.read(cx).focus_handle(cx);
-                                window.focus(&focus, cx);
-                                cx.notify();
-                            }))
-                    })),
             )
             .into_any_element()
     }
@@ -513,4 +465,22 @@ impl AlphaDesktop {
             })
             .into_any_element()
     }
+}
+
+fn empty_alpha_layer(size: f32, color: u32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .font_family("Georgia")
+        .text_size(px(size))
+        .line_height(px(size))
+        .font_weight(FontWeight::THIN)
+        .italic()
+        .text_center()
+        .text_color(rgb(color))
+        .child("α")
 }
