@@ -84,6 +84,16 @@ deleting an idle session.
 header. Sessions, context, commands, model selection, reasoning effort,
 provider settings, and permission mode open in overlays or popovers.
 
+The workspace button opens a two-level menu. The first level lists workspaces.
+The second level lists stored sessions for the selected workspace and provides
+a new-session action. Opening a workspace starts its core if needed. Switching
+workspaces changes the primary core while other opened cores keep running in
+the background. Background completion, approval requests, and core failures
+appear as desktop notifications.
+
+An empty transcript shows only the Greek alpha character. It has no circular
+background, heading, description, or prompt buttons.
+
 `Ctrl` shortcuts use `Cmd` on macOS.
 
 | Shortcut | Action |
@@ -109,7 +119,9 @@ viewport and a visible scrollbar. Wheel and touchpad deltas accumulate as
 pending displacement and are consumed on animation frames. Scrollbar dragging
 moves the handle directly and cancels pending displacement. The transcript
 keeps a cached projection and stable Markdown state so a draft that becomes a
-stored session does not rebuild the first turn.
+stored session does not rebuild the first turn. Scroll animation requests use
+an 8ms inactive-frame interval and support 120 Hz displays; the compositor and
+monitor refresh rate set the presented frame rate.
 
 ## Configuration and credentials
 

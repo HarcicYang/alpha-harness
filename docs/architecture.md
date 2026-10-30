@@ -48,8 +48,10 @@ handshake, and owns the child lifetime. The default policy allows three retries
 after the initial startup attempt. A restarted core reads durable sessions
 again. It does not replay an interrupted turn automatically.
 
-Each front uses its own core instance. A front does not attach to another
-front's core. A second writer for an active session receives `session_busy`.
+Each terminal front uses one core instance. A front does not attach to another
+front's core. The desktop manages one core per opened workspace, keeps one
+workspace primary, and polls the other cores in the background. A second writer
+for an active session receives `session_busy`.
 
 ## Kernel
 
@@ -397,6 +399,16 @@ state.
 A chat starts as an in-memory draft. The runtime calls `session.create` only
 when the first non-empty prompt is submitted.
 
+For the desktop adapter, `FrontRuntimeManager` owns a `FrontRuntime` for every
+opened workspace. The active workspace determines the runtime reached through
+the manager's `Deref` implementation. Switching the active workspace changes
+that pointer and leaves other core supervisors running.
+
+The manager polls every runtime. Active state changes redraw the primary
+workspace. Background turn completion, interaction requests, core restarts, and
+core disconnections become `WorkspaceNotice` values. The desktop surfaces those
+notices in its status toast.
+
 ## Terminal frontend
 
 `alpha-front-tui` owns terminal lifecycle, layout, input mapping, selection,
@@ -433,6 +445,7 @@ The presentation modules are:
 | `command_palette` | Global command search and execution |
 | `slash_palette` | Composer command completion |
 | `change_review` | File list and diff review |
+| `workspace_menu` | Cascading workspace and session selector |
 | `scroll` | Scroll handles, wheel displacement, resets, and scrollbar behavior |
 | `session_actions` | Session surface actions |
 | `provider_actions` | Provider surface actions |
@@ -448,6 +461,11 @@ using the frame's elapsed time. New wheel events extend the pending distance.
 Scrollbar dragging changes the handle directly; the next render detects the
 external movement and discards pending wheel displacement.
 
+The animation uses a 32ms response constant and caps one step at 16ms. The
+window requests inactive frames every 8ms, and scrollbar drag refresh allows up
+to 120 FPS. Presented frames remain limited by the compositor and display
+refresh rate.
+
 Desktop markdown views use stable, per-item `TextView` state. The transcript
 projection is cached in an `Arc<Vec<...>>`, and text values are `SharedString`
 instances. The cache refreshes after runtime state changes. Its key remains
@@ -457,6 +475,16 @@ Modal, popover, transcript, permission, tool, toast, and streaming-indicator
 motion runs through GPUI animation primitives. The adapter checks GPUI's
 reduced-motion setting for scroll displacement and uses the toolkit's motion
 handling for UI transitions.
+
+The workspace selector is a cascading two-panel menu. The first panel lists
+workspace roots, core state, and session counts. Hovering or selecting a
+workspace opens the second panel with that workspace's stored sessions and a
+new-session action. Opening a workspace creates its core without stopping the
+previous workspace core.
+
+When no transcript items exist, the desktop renders only a large, dark gray-blue
+Greek alpha character in the center of the transcript viewport. The empty state
+has no circle, text, or suggestion buttons.
 
 ## Crates
 
