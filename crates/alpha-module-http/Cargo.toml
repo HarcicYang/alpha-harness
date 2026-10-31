@@ -22,5 +22,9 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-th
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "HttpLocalModule"
+config = "HttpConfig"
+requires_config = []
 key = "http.local"
 provides = [{ key = "http", kind = "singleton", scope = "location" }]

@@ -25,6 +25,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "OpenAiResponsesApiModule"
+config = "()"
+requires_config = []
 key = "api.openai-responses"
 requires = ["api.adapter"]
 registry_entries = ["api:openai-responses"]

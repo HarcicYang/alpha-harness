@@ -12,6 +12,7 @@ repository = "https://github.com/HarcicYang/alpha-harness"
 
 [workspace.dependencies]
 alpha-kernel = { path = "crates/alpha-kernel", version = "0.1.0" }
+alpha-host-api = { path = "crates/alpha-host-api", version = "0.1.0" }
 alpha-schema = { path = "crates/alpha-schema", version = "0.1.0" }
 alpha-protocol = { path = "crates/alpha-protocol", version = "0.1.0" }
 alpha-macros = { path = "crates/alpha-macros", version = "0.1.0" }

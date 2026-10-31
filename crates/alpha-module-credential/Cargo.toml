@@ -30,5 +30,9 @@ serde_json.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "CredentialModule"
+config = "CredentialConfig"
+requires_config = []
 key = "credential"
 provides = [{ key = "credential.store", kind = "singleton", scope = "global" }]

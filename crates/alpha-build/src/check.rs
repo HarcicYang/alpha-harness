@@ -23,6 +23,8 @@ pub struct ModuleInfo {
     pub requires: Vec<String>,
     /// Static registry entry names.
     pub registry_entries: Vec<String>,
+    /// Config keys that must be present before activation.
+    pub requires_config: Vec<String>,
 }
 
 /// Composition errors.

@@ -20,6 +20,10 @@ thiserror.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "OpenAiResponsesProviderModule"
+config = "()"
+requires_config = []
 key = "provider.openai-responses"
 provides = [{ key = "provider.kind", kind = "registry", scope = "global" }]
 requires = ["api.adapter"]

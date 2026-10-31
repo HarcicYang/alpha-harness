@@ -20,6 +20,10 @@ thiserror.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "OpenCodeGoProviderModule"
+config = "()"
+requires_config = []
 key = "provider.opencode-go"
 provides = [{ key = "provider.kind", kind = "registry", scope = "global" }]
 requires = ["api.adapter"]

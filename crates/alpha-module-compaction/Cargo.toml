@@ -24,6 +24,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "location"
+module = "CompactionModule"
+config = "CompactionConfig"
+requires_config = []
 key = "compaction"
 provides = [
     { key = "context.compaction", kind = "singleton", scope = "location" },

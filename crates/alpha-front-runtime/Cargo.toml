@@ -19,3 +19,10 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "front"
+commands = [
+    { name = "run", about = "Run one prompt and exit", entry = "__front_run", takes_prompt = true },
+]

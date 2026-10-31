@@ -22,5 +22,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "location"
+module = "ProcessLocalModule"
+config = "ProcessConfig"
+requires_config = ["cwd"]
 key = "process.local"
 provides = [{ key = "process", kind = "singleton", scope = "location" }]

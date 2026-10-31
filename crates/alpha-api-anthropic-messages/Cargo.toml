@@ -25,6 +25,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "AnthropicMessagesApiModule"
+config = "()"
+requires_config = []
 key = "api.anthropic-messages"
 requires = ["api.adapter"]
 registry_entries = ["api:anthropic-messages"]

@@ -25,6 +25,10 @@ tempfile.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "location"
+module = "PromptModule"
+config = "PromptConfig"
+requires_config = []
 key = "prompt"
 provides = [
     { key = "prompt.assembler", kind = "singleton", scope = "location" },

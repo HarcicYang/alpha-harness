@@ -19,5 +19,9 @@ tempfile.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "location"
+module = "FsLocalModule"
+config = "FsConfig"
+requires_config = ["root"]
 key = "fs.local"
 provides = [{ key = "fs", kind = "singleton", scope = "location" }]

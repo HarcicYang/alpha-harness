@@ -17,3 +17,11 @@ ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 serde_json.workspace = true
 thiserror.workspace = true
 unicode-width.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "front"
+commands = [
+    { name = "chat", about = "Chat without switching to the alternate screen", entry = "__front_chat", takes_prompt = false },
+    { name = "tui", about = "Open the full-screen terminal interface", entry = "__front_tui", takes_prompt = false },
+]

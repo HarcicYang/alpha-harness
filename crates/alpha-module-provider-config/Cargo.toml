@@ -22,6 +22,10 @@ tempfile.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "ProviderConfigModule"
+config = "ProviderConfigConfig"
+requires_config = []
 key = "provider.config"
 provides = [{ key = "provider.config_store", kind = "singleton", scope = "global" }]
 requires = ["provider.instances"]

@@ -25,6 +25,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "agent"
+module = "LoopModule"
+config = "LoopConfig"
+requires_config = ["provider", "model"]
 key = "loop"
 provides = [
     { key = "agent.loop", kind = "singleton", scope = "agent" },

@@ -18,6 +18,6 @@ toml.workspace = true
 
 [package.metadata.alpha]
 api = 1
-kind = "module"
+kind = "contract"
 key = "config"
 provides = [{ key = "config", kind = "singleton", scope = "global" }]

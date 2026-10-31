@@ -356,6 +356,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-host-api"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-protocol",
+ "alpha-schema",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "alpha-kernel"
 version = "0.1.0"
 dependencies = [

@@ -23,6 +23,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "OpenAiProviderModule"
+config = "OpenAiConfig"
+requires_config = ["base_url", "api_key"]
 key = "provider.openai"
 requires = ["model.provider"]
 registry_entries = ["openai-compatible"]

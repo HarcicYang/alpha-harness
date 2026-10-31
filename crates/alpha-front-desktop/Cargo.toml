@@ -14,3 +14,10 @@ alpha-schema.workspace = true
 gpui-kit.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[package.metadata.alpha]
+api = 1
+kind = "front"
+commands = [
+    { name = "desktop", about = "Open the desktop app", entry = "__front_desktop", takes_prompt = false },
+]

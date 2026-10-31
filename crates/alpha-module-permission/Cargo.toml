@@ -20,5 +20,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "agent"
+module = "PermissionModule"
+config = "PermissionConfig"
+requires_config = []
 key = "permission"
 provides = [{ key = "permission", kind = "singleton", scope = "location" }]

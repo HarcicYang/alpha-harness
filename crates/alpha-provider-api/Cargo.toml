@@ -22,6 +22,10 @@ thiserror.workspace = true
 [package.metadata.alpha]
 api = 1
 kind = "module"
+scope = "global"
+module = "ProviderApiModule"
+config = "()"
+requires_config = []
 key = "provider.api"
 provides = [
     { key = "api.adapter", kind = "registry", scope = "global" },
