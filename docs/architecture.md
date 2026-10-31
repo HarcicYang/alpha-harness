@@ -98,9 +98,14 @@ which reads the resolved graph and validates:
 - Static registry name collisions.
 - Module metadata and version compatibility.
 
-The build writes an explicit module table to `OUT_DIR`. It does not modify
-manifests or source files at build time. `alpha_kernel::bootstrap!()` includes
-that generated table.
+The build writes `alpha_composition.rs` to `OUT_DIR`: one activation function per
+module, the module table ordered by scope and capability dependency, and the front
+command table. It does not modify manifests or source files at build time. The
+composition root includes that file with `include!` and passes the resulting
+`Host` to the shell.
+
+Two modules may not provide the same singleton capability. A replacement is a
+dependency swap, not a coexistence, so the build fails and names both providers.
 
 Runtime plugin loading, dynamic-library modules, and WASM hosting are absent
 from the architecture. Modules are trusted compiled Rust code.
@@ -497,6 +502,9 @@ has no circle, text, or suggestion buttons.
 | `alpha-protocol` | JSON-RPC 2.0 and NDJSON routing |
 | `alpha-macros` | Module and composition macros |
 | `alpha-build` | Cargo graph validation and generated module table |
+| `alpha-credential-api` | Credential storage contract |
+| `alpha-host-api` | Shell, module, and front contracts |
+| `alpha-http-api` | HTTP seam contract |
 | `alpha-front-client` | Protocol client |
 | `alpha-front-supervisor` | Core child lifecycle |
 | `alpha-front-runtime` | Shared frontend state and workflows |

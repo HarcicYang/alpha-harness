@@ -4,6 +4,14 @@ Reference material for the terminal interfaces, the desktop app, the shell
 sandbox, and the files alpha-harness keeps. The [README](../README.md) covers
 installation and the first run.
 
+## Commands follow the build
+
+The `alpha` binary contains the frontends and provider kinds this build was
+compiled with. Removing a frontend crate from the composition root removes its
+subcommand; removing a provider kind removes it from the provider list. See
+[`composition-decoupling.md`](composition-decoupling.md) for the dependency
+layout.
+
 ## Terminal interfaces
 
 ```sh

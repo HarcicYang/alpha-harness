@@ -38,6 +38,21 @@ cargo test --workspace
 CI runs those checks on Linux and `cargo check --workspace --all-targets` on
 macOS and Windows.
 
+## Trimming and replacing capabilities
+
+The composition root's direct dependencies decide what the binary contains.
+There is no bundle crate and no feature switch:
+
+- To drop a capability, delete its dependency line from
+  `apps/alpha-harness/Cargo.toml`. The build then either succeeds without it or
+  fails with a missing-requirement error naming what still needs it.
+- To replace a capability, delete the default implementation crate and add the
+  replacement. Both may not be present: two providers of the same singleton
+  capability fail the build, because replacement is a dependency swap.
+
+`docs/composition-decoupling.md` lists the contracts each capability must
+implement.
+
 ## Commits
 
 Use an English Conventional Commit subject with no body, keep each commit scoped
