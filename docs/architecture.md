@@ -22,8 +22,8 @@ event or reconstructed from stored events.
 - `crates/alpha-provider-api` and `crates/alpha-api-*` contain provider and API
   adapter contracts.
 - `crates/alpha-module-*` contains replaceable behavior modules.
-- `crates/alpha-bundle-default` selects the default module set through Cargo
-  dependencies and contains no behavior.
+- `apps/alpha-harness` is the composition root: its direct dependencies decide
+  which modules, providers, and frontends this build contains.
 
 The workspace is a Rust 2024 Cargo workspace. `rust-toolchain.toml` selects the
 stable toolchain, and `Cargo.lock` is committed.
@@ -84,8 +84,9 @@ Location cache and may be evicted while idle.
 ## Composition
 
 Modules are ordinary Rust crates selected by the app's Cargo dependency graph.
-`alpha-bundle-default` supplies the default dependencies. Module features can
-remove individual tools or providers from a crate.
+The composition root lists them as direct dependencies; there is no bundle crate
+in between. Module features can remove individual tools or providers from a
+crate.
 
 Each module declares its key, requirements, provisions, and capabilities in
 `[package.metadata.alpha]`. The app build script calls `alpha_build::check()`,
@@ -496,7 +497,6 @@ has no circle, text, or suggestion buttons.
 | `alpha-protocol` | JSON-RPC 2.0 and NDJSON routing |
 | `alpha-macros` | Module and composition macros |
 | `alpha-build` | Cargo graph validation and generated module table |
-| `alpha-bundle-default` | Default module dependencies |
 | `alpha-front-client` | Protocol client |
 | `alpha-front-supervisor` | Core child lifecycle |
 | `alpha-front-runtime` | Shared frontend state and workflows |
