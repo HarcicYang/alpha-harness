@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use alpha_kernel::{Ctx, Event, ParallelEvent};
+use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
 use alpha_session_log::{
     MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
     TurnEndReason,
@@ -39,34 +40,7 @@ pub trait SteerQueue: Send + Sync + 'static {
     fn drain(&self) -> Vec<SteerMessage>;
 }
 
-/// Loop failure.
-#[derive(Debug, Error)]
-pub enum LoopError {
-    /// Session storage failure.
-    #[error(transparent)]
-    Session(#[from] SessionError),
-    /// Provider failure.
-    #[error(transparent)]
-    Provider(#[from] ProviderError),
-    /// Operational tool failure that ends the turn.
-    #[error("tool failure: {0}")]
-    Tool(String),
-    /// Dynamic context injection failed.
-    #[error(transparent)]
-    Context(#[from] ContextError),
-    /// The turn exceeded the model step limit.
-    #[error("turn exceeded {0} model steps")]
-    StepLimit(usize),
-}
 
-/// Outcome of one completed turn.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TurnOutcome {
-    /// Identity of the assistant message.
-    pub assistant_message: MessageId,
-    /// Assistant text.
-    pub assistant_text: String,
-}
 
 /// Default driver: one model request over the recorded history.
 #[derive(Clone)]
@@ -691,17 +665,6 @@ pub struct AgentError {
 impl ParallelEvent for AgentError {}
 impl Event for AgentError {}
 
-/// Failure from an optional context-preparation step.
-#[derive(Debug, Error)]
-#[error("context preparation failed: {0}")]
-pub struct ContextError(String);
-
-impl ContextError {
-    /// Create an error from a plain message.
-    pub fn message(message: impl Into<String>) -> Self {
-        Self(message.into())
-    }
-}
 
 /// Optional pre-turn context transformation.
 ///
@@ -719,32 +682,7 @@ pub trait ContextPreparer: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<(), ContextError>>;
 }
 
-/// Appends durable dynamic context messages when their rendered content changes.
-pub trait ContextInjector: Send + Sync + 'static {
-    /// Update the provider-facing history before one model request.
-    fn inject<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        writer: &'a SessionWriter,
-        state: &'a mut SessionState,
-        messages: &'a mut Vec<ChatMessage>,
-    ) -> BoxFuture<'a, Result<(), ContextError>>;
-}
 
-/// Replaceable driver contract for one agent turn.
-///
-/// Consumers depend on this trait, so a composition can mount a different
-/// driver under the same service key.
-pub trait AgentDriver: Send + Sync + 'static {
-    /// Run one turn and record it in the session log.
-    fn run_turn<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        writer: &'a SessionWriter,
-        state: &'a SessionState,
-        prompt: &'a str,
-    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>>;
-}
 
 impl AgentDriver for AgentLoop {
     fn run_turn<'a>(

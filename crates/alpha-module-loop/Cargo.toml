@@ -9,6 +9,7 @@ keywords = ["alpha-harness", "agent-loop", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-agent-api.workspace = true
 alpha-kernel.workspace = true
 alpha-session-log.workspace = true
 alpha-module-tools.workspace = true

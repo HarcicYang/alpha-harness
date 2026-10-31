@@ -6,19 +6,20 @@
 pub const __ALPHA_MODULE__: &str = "loop";
 
 pub mod agent;
-pub mod provider;
 
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
+pub use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
 pub use agent::{
-    AgentDriver, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta,
-    AgentToolFinished, AgentToolStarted, AgentTurnFinished, ContextError, ContextInjector,
-    ContextPreparer, LoopError, SteerMessage, SteerQueue, TurnOutcome,
+    ContextPreparer, SteerMessage, SteerQueue, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta, AgentToolFinished,
+    AgentToolStarted, AgentTurnFinished,
 };
-pub use provider::{
+
+pub use alpha_agent_api::provider::{
+    self as provider,
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
     ModelRouteOverride, ProviderCapabilities, ProviderError, ProviderRegistry,
     ProviderToolsOverride, RegistryError, ToolCall, ToolCallDelta, ToolDefinition,

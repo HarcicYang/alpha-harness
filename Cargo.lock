@@ -167,6 +167,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alpha-agent-api"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-schema",
+ "alpha-session-log",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "alpha-api-anthropic-messages"
 version = "0.1.0"
 dependencies = [
@@ -461,6 +474,7 @@ dependencies = [
 name = "alpha-module-loop"
 version = "0.1.0"
 dependencies = [
+ "alpha-agent-api",
  "alpha-kernel",
  "alpha-module-tools",
  "alpha-schema",
