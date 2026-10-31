@@ -1,133 +1,106 @@
 # alpha-harness
 
-alpha-harness is a local coding agent for software projects. It can inspect a
-workspace, edit files, run commands, and keep conversations available for later.
-You can use it from the desktop app or a terminal.
+alpha-harness is a local coding agent for software projects. It inspects a
+workspace, edits files, runs commands, and keeps conversations available for
+later, from a desktop app or a terminal.
 
-## Requirements
+It talks to OpenAI Chat Completions, OpenAI Responses, Anthropic Messages,
+DeepSeek, and OpenCode Go endpoints, and to any server that speaks one of those
+protocols.
 
-- Rust 1.99 or newer.
-- Cargo.
-- On Linux, the desktop packages listed in `.github/workflows/ci.yml`.
-- `bubblewrap` for sandboxed shell commands. Commands still run without it when
-  the selected permission mode allows that.
-
-## Build
+## Install
 
 ```sh
-cargo build --release
+cargo install --path apps/alpha-harness
 ```
 
-The binary is written to `target/release/alpha`. The examples below assume
-`alpha` is either on your `PATH` or replaced with that path.
+Building requires Rust 1.99 or newer, and the installed binary is named
+`alpha`. On Linux the build also needs the system packages listed in
+[CONTRIBUTING.md](CONTRIBUTING.md#build-from-source). To build without
+installing, run `cargo build --release`; the binary lands in
+`target/release/alpha`.
 
-## Start the desktop app
+## Quick start
 
 ```sh
 alpha desktop
 ```
 
-On first use, configure a provider and model from the app. Then choose a
-workspace from the button in the top-left corner and describe the task in the
-composer.
+On first use, add a provider and its API key in the app. Then choose a workspace
+from the top-left menu and describe the task in the composer.
 
-The workspace menu has two levels. The first lists workspaces, and the second
-lists sessions in the selected workspace. You can also open another folder or
-start a new session there. Work in other open workspaces continues in the
-background, and the desktop app shows a notice when that work needs attention
-or finishes.
-
-Useful desktop shortcuts:
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl-N` | Start a new session |
-| `Ctrl-R` | Open saved sessions |
-| `Ctrl-P` | Open provider settings |
-| `Ctrl-L` | Choose a model |
-| `Ctrl-T` | Choose reasoning effort |
-| `Ctrl-K` | Open the command palette |
-| `?` | Show all shortcuts |
-
-On macOS, use `Cmd` instead of `Ctrl`.
-
-In the composer, `Enter` sends a message, `Shift-Enter` inserts a newline, and
-`Tab` accepts a visible slash-command suggestion.
-
-## Terminal interfaces
-
-`alpha chat` keeps the conversation in the current terminal. `alpha tui` uses
-the alternate screen.
+From a terminal:
 
 ```sh
-alpha chat
-alpha tui
+alpha run "review the error handling in src"
 ```
 
-Both interfaces show the current provider, model, reasoning level, and
-permission mode. Use `Ctrl-R` to open saved sessions and `Ctrl-P` to change
-provider settings.
+Assistant text goes to stdout; progress, tool calls, errors, and the final
+session ID go to stderr.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `alpha desktop` | Open the desktop app |
-| `alpha tui` | Open the full-screen terminal app |
+| `alpha run [OPTIONS] [PROMPT]...` | Run one prompt and exit |
 | `alpha chat` | Chat without switching to the alternate screen |
-| `alpha run [OPTIONS] [PROMPT]...` | Send one prompt and exit |
-| `alpha sessions` | List saved sessions |
+| `alpha tui` | Open the full-screen terminal interface |
+| `alpha desktop` | Open the desktop app |
+| `alpha sessions` | List stored sessions |
 
-Common `alpha run` options:
+`alpha chat`, `alpha tui`, and `alpha desktop` use the current directory as the
+workspace. Only `alpha run` can be pointed at another directory.
+
+### `alpha run` options
 
 | Option | What it does |
 | --- | --- |
 | `--workspace <PATH>` | Choose the workspace. The current directory is the default. |
-| `--mode <MODE>` | Choose `read`, `auto`, `reviewed`, or `free` permissions. |
-| `--provider <ID>` | Choose a provider instance or provider type |
-| `--model <MODEL>` | Choose a model |
-| `--resume <SESSION_ID>` | Continue a saved session |
+| `--mode <MODE>` | Choose `read`, `auto`, `reviewed`, or `free`. Defaults to `auto`. |
+| `--provider <ID>` | Choose a provider instance or provider kind. Defaults to the configured default instance. |
+| `--model <MODEL>` | Choose a model. Defaults to the provider catalog. |
+| `--resume <SESSION_ID>` | Continue a saved session instead of starting a new one |
 
 ```sh
-alpha run "review the error handling in src"
 alpha run --mode free "fix the failing tests"
-alpha run --resume 019a7a30-0000-7000-8000-000000000000 "continue"
+alpha run --resume <SESSION_ID> "continue"
 ```
 
-While a prompt runs, assistant text is printed to stdout. Progress, tool calls,
-and errors are printed to stderr.
+A prompt is required unless `--resume` is given.
 
-## Configuration
+## Permission modes
 
-Provider settings are stored in:
+`auto` is the default. Interactive fronts show the active mode; `alpha run`
+takes it from `--mode`.
 
-```text
-~/.config/alpha-harness/config.toml
-```
+- `read` allows reading only. Every mutation is denied.
+- `auto` allows sandboxed work without prompting; anything else needs approval.
+- `reviewed` also routes writes through an automated reviewer.
+- `free` allows everything.
 
-If `XDG_CONFIG_HOME` is set, the file is under that directory instead.
+Prompts offer deny, allow once, and allow for the session, and session grants
+end with the session. See
+[`docs/architecture.md`](docs/architecture.md#permissions) for the full matrix
+and policy rules.
 
-Credentials use the system credential store: Secret Service on Linux, Keychain
-on macOS, and Credential Manager on Windows. alpha-harness never writes API keys
-to the configuration file.
+## Files
 
-Saved sessions are stored in:
+Provider settings live in `~/.config/alpha-harness/config.toml`; saved sessions
+live in `~/.local/state/alpha-harness/sessions`. Both locations honour
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `ALPHA_HARNESS_STATE_DIR`; see
+[`docs/usage.md`](docs/usage.md#files-and-environment) for the exact order.
 
-```text
-~/.local/state/alpha-harness/sessions
-```
+API keys never enter the configuration file. They go to the system credential
+store and the file keeps only an opaque reference.
 
-If `XDG_STATE_HOME` is set, the sessions are under that directory instead. You
-can override the base directory with `ALPHA_HARNESS_STATE_DIR`.
+## Documentation
 
-## Development
+- [`docs/usage.md`](docs/usage.md) — terminal keys, slash commands, desktop
+  shortcuts, sandbox behavior, file locations.
+- [`docs/architecture.md`](docs/architecture.md) — how the agent, modules, and
+  frontends fit together.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — building from source, checks, commits.
 
-Run the repository checks before submitting changes:
+## License
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-CI runs the full checks on Linux and checks the workspace on macOS and Windows.
+MIT. See [`LICENSE`](LICENSE).
