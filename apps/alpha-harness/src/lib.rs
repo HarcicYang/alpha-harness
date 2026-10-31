@@ -6,7 +6,6 @@ pub mod cli;
 
 /// Composition generated from the Cargo dependency graph.
 pub mod composition {
-    use alpha_host_api::*;
     include!(concat!(env!("OUT_DIR"), "/alpha_composition.rs"));
 }
 

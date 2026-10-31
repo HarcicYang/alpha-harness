@@ -439,7 +439,7 @@ fn generate_code(modules: &[ModuleSpec], fronts: &[FrontSpec]) -> String {
             .join(", ");
         let _ = writeln!(
             code,
-            "fn __activate_{index}(ctx: &Ctx, input: &ModuleInput) -> Result<(), ActivateError> {{"
+            "#[allow(unused_variables)]\nfn __activate_{index}(ctx: &Ctx, input: &ModuleInput) -> Result<(), ActivateError> {{"
         );
         if !needs.is_empty() {
             let _ = writeln!(
