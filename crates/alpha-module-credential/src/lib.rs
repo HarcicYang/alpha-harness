@@ -9,43 +9,12 @@ use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use keyring_core::{CredentialStore as KeyringCredentialStore, Entry, Error as KeyringError};
 use serde::Deserialize;
 
-pub use alpha_schema::{CredentialBackendStatus, CredentialStatus};
+pub use alpha_credential_api::{CredentialBackendStatus, CredentialError, CredentialStatus, CredentialStore};
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "credential";
 
 const SERVICE: &str = "alpha-harness";
-
-/// Credential storage failures.
-#[derive(Debug, thiserror::Error)]
-pub enum CredentialError {
-    /// No credential exists for the reference.
-    #[error("credential `{0}` is not configured")]
-    NotFound(String),
-    /// The backend is unavailable.
-    #[error("credential backend is unavailable: {0}")]
-    Unavailable(String),
-    /// The auth reference is invalid.
-    #[error("invalid auth reference: {0}")]
-    InvalidReference(String),
-    /// The platform store rejected the operation.
-    #[error("credential operation failed: {0}")]
-    Backend(String),
-}
-
-/// One secret store keyed by stable auth references.
-pub trait CredentialStore: Send + Sync + 'static {
-    /// Return backend availability.
-    fn status(&self) -> CredentialStatus;
-    /// Read one secret.
-    fn read(&self, auth_ref: &str) -> Result<Vec<u8>, CredentialError>;
-    /// Create or replace one secret.
-    fn write(&self, auth_ref: &str, secret: &[u8]) -> Result<(), CredentialError>;
-    /// Delete one secret. Missing entries are treated as already deleted.
-    fn delete(&self, auth_ref: &str) -> Result<(), CredentialError>;
-    /// Whether one secret exists.
-    fn contains(&self, auth_ref: &str) -> Result<bool, CredentialError>;
-}
 
 /// Platform keyring-backed store.
 pub struct PlatformCredentialStore {

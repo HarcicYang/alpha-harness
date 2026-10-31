@@ -10,7 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-kernel.workspace = true
-alpha-module-credential.workspace = true
+alpha-credential-api.workspace = true
 alpha-module-http.workspace = true
 alpha-module-loop.workspace = true
 alpha-schema.workspace = true

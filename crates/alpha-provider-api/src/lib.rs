@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
-use alpha_module_credential::CredentialStore;
+use alpha_credential_api::CredentialStore;
 use alpha_module_http::{HttpClient, HttpRequest};
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,

@@ -1,0 +1,15 @@
+[package]
+name = "alpha-http-api"
+description = "HTTP seam contract for alpha-harness, with record and replay support."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "http", "contract"]
+categories = ["development-tools"]
+
+[dependencies]
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

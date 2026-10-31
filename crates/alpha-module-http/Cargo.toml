@@ -9,6 +9,7 @@ keywords = ["alpha-harness", "http", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-http-api.workspace = true
 alpha-kernel.workspace = true
 futures.workspace = true
 serde.workspace = true

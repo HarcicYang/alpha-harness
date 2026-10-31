@@ -1,0 +1,13 @@
+[package]
+name = "alpha-credential-api"
+description = "Credential storage contract for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "credential", "contract"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-schema.workspace = true
+thiserror.workspace = true

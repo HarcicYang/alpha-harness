@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::Duration;
 
-use crate::seam::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
+use alpha_http_api::seam::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 use futures::future::BoxFuture;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);

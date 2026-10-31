@@ -2,18 +2,16 @@
 
 #![forbid(unsafe_code)]
 
-pub mod cassette;
 pub mod local;
-pub mod seam;
 
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
-pub use cassette::{Cassette, CassetteEntry, RecordingHttpClient, ReplayHttpClient};
+pub use alpha_http_api::{Cassette, CassetteEntry, HttpClient, HttpError, HttpRequest, HttpResponse,
+    HttpResponseStream, RecordingHttpClient, ReplayHttpClient};
 pub use local::LocalHttpClient;
-pub use seam::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "http.local";

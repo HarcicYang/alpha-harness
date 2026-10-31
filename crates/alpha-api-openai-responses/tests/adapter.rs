@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use alpha_api_openai_responses::{ADAPTER_KEY, OpenAiResponsesApiModule};
 use alpha_kernel::{Ctx, Module};
-use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
+use alpha_http_api::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,

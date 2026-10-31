@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, Ctx, Module};
-use alpha_module_http::{HttpClient, HttpRequest, HttpResponseStream};
+use alpha_http_api::{HttpClient, HttpRequest, HttpResponseStream};
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, ProviderError, ToolCallDelta, ToolDefinition,
 };
@@ -91,7 +91,7 @@ impl ApiAdapter for AnthropicMessagesAdapter {
 }
 
 struct StreamState {
-    body: BoxStream<'static, Result<Vec<u8>, alpha_module_http::HttpError>>,
+    body: BoxStream<'static, Result<Vec<u8>, alpha_http_api::HttpError>>,
     buffer: Vec<u8>,
     pending: VecDeque<Result<CompletionChunk, ProviderError>>,
     block_kinds: BTreeMap<usize, String>,
@@ -157,7 +157,7 @@ async fn next_stream_chunk(
 }
 
 async fn collect_body(
-    mut body: BoxStream<'static, Result<Vec<u8>, alpha_module_http::HttpError>>,
+    mut body: BoxStream<'static, Result<Vec<u8>, alpha_http_api::HttpError>>,
 ) -> Result<Vec<u8>, ProviderError> {
     let mut output = Vec::new();
     while let Some(chunk) = body.next().await {

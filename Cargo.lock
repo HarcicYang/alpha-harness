@@ -170,8 +170,8 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "alpha-api-anthropic-messages"
 version = "0.1.0"
 dependencies = [
+ "alpha-http-api",
  "alpha-kernel",
- "alpha-module-http",
  "alpha-module-loop",
  "alpha-provider-api",
  "alpha-schema",
@@ -186,8 +186,8 @@ dependencies = [
 name = "alpha-api-openai-chat"
 version = "0.1.0"
 dependencies = [
+ "alpha-http-api",
  "alpha-kernel",
- "alpha-module-http",
  "alpha-module-loop",
  "alpha-provider-api",
  "alpha-schema",
@@ -202,8 +202,8 @@ dependencies = [
 name = "alpha-api-openai-responses"
 version = "0.1.0"
 dependencies = [
+ "alpha-http-api",
  "alpha-kernel",
- "alpha-module-http",
  "alpha-module-loop",
  "alpha-provider-api",
  "alpha-schema",
@@ -222,6 +222,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "alpha-credential-api"
+version = "0.1.0"
+dependencies = [
+ "alpha-schema",
  "thiserror 2.0.21",
 ]
 
@@ -343,6 +351,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-http-api"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "alpha-kernel"
 version = "0.1.0"
 dependencies = [
@@ -404,6 +422,7 @@ dependencies = [
 name = "alpha-module-credential"
 version = "0.1.0"
 dependencies = [
+ "alpha-credential-api",
  "alpha-kernel",
  "alpha-schema",
  "apple-native-keyring-store",
@@ -429,6 +448,7 @@ dependencies = [
 name = "alpha-module-http"
 version = "0.1.0"
 dependencies = [
+ "alpha-http-api",
  "alpha-kernel",
  "futures",
  "serde",
@@ -621,8 +641,8 @@ dependencies = [
 name = "alpha-provider-api"
 version = "0.1.0"
 dependencies = [
+ "alpha-credential-api",
  "alpha-kernel",
- "alpha-module-credential",
  "alpha-module-http",
  "alpha-module-loop",
  "alpha-schema",
