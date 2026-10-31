@@ -10,7 +10,7 @@ use cargo_metadata::{Metadata, MetadataCommand, Package, PackageId};
 use thiserror::Error;
 
 use crate::check::{BuildError, ModuleInfo, check};
-use crate::metadata::{AppMetadata, FrontCommandMetadata, ModuleMetadata, ModuleScope, PackageKind};
+use crate::metadata::{FrontCommandMetadata, ModuleMetadata, ModuleScope, PackageKind};
 
 /// Errors from the build-time generation step.
 #[derive(Debug, Error)]
@@ -115,7 +115,6 @@ pub fn check_and_generate() -> Result<(), GenerateError> {
             })
         })?;
 
-    let overrides = app_metadata(app)?;
     let mut modules: Vec<ModuleSpec> = Vec::new();
     let mut contracts: Vec<ModuleInfo> = Vec::new();
     let mut fronts: Vec<FrontSpec> = Vec::new();
@@ -185,7 +184,7 @@ pub fn check_and_generate() -> Result<(), GenerateError> {
     let mut infos: Vec<ModuleInfo> = modules.iter().map(|spec| spec.info.clone()).collect();
     infos.extend(contracts.clone());
     infos.sort_by(|left, right| left.key.cmp(&right.key));
-    check(&infos, &overrides)?;
+    check(&infos)?;
     check_module_keys(&modules)?;
     check_commands(&fronts)?;
 
@@ -362,18 +361,6 @@ fn find_app<'a>(metadata: &'a Metadata, manifest_dir: &Path) -> Result<&'a Packa
                 stderr: format!("no package for manifest dir {}", manifest_dir.display()),
             })
         })
-}
-
-fn app_metadata(app: &Package) -> Result<Vec<String>, GenerateError> {
-    let Some(value) = app.metadata.get("alpha") else {
-        return Ok(Vec::new());
-    };
-    let parsed: AppMetadata =
-        serde_json::from_value(value.clone()).map_err(|source| GenerateError::PackageMetadata {
-            package: app.name.to_string(),
-            source,
-        })?;
-    Ok(parsed.overrides)
 }
 
 fn module_metadata(package: &Package) -> Result<Option<ModuleMetadata>, GenerateError> {

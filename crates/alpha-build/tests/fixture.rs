@@ -6,11 +6,17 @@ use std::process::{Command, Output};
 const BODY_A: &str = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-a\"\n\
+scope = \"global\"\n\
+module = \"ModuleA\"\n\
+config = \"ConfigA\"\n\
 provides = [{ key = \"store\", kind = \"singleton\", scope = \"global\" }]";
 
 const BODY_B: &str = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-b\"\n\
+scope = \"global\"\n\
+module = \"ModuleB\"\n\
+config = \"ConfigB\"\n\
 provides = [{ key = \"store\", kind = \"singleton\", scope = \"global\" }]";
 
 fn write(path: &Path, contents: &str) {
@@ -30,11 +36,7 @@ fn module_manifest(name: &str, metadata: &str) -> String {
     )
 }
 
-fn build_fixture_with(
-    overrides: &[&str],
-    body_a: &str,
-    body_b: Option<&str>,
-) -> (tempfile::TempDir, PathBuf) {
+fn build_fixture_with(body_a: &str, body_b: Option<&str>) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().to_path_buf();
     let alpha_build = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -66,18 +68,6 @@ fn build_fixture_with(
         );
     }
 
-    let overrides_toml = if overrides.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "overrides = [{}]\n",
-            overrides
-                .iter()
-                .map(|value| format!("\"{value}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
     let module_b_dep = if body_b.is_some() {
         "module-b = { path = \"../module-b\" }\n"
     } else {
@@ -97,9 +87,7 @@ fn build_fixture_with(
              \n\
              [build-dependencies]\n\
              alpha-build = {{ path = \"{}\" }}\n\
-             \n\
-             [package.metadata.alpha]\n\
-             {overrides_toml}",
+             ",
             alpha_build.display()
         ),
     );
@@ -112,8 +100,8 @@ fn build_fixture_with(
     (dir, root)
 }
 
-fn build_fixture(overrides: &[&str]) -> (tempfile::TempDir, PathBuf) {
-    build_fixture_with(overrides, BODY_A, Some(BODY_B))
+fn build_fixture() -> (tempfile::TempDir, PathBuf) {
+    build_fixture_with(BODY_A, Some(BODY_B))
 }
 
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -166,7 +154,7 @@ fn generated_table(root: &Path) -> String {
 
 #[test]
 fn conflicting_singletons_fail_cargo_check_without_touching_sources() {
-    let (_dir, root) = build_fixture(&[]);
+    let (_dir, root) = build_fixture();
     let before = snapshot(&root);
 
     let output = cargo_check(&root);
@@ -184,32 +172,23 @@ fn conflicting_singletons_fail_cargo_check_without_touching_sources() {
 }
 
 #[test]
-fn explicit_override_resolves_the_conflict_and_builds() {
-    let (_dir, root) = build_fixture(&["store=module-b"]);
-    let before = snapshot(&root);
-
-    let output = cargo_check(&root);
-    assert!(
-        output.status.success(),
-        "expected cargo check to succeed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(snapshot(&root), before, "build must not modify sources");
-}
-
-#[test]
 fn missing_requirements_fail_cargo_check() {
     let body_a = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-a\"\n\
+scope = \"global\"\n\
+module = \"ModuleA\"\n\
+config = \"ConfigA\"\n\
 provides = [{ key = \"store\", kind = \"singleton\", scope = \"global\" }]\n\
 requires = [\"fs\"]";
     let body_b = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-b\"\n\
+scope = \"global\"\n\
+module = \"ModuleB\"\n\
+config = \"ConfigB\"\n\
 provides = [{ key = \"other\", kind = \"singleton\", scope = \"global\" }]";
-    let (_dir, root) = build_fixture_with(&[], body_a, Some(body_b));
+    let (_dir, root) = build_fixture_with(body_a, Some(body_b));
 
     let output = cargo_check(&root);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -221,31 +200,24 @@ provides = [{ key = \"other\", kind = \"singleton\", scope = \"global\" }]";
 }
 
 #[test]
-fn invalid_overrides_fail_cargo_check() {
-    let (_dir, root) = build_fixture(&["store=module-c"]);
-
-    let output = cargo_check(&root);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success());
-    assert!(
-        stderr.contains("module-c") && stderr.contains("override"),
-        "missing diagnostic:\n{stderr}"
-    );
-}
-
-#[test]
 fn registry_collisions_fail_cargo_check() {
     let body_a = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-a\"\n\
+scope = \"global\"\n\
+module = \"ModuleA\"\n\
+config = \"ConfigA\"\n\
 provides = [{ key = \"store\", kind = \"singleton\", scope = \"global\" }]\n\
 registry_entries = [\"read\"]";
     let body_b = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-b\"\n\
+scope = \"global\"\n\
+module = \"ModuleB\"\n\
+config = \"ConfigB\"\n\
 provides = [{ key = \"other\", kind = \"singleton\", scope = \"global\" }]\n\
 registry_entries = [\"read\"]";
-    let (_dir, root) = build_fixture_with(&[], body_a, Some(body_b));
+    let (_dir, root) = build_fixture_with(body_a, Some(body_b));
 
     let output = cargo_check(&root);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -261,14 +233,17 @@ fn module_set_follows_the_dependency_graph() {
     let body_b_single = "api = 1\n\
 kind = \"module\"\n\
 key = \"module-b\"\n\
+scope = \"global\"\n\
+module = \"ModuleB\"\n\
+config = \"ConfigB\"\n\
 provides = [{ key = \"store\", kind = \"singleton\", scope = \"global\" }]";
 
-    let (_dir_a, root_a) = build_fixture_with(&[], BODY_A, None);
+    let (_dir_a, root_a) = build_fixture_with(BODY_A, None);
     assert!(cargo_check(&root_a).status.success());
     let table_a = generated_table(&root_a);
     assert!(table_a.contains("module-a"));
 
-    let (_dir_b, root_b) = build_fixture_with(&[], body_b_single, None);
+    let (_dir_b, root_b) = build_fixture_with(body_b_single, None);
     assert!(cargo_check(&root_b).status.success());
     let table_b = generated_table(&root_b);
     assert!(table_b.contains("module-b"));

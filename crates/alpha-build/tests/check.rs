@@ -10,6 +10,7 @@ fn module(key: &str) -> ModuleInfo {
         provides: Vec::new(),
         requires: Vec::new(),
         registry_entries: Vec::new(),
+        requires_config: Vec::new(),
     }
 }
 
@@ -27,46 +28,21 @@ fn accepts_a_consistent_composition() {
     let mut fs = module("fs");
     fs.provides = vec![("fs".to_owned(), CapabilityKind::Singleton)];
 
-    check(&[tools, fs], &[]).expect("consistent composition");
+    check(&[tools, fs]).expect("consistent composition");
 }
 
 #[test]
 fn rejects_duplicate_singletons_without_an_override() {
-    let error =
-        check(&[singleton("a", "store"), singleton("b", "store")], &[]).expect_err("conflict");
+    let error = check(&[singleton("a", "store"), singleton("b", "store")]).expect_err("conflict");
     assert!(matches!(error, BuildError::SingletonConflict { .. }));
     assert!(error.to_string().contains("store"));
-}
-
-#[test]
-fn explicit_overrides_resolve_singleton_conflicts() {
-    let modules = [singleton("a", "store"), singleton("b", "store")];
-    check(&modules, &["store=b".to_owned()]).expect("override resolves");
-}
-
-#[test]
-fn rejects_overrides_that_do_not_select_a_provider() {
-    let modules = [singleton("a", "store"), singleton("b", "store")];
-    let error = check(&modules, &["store=c".to_owned()]).expect_err("invalid");
-    assert!(matches!(error, BuildError::InvalidOverride { .. }));
-}
-
-#[test]
-fn rejects_unknown_and_registry_overrides() {
-    let error = check(&[singleton("a", "store")], &["missing=a".to_owned()]).expect_err("unknown");
-    assert!(matches!(error, BuildError::UnknownOverride { .. }));
-
-    let mut registry = module("r");
-    registry.provides = vec![("tools".to_owned(), CapabilityKind::Registry)];
-    let error = check(&[registry], &["tools=r".to_owned()]).expect_err("not overridable");
-    assert!(matches!(error, BuildError::NotOverridable { .. }));
 }
 
 #[test]
 fn rejects_missing_requirements() {
     let mut tools = module("tools");
     tools.requires = vec!["fs".to_owned()];
-    let error = check(&[tools], &[]).expect_err("missing");
+    let error = check(&[tools]).expect_err("missing");
     assert!(matches!(error, BuildError::MissingRequirement { .. }));
 }
 
@@ -76,7 +52,7 @@ fn rejects_registry_entry_collisions() {
     first.registry_entries = vec!["read".to_owned()];
     let mut second = module("second");
     second.registry_entries = vec!["read".to_owned()];
-    let error = check(&[first, second], &[]).expect_err("collision");
+    let error = check(&[first, second]).expect_err("collision");
     assert!(matches!(error, BuildError::RegistryConflict { .. }));
 }
 
@@ -84,9 +60,9 @@ fn rejects_registry_entry_collisions() {
 fn rejects_unsupported_apis_and_empty_graphs() {
     let mut old = module("old");
     old.api = 0;
-    let error = check(&[old], &[]).expect_err("api");
+    let error = check(&[old]).expect_err("api");
     assert!(matches!(error, BuildError::UnsupportedApi { .. }));
 
-    let error = check(&[], &[]).expect_err("empty");
+    let error = check(&[]).expect_err("empty");
     assert!(matches!(error, BuildError::NoModules));
 }

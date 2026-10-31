@@ -43,44 +43,13 @@ pub enum BuildError {
     /// Two modules provide the same singleton capability.
     #[error(
         "singleton capability `{capability}` is provided by {providers}; \
-         add an override in [package.metadata.alpha], for example `{capability}=<module>`"
+         keep one provider and remove the others from the dependency graph"
     )]
     SingletonConflict {
         /// Capability key.
         capability: String,
         /// Comma-separated provider module keys.
         providers: String,
-    },
-    /// An override names a capability or module that does not match.
-    #[error(
-        "override `{capability}={chosen}` does not select a provider of that capability; \
-         providers are {providers}"
-    )]
-    InvalidOverride {
-        /// Capability key.
-        capability: String,
-        /// Requested provider.
-        chosen: String,
-        /// Comma-separated provider module keys.
-        providers: String,
-    },
-    /// An override targets a capability that no module provides.
-    #[error("override targets unknown capability `{capability}`")]
-    UnknownOverride {
-        /// Capability key.
-        capability: String,
-    },
-    /// An override targets a registry capability.
-    #[error("capability `{capability}` is a registry and cannot be overridden")]
-    NotOverridable {
-        /// Capability key.
-        capability: String,
-    },
-    /// An override entry is malformed.
-    #[error("override `{value}` must use the form `capability=module`")]
-    MalformedOverride {
-        /// Raw override entry.
-        value: String,
     },
     /// A required capability has no provider.
     #[error("module `{module}` requires `{capability}`, but no enabled module provides it")]
@@ -105,8 +74,12 @@ pub enum BuildError {
     NoModules,
 }
 
-/// Validate a module set and application overrides.
-pub fn check(modules: &[ModuleInfo], overrides: &[String]) -> Result<(), BuildError> {
+/// Validate a module set.
+///
+/// Two modules may not provide the same singleton capability: a replacement is
+/// a dependency swap, not a coexistence, so the composition fails instead of
+/// picking a winner.
+pub fn check(modules: &[ModuleInfo]) -> Result<(), BuildError> {
     if modules.is_empty() {
         return Err(BuildError::NoModules);
     }
@@ -118,16 +91,6 @@ pub fn check(modules: &[ModuleInfo], overrides: &[String]) -> Result<(), BuildEr
                 supported: SUPPORTED_API,
             });
         }
-    }
-
-    let mut override_map: BTreeMap<String, String> = BTreeMap::new();
-    for value in overrides {
-        let Some((capability, module)) = value.split_once('=') else {
-            return Err(BuildError::MalformedOverride {
-                value: value.clone(),
-            });
-        };
-        override_map.insert(capability.trim().to_owned(), module.trim().to_owned());
     }
 
     let mut singleton_providers: BTreeMap<&str, Vec<&ModuleInfo>> = BTreeMap::new();
@@ -143,32 +106,8 @@ pub fn check(modules: &[ModuleInfo], overrides: &[String]) -> Result<(), BuildEr
         .flat_map(|module| module.provides.iter().map(|(key, _)| key.as_str()))
         .collect();
 
-    for (capability, chosen) in &override_map {
-        if !provided_keys.contains(capability.as_str()) {
-            return Err(BuildError::UnknownOverride {
-                capability: capability.clone(),
-            });
-        }
-        let Some(providers) = singleton_providers.get(capability.as_str()) else {
-            return Err(BuildError::NotOverridable {
-                capability: capability.clone(),
-            });
-        };
-        if !providers.iter().any(|module| &module.key == chosen) {
-            return Err(BuildError::InvalidOverride {
-                capability: capability.clone(),
-                chosen: chosen.clone(),
-                providers: provider_names(providers),
-            });
-        }
-    }
-
     for (capability, providers) in &singleton_providers {
-        if providers.len() > 1
-            && override_map
-                .get(*capability)
-                .is_none_or(|chosen| !providers.iter().any(|module| &module.key == chosen))
-        {
+        if providers.len() > 1 {
             return Err(BuildError::SingletonConflict {
                 capability: (*capability).to_owned(),
                 providers: provider_names(providers),

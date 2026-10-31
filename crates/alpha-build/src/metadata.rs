@@ -114,11 +114,3 @@ pub struct ModuleMetadata {
     #[serde(default)]
     pub commands: Vec<FrontCommandMetadata>,
 }
-
-/// Application-level metadata.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct AppMetadata {
-    /// `capability=module` override declarations.
-    #[serde(default)]
-    pub overrides: Vec<String>,
-}
