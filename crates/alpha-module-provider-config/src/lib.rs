@@ -7,35 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
+pub use alpha_provider_api::{ConfigFile, ProviderConfigError, ProviderConfigStore};
 use alpha_provider_api::{ProviderInstance, ProviderInstanceRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
 
 /// Stable module key.
 pub const __ALPHA_MODULE__: &str = "provider.config";
-
-/// Provider configuration persistence failures.
-#[derive(Debug, Error)]
-pub enum ProviderConfigError {
-    /// Config file IO failed.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// Config TOML could not be parsed or serialized.
-    #[error("provider config TOML error: {0}")]
-    Toml(String),
-    /// Provider instance conversion failed.
-    #[error("provider instance conversion failed: {0}")]
-    Instance(String),
-}
-
-/// File IO seam for the user configuration file.
-pub trait ConfigFile: Send + Sync + 'static {
-    /// Read a file if it exists.
-    fn read(&self, path: &Path) -> Result<Option<String>, ProviderConfigError>;
-    /// Atomically write a file.
-    fn write_atomic(&self, path: &Path, contents: &str) -> Result<(), ProviderConfigError>;
-}
 
 /// Local filesystem implementation for user configuration.
 #[derive(Clone, Copy, Debug, Default)]
@@ -69,24 +47,6 @@ impl ConfigFile for LocalConfigFile {
 }
 
 /// Provider config persistence contract.
-pub trait ProviderConfigStore: Send + Sync + 'static {
-    /// Reload the file into the runtime registry.
-    fn reload(&self) -> Result<(), ProviderConfigError>;
-    /// List all persisted instances.
-    fn list(&self) -> Vec<ProviderInstance>;
-    /// Get one persisted instance.
-    fn get(&self, id: &str) -> Option<ProviderInstance>;
-    /// Create or replace one instance.
-    fn upsert(&self, instance: ProviderInstance) -> Result<(), ProviderConfigError>;
-    /// Remove one instance.
-    fn remove(&self, id: &str) -> Result<bool, ProviderConfigError>;
-    /// The default provider instance id.
-    fn default_instance(&self) -> Option<String>;
-    /// Set the default provider instance id.
-    fn set_default_instance(&self, id: Option<String>) -> Result<(), ProviderConfigError>;
-    /// Set the default model for one provider instance.
-    fn set_default_model(&self, id: &str, model: &str) -> Result<bool, ProviderConfigError>;
-}
 
 /// TOML-backed provider config store.
 pub struct TomlProviderConfigStore {
