@@ -29,7 +29,9 @@ pub fn run(host: &'static Host) -> ExitCode {
 fn command(host: &'static Host) -> Command {
     let mut command = Command::new("alpha")
         .version(env!("CARGO_PKG_VERSION"))
-        .about(ABOUT);
+        .about(ABOUT)
+        .subcommand_required(true)
+        .arg_required_else_help(true);
     for front in host.fronts {
         command = command.subcommand(front_command(front));
     }
