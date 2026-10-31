@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::request::PermissionRequest;
+use alpha_permission_api::request::PermissionRequest;
 
 /// Allow or deny.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

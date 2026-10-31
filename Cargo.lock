@@ -478,6 +478,7 @@ name = "alpha-module-permission"
 version = "0.1.0"
 dependencies = [
  "alpha-kernel",
+ "alpha-permission-api",
  "alpha-schema",
  "futures",
  "serde",
@@ -625,6 +626,17 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "alpha-permission-api"
+version = "0.1.0"
+dependencies = [
+ "alpha-kernel",
+ "alpha-schema",
+ "futures",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

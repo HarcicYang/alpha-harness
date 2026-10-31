@@ -10,6 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-kernel.workspace = true
+alpha-permission-api.workspace = true
 alpha-schema.workspace = true
 futures.workspace = true
 serde.workspace = true

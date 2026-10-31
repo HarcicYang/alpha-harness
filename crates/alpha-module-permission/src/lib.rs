@@ -9,8 +9,6 @@
 #![forbid(unsafe_code)]
 
 pub mod policy;
-pub mod request;
-pub mod review;
 pub mod service;
 
 use std::sync::Arc;
@@ -23,12 +21,13 @@ use serde::Deserialize;
 pub const __ALPHA_MODULE__: &str = "permission";
 
 pub use policy::{Policy, Rule, RuleDecision, default_protected, wildcard_match};
-pub use request::{ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest};
-pub use review::{ApprovalReviewer, IntentClassifier, IntentDecision, ReviewDecision};
-pub use service::{
-    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, CollectingAuditSink, DecisionSource,
-    LocalPermissionService, PermissionService,
+pub use alpha_permission_api::{
+    ApprovalChannel, ApprovalDecision, ApprovalPrompt, ApprovalReviewer, AuditRecord, AuditSink,
+    CollectingAuditSink, DecisionSource, GrantScope, IntentClassifier, IntentDecision,
+    PermissionOutcome, PermissionRequest, PermissionService, ReviewDecision,
 };
+pub use service::LocalPermissionService;
+
 
 /// Configuration for the permission module.
 #[derive(Clone, Debug, Default, Deserialize)]

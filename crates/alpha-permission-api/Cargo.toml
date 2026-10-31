@@ -1,0 +1,16 @@
+[package]
+name = "alpha-permission-api"
+description = "Permission contract for alpha-harness."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "permission", "contract"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-kernel.workspace = true
+alpha-schema.workspace = true
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
