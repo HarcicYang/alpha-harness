@@ -11,7 +11,7 @@ use alpha_module_loop::{
     AgentDriver, LoopError, ModelRoute, ModelRouteOverride, ProviderToolsOverride, TurnOutcome,
 };
 use alpha_module_permission::{PermissionConfig, PermissionModule, PermissionService};
-use alpha_module_session::{
+use alpha_session_log::{
     SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason,
 };
 use alpha_protocol::{OutboundTransport, RpcError};

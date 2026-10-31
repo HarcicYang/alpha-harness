@@ -1,13 +1,13 @@
 //! Append-only session log, projections, and migrations.
 //!
+//! Infrastructure crate: the log is part of the fixed core, not a swappable
+//! module, so the shell and the modules share the same durable format.
+//!
 //! The session log is the single source of truth for a session. Events are
 //! durable, versioned, and appended by a single writer. Repair and migration
 //! publish a new generation beside the untouched source generation.
 
 #![forbid(unsafe_code)]
-
-/// Stable module key used by the generated composition table.
-pub const __ALPHA_MODULE__: &str = "session";
 
 pub mod event;
 pub mod header;

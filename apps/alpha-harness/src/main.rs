@@ -121,8 +121,8 @@ fn main() -> ExitCode {
                 eprintln!("alpha __core: --stdio is required");
                 return ExitCode::FAILURE;
             }
-            let store = alpha_module_session::SessionStore::new(
-                alpha_module_session::SessionStore::default_root(),
+            let store = alpha_session_log::SessionStore::new(
+                alpha_session_log::SessionStore::default_root(),
             );
             match alpha_harness::serve_stdio(store) {
                 Ok(()) => ExitCode::SUCCESS,

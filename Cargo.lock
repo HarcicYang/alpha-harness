@@ -248,7 +248,6 @@ dependencies = [
  "alpha-module-provider-openai-chat-completions",
  "alpha-module-provider-openai-responses",
  "alpha-module-provider-opencode-go",
- "alpha-module-session",
  "alpha-module-tools",
  "alpha-provider-api",
 ]
@@ -342,11 +341,11 @@ dependencies = [
  "alpha-module-provider-openai-chat-completions",
  "alpha-module-provider-openai-responses",
  "alpha-module-provider-opencode-go",
- "alpha-module-session",
  "alpha-module-tools",
  "alpha-protocol",
  "alpha-provider-api",
  "alpha-schema",
+ "alpha-session-log",
  "clap",
  "futures",
  "serde",
@@ -378,9 +377,9 @@ dependencies = [
  "alpha-kernel",
  "alpha-module-loop",
  "alpha-module-permission",
- "alpha-module-session",
  "alpha-protocol",
  "alpha-schema",
+ "alpha-session-log",
  "futures",
  "serde",
  "serde_json",
@@ -396,8 +395,8 @@ version = "0.1.0"
 dependencies = [
  "alpha-kernel",
  "alpha-module-loop",
- "alpha-module-session",
  "alpha-schema",
+ "alpha-session-log",
  "futures",
  "serde",
  "tempfile",
@@ -456,9 +455,9 @@ name = "alpha-module-loop"
 version = "0.1.0"
 dependencies = [
  "alpha-kernel",
- "alpha-module-session",
  "alpha-module-tools",
  "alpha-schema",
+ "alpha-session-log",
  "futures",
  "serde",
  "serde_json",
@@ -498,8 +497,8 @@ dependencies = [
  "alpha-module-fs",
  "alpha-module-loop",
  "alpha-module-permission",
- "alpha-module-session",
  "alpha-schema",
+ "alpha-session-log",
  "futures",
  "serde",
  "tempfile",
@@ -602,18 +601,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alpha-module-session"
-version = "0.1.0"
-dependencies = [
- "alpha-schema",
- "fs2",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "alpha-module-tools"
 version = "0.1.0"
 dependencies = [
@@ -666,6 +653,18 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "alpha-session-log"
+version = "0.1.0"
+dependencies = [
+ "alpha-schema",
+ "fs2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

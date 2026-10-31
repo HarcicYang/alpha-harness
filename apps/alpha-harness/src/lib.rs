@@ -40,7 +40,7 @@ use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_
 use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
 use alpha_module_provider_openai_responses::OpenAiResponsesProviderModule;
 use alpha_module_provider_opencode_go::OpenCodeGoProviderModule;
-use alpha_module_session::{
+use alpha_session_log::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     WorkspaceRef,
 };

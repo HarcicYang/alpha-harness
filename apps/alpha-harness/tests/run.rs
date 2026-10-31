@@ -12,7 +12,7 @@ use alpha_module_loop::{
     CompletionResponse, LoopError, ModelProvider, ProviderError, ToolCall, TurnOutcome,
 };
 use alpha_module_permission::ApprovalChannel;
-use alpha_module_session::{
+use alpha_session_log::{
     MessageRecord, SessionEvent, SessionState, SessionStore, SessionWriter, ToolStatus,
     TurnEndReason,
 };

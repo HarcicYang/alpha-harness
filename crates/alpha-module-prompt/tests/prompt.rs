@@ -4,7 +4,7 @@ use alpha_kernel::{Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_loop::{ChatMessage, ContextInjector};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule, PromptPriority};
-use alpha_module_session::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
+use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 use alpha_schema::{PermissionMode, SessionId};
 
 fn state() -> SessionState {

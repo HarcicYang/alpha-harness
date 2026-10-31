@@ -9,7 +9,6 @@ fn generated_module_table_matches_the_default_bundle() {
         "permission",
         "process.local",
         "provider.openai",
-        "session",
         "tools",
     ] {
         assert!(

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use alpha_kernel::{Ctx, Event, ParallelEvent};
-use alpha_module_session::{
+use alpha_session_log::{
     MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
     TurnEndReason,
 };

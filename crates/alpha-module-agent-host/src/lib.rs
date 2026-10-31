@@ -14,7 +14,7 @@ use alpha_module_loop::{
     SteerQueue,
 };
 use alpha_module_permission::PermissionService;
-use alpha_module_session::{
+use alpha_session_log::{
     SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
     TurnEndReason, WorkspaceRef,
 };

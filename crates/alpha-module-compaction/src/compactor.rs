@@ -3,7 +3,7 @@
 use alpha_module_loop::{
     ChatMessage, CompletionRequest, ContextError, ContextPreparer, ModelProvider,
 };
-use alpha_module_session::{MessageRecord, SessionEvent, SessionState, SessionWriter, ToolStatus};
+use alpha_session_log::{MessageRecord, SessionEvent, SessionState, SessionWriter, ToolStatus};
 use futures::future::BoxFuture;
 
 use crate::{CompactionConfig, CompactionScope};

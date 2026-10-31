@@ -10,7 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-kernel.workspace = true
-alpha-module-session.workspace = true
+alpha-session-log.workspace = true
 alpha-module-tools.workspace = true
 alpha-schema.workspace = true
 futures.workspace = true

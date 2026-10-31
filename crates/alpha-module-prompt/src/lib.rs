@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Disposer, Module};
 use alpha_module_loop::{ChatMessage, ContextError, ContextInjector};
-use alpha_module_session::{MessageRecord, SessionEvent, SessionState, SessionWriter};
+use alpha_session_log::{MessageRecord, SessionEvent, SessionState, SessionWriter};
 use alpha_schema::MessageId;
 use futures::future::BoxFuture;
 use serde::Deserialize;

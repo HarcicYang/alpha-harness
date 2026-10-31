@@ -9,7 +9,7 @@ use alpha_module_loop::{
     ContextPreparer, LoopConfig, LoopModule, ModelProvider, ModelRoute, ModelRouteOverride,
     ProviderError, ProviderRegistry, ProviderToolsOverride, ToolCall, ToolCallDelta, TurnOutcome,
 };
-use alpha_module_session::{
+use alpha_session_log::{
     SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
     TurnEndReason, WorkspaceRef,
 };
@@ -151,7 +151,7 @@ struct SummaryPreparer;
 impl ContextPreparer for SummaryPreparer {
     fn prepare<'a>(
         &'a self,
-        writer: &'a alpha_module_session::SessionWriter,
+        writer: &'a alpha_session_log::SessionWriter,
         state: &'a mut SessionState,
         _provider: &'a dyn ModelProvider,
         _model: &'a str,

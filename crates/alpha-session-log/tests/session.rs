@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write;
 
-use alpha_module_session::{
+use alpha_session_log::{
     MessageRecord, SessionError, SessionEvent, SessionHeader, SessionStore, ToolStatus,
     TurnEndReason, WorkspaceRef,
 };

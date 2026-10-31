@@ -1,11 +1,11 @@
 [package]
-name = "alpha-module-session"
+name = "alpha-session-log"
 description = "Append-only session log, projections, and migrations for alpha-harness."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["alpha-harness", "session", "alpha-module"]
+keywords = ["alpha-harness", "session", "log"]
 categories = ["development-tools"]
 
 [dependencies]
@@ -17,9 +17,3 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[package.metadata.alpha]
-api = 1
-kind = "module"
-key = "session"
-provides = [{ key = "session.store", kind = "singleton", scope = "location" }]

@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use alpha_harness::serve_with;
-use alpha_module_session::{
+use alpha_session_log::{
     SessionEvent, SessionHeader, SessionStore, TurnEndReason, WorkspaceRef,
 };
 use alpha_protocol::{Id, Message, Response, ResponsePayload, codes, read_message};

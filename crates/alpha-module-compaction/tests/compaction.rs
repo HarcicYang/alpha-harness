@@ -8,7 +8,7 @@ use alpha_module_compaction::{
 use alpha_module_loop::{
     CompletionRequest, CompletionResponse, ContextPreparer, ModelProvider, ProviderError,
 };
-use alpha_module_session::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
+use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 use alpha_schema::{MessageId, PermissionMode, SessionId};
 use futures::future::BoxFuture;
 
@@ -81,7 +81,7 @@ fn header() -> SessionHeader {
     )
 }
 
-fn append_history(writer: &alpha_module_session::SessionWriter) -> SessionState {
+fn append_history(writer: &alpha_session_log::SessionWriter) -> SessionState {
     let header = writer.header().clone();
     let events = vec![
         writer

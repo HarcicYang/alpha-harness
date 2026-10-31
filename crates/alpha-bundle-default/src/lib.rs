@@ -24,6 +24,5 @@ pub use alpha_module_provider_openai;
 pub use alpha_module_provider_openai_chat_completions;
 pub use alpha_module_provider_openai_responses;
 pub use alpha_module_provider_opencode_go;
-pub use alpha_module_session;
 pub use alpha_module_tools;
 pub use alpha_provider_api;

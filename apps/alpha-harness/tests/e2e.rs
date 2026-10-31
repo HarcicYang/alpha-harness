@@ -9,7 +9,7 @@ use alpha_front_client::{ConnectionEvent, ProtocolConnection};
 use alpha_harness::{CoreRuntimeOptions, serve_protocol_with_options};
 use alpha_module_credential::{CredentialStore, MemoryCredentialStore};
 use alpha_module_http::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
-use alpha_module_session::SessionStore;
+use alpha_session_log::SessionStore;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde_json::{Value, json};

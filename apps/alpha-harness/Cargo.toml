@@ -11,7 +11,7 @@ name = "alpha"
 path = "src/main.rs"
 
 [dependencies]
-alpha-module-session.workspace = true
+alpha-session-log.workspace = true
 alpha-module-agent-host.workspace = true
 alpha-module-compaction.workspace = true
 alpha-module-credential.workspace = true

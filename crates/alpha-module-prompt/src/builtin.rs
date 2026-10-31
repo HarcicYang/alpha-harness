@@ -290,7 +290,7 @@ impl PromptSectionProvider for ProjectInstructionsSection {
 }
 
 fn candidate_paths(
-    state: &alpha_module_session::SessionState,
+    state: &alpha_session_log::SessionState,
 ) -> Result<Vec<PathBuf>, PromptError> {
     let root = Path::new(&state.workspace.root);
     let cwd = Path::new(&state.workspace.cwd);
