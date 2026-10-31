@@ -32,9 +32,9 @@ installing, run `cargo build --release`; the binary lands in
 alpha desktop
 ```
 
-On first use, add a provider — OpenAI, Anthropic, DeepSeek, OpenCode Go, or any
-compatible endpoint — together with its API key. Then choose a workspace from
-the top-left menu and describe the task in the composer.
+On first use, pick a provider from the list the app shows and add its API key.
+Then choose a workspace from the top-left menu and describe the task in the
+composer.
 
 From a terminal:
 

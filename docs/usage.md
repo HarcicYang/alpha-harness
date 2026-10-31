@@ -90,6 +90,12 @@ and the network is unshared by default.
 - The bubblewrap sandbox targets Linux. The user configuration file does not
   currently expose these settings.
 
+## Providers
+
+Provider kinds are modules, so the panel lists exactly the kinds compiled into
+your build. The reference composition is listed in
+[`architecture.md#providers-and-models`](architecture.md#providers-and-models).
+
 ## Files and environment
 
 Provider settings are stored in:
