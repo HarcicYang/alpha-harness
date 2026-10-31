@@ -1,12 +1,18 @@
 # alpha-harness
 
-alpha-harness is a local coding agent for software projects. It inspects a
-workspace, edits files, runs commands, and keeps conversations available for
-later, from a desktop app or a terminal.
+**Harness of your own.** Modular, lightweight, atomic.
 
-It talks to OpenAI Chat Completions, OpenAI Responses, Anthropic Messages,
-DeepSeek, and OpenCode Go endpoints, and to any server that speaks one of those
-protocols.
+- **Modular** — the feature set is the Cargo dependency graph. Tools, providers,
+  prompts, permissions, and compaction are modules with declared requirements
+  and provisions, checked at build time: no plugin runtime, no dynamic loading,
+  no WASM.
+- **Lightweight** — the kernel holds only the component runtime and terminal and
+  stdio plumbing. The desktop app, the terminal UI, and the CLI are one binary
+  with no JavaScript in the build.
+- **Atomic** — nothing is installed or patched in place. The module set is
+  resolved from the locked dependency graph and baked into the binary at build
+  time, so a capability cannot be half-installed; repair and migration write a
+  successor session generation beside the untouched source file.
 
 ## Install
 
@@ -26,8 +32,9 @@ installing, run `cargo build --release`; the binary lands in
 alpha desktop
 ```
 
-On first use, add a provider and its API key in the app. Then choose a workspace
-from the top-left menu and describe the task in the composer.
+On first use, add a provider — OpenAI, Anthropic, DeepSeek, OpenCode Go, or any
+compatible endpoint — together with its API key. Then choose a workspace from
+the top-left menu and describe the task in the composer.
 
 From a terminal:
 
