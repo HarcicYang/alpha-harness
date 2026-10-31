@@ -229,6 +229,7 @@ impl AlphaDesktop {
             .bg(rgb(SURFACE_RAISED))
             .shadow_lg()
             .overflow_hidden()
+            .occlude()
             .smooth_scroll_shell(ScrollRegion::ComposerMenu, cx);
         let panel = div()
             .id(format!("composer-menu-scroll:{menu:?}"))

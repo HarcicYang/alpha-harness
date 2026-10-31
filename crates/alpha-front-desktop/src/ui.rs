@@ -311,9 +311,9 @@ where
 
 pub(crate) fn modal_enter<E>(element: E, id: impl Into<ElementId>) -> AnyElement
 where
-    E: IntoElement + Styled + 'static,
+    E: IntoElement + InteractiveElement + Styled + 'static,
 {
-    spring_enter(element, id, px(12.), 54.)
+    spring_enter(element.occlude(), id, px(12.), 54.)
 }
 
 fn spring_enter<E>(

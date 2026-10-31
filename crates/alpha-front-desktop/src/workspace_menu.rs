@@ -251,6 +251,7 @@ impl AlphaDesktop {
             .bg(rgb(SURFACE_RAISED))
             .shadow_lg()
             .overflow_hidden()
+            .occlude()
             .flex()
             .flex_col()
             .child(
@@ -336,6 +337,7 @@ impl AlphaDesktop {
             .bg(rgb(SURFACE_RAISED))
             .shadow_lg()
             .overflow_hidden()
+            .occlude()
             .p(px(6.))
             .flex()
             .flex_col()
