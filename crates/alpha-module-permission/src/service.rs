@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use crate::Policy;
 use crate::policy::RuleDecision;
 use alpha_permission_api::{
-    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, CollectingAuditSink, DecisionSource,
+    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, DecisionSource,
     PermissionService,
 };
 use alpha_permission_api::request::{ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest};
