@@ -1,5 +1,7 @@
 //! Composable system-prompt assembly.
 
+pub use alpha_prompt_api::{PromptAssembler, PromptError};
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -132,11 +134,7 @@ impl PromptRegistry {
     }
 }
 
-/// Prompt assembly contract consumed by the application runtime.
-pub trait PromptAssembler: Send + Sync + 'static {
-    /// Assemble a deterministic system prompt for one session.
-    fn assemble(&self, ctx: &Ctx, state: &SessionState) -> Result<String, PromptError>;
-}
+
 
 /// One dynamic context section rendered into durable user messages.
 pub trait ContextSectionProvider: Send + Sync + 'static {
@@ -312,33 +310,6 @@ impl PromptAssembler for DefaultPromptAssembler {
         let request = PromptRequest { ctx, state };
         Ok(self.registry.render(&request)?.join("\n\n"))
     }
-}
-
-/// Prompt assembly failures.
-#[derive(Debug, thiserror::Error)]
-pub enum PromptError {
-    /// Two providers use the same stable key.
-    #[error("prompt section `{0}` is already registered")]
-    DuplicateSection(String),
-    /// Kernel registration failed.
-    #[error("prompt registration failed: {0}")]
-    Kernel(String),
-    /// The session cwd is outside its workspace root.
-    #[error("cwd `{cwd}` is outside workspace root `{root}`")]
-    InvalidWorkspace {
-        /// Workspace root.
-        root: String,
-        /// Session cwd.
-        cwd: String,
-    },
-    /// Reading a project instruction file failed.
-    #[error("failed to read project instructions `{path}`: {message}")]
-    ProjectInstruction {
-        /// Workspace-relative path.
-        path: String,
-        /// Underlying error.
-        message: String,
-    },
 }
 
 /// Configuration for prompt assembly.

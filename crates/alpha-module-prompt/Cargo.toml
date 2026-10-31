@@ -9,6 +9,7 @@ keywords = ["alpha-harness", "prompt", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-prompt-api.workspace = true
 alpha-kernel.workspace = true
 alpha-module-fs.workspace = true
 alpha-module-loop.workspace = true
