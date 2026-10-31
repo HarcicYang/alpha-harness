@@ -24,13 +24,24 @@ new one. Two implementations of the same singleton capability may not coexist;
 | `4bc3806` | `alpha-bundle-default` deleted; the composition root's direct dependencies are the module set |
 | `d718fc0` | `alpha-credential-api`, `alpha-http-api` contracts; API adapters and `alpha-provider-api` depend on the contracts, not the drivers |
 | `eb3f357` | `ProviderConfigError`, `ConfigFile`, `ProviderConfigStore` moved into `alpha-provider-api` |
+| `8126ff5` | `alpha-prompt-api`: `PromptAssembler`, `PromptError` |
+| `22b9a71` | `alpha-permission-api`: requests, approvals, audit, `PermissionService` |
+| `891058e` | `alpha-agent-api`: providers, routes, registries, `AgentDriver`, turn errors |
+| `43ddd9b` | `apps/alpha-harness/src/cli.rs`: clap **builder** driven by `Host::fronts` |
+| `75bf502` | `main.rs` is four lines with no `alpha-*` import; the generated `ALPHA_HOST` supplies every command |
 
 Current invariant: `cargo check --workspace --all-targets` passes and the tree is
 clean.
 
 ## Remaining
 
-### 1. Contract crates
+### 1. Contract crates — done
+
+All six contracts exist: `alpha-credential-api`, `alpha-http-api`,
+`alpha-provider-api` (extended), `alpha-prompt-api`, `alpha-permission-api`,
+`alpha-agent-api`. Each implementation crate keeps `pub use` re-exports, so
+existing imports and tests are unchanged.
+
 
 | Crate | Move out of | Symbols |
 | --- | --- | --- |
@@ -56,9 +67,19 @@ Emitted from `crates/alpha-build/src/generate.rs`; the helper lives in
 `alpha-host-api` and returns an error naming the missing capability instead of
 failing later with a bare "service not found".
 
-### 3. `alpha-shell`
+### 3. `alpha-shell` — partially done
 
-New crate holding what `apps/alpha-harness/src/lib.rs` (2070 lines) does today:
+`apps/alpha-harness/src/cli.rs` already holds the fixed shell: clap command
+builder over `Host::fronts`, dispatch, `sessions`, and `__core --stdio`. `main.rs`
+no longer names any `alpha-*` crate.
+
+Still inside `apps/alpha-harness/src/lib.rs` is the core server (router, session
+runtime factory, ~2070 lines). Extracting it into a crate that depends only on
+the contracts is what would let a second composition root (`apps/alpha-min`)
+avoid linking the desktop front. Until then, keeping the CLI here is enough for
+the trimming goal, because the generated table is per-crate.
+
+The remaining extraction is:
 
 - CLI built with the `clap` builder API from `Host::fronts` plus `sessions` and
   the hidden `__core --stdio` command (no `#[derive(Subcommand)]` enum, because
