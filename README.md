@@ -1,16 +1,16 @@
 # alpha-harness
 
-alpha-harness is a Rust coding agent. The `alpha` binary starts a local core,
-opens a shared front runtime, and exposes one-shot, terminal, or GPUI desktop
-interfaces. Session state is stored in an append-only event log.
+alpha-harness is a local coding agent for software projects. It can inspect a
+workspace, edit files, run commands, and keep conversations available for later.
+You can use it from the desktop app or a terminal.
 
 ## Requirements
 
-- Rust 1.99 or newer. The active toolchain is declared in `rust-toolchain.toml`.
+- Rust 1.99 or newer.
 - Cargo.
-- Linux desktop builds need the X11, Wayland, Vulkan, fontconfig, ALSA, and
-  xkbcommon development packages listed in `.github/workflows/ci.yml`.
-- Sandboxed shell commands use `bubblewrap` when it is available.
+- On Linux, the desktop packages listed in `.github/workflows/ci.yml`.
+- `bubblewrap` for sandboxed shell commands. Commands still run without it when
+  the selected permission mode allows that.
 
 ## Build
 
@@ -18,162 +18,111 @@ interfaces. Session state is stored in an append-only event log.
 cargo build --release
 ```
 
-The resulting binary is `target/release/alpha`.
+The binary is written to `target/release/alpha`. The examples below assume
+`alpha` is either on your `PATH` or replaced with that path.
+
+## Start the desktop app
+
+```sh
+alpha desktop
+```
+
+On first use, configure a provider and model from the app. Then choose a
+workspace from the button in the top-left corner and describe the task in the
+composer.
+
+The workspace menu has two levels. The first lists workspaces, and the second
+lists sessions in the selected workspace. You can also open another folder or
+start a new session there. Work in other open workspaces continues in the
+background, and the desktop app shows a notice when that work needs attention
+or finishes.
+
+Useful desktop shortcuts:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl-N` | Start a new session |
+| `Ctrl-R` | Open saved sessions |
+| `Ctrl-P` | Open provider settings |
+| `Ctrl-L` | Choose a model |
+| `Ctrl-T` | Choose reasoning effort |
+| `Ctrl-K` | Open the command palette |
+| `?` | Show all shortcuts |
+
+On macOS, use `Cmd` instead of `Ctrl`.
+
+In the composer, `Enter` sends a message, `Shift-Enter` inserts a newline, and
+`Tab` accepts a visible slash-command suggestion.
+
+## Terminal interfaces
+
+`alpha chat` keeps the conversation in the current terminal. `alpha tui` uses
+the alternate screen.
+
+```sh
+alpha chat
+alpha tui
+```
+
+Both interfaces show the current provider, model, reasoning level, and
+permission mode. Use `Ctrl-R` to open saved sessions and `Ctrl-P` to change
+provider settings.
 
 ## Commands
 
-| Command | Purpose |
+| Command | What it does |
 | --- | --- |
-| `alpha run [OPTIONS] [PROMPT]...` | Run one prompt and exit |
-| `alpha chat` | Open the terminal chat without the alternate screen |
-| `alpha tui` | Open the full-screen terminal interface |
-| `alpha desktop` | Open the GPUI desktop window |
-| `alpha sessions` | List stored sessions |
+| `alpha desktop` | Open the desktop app |
+| `alpha tui` | Open the full-screen terminal app |
+| `alpha chat` | Chat without switching to the alternate screen |
+| `alpha run [OPTIONS] [PROMPT]...` | Send one prompt and exit |
+| `alpha sessions` | List saved sessions |
 
-`alpha run` accepts these options:
+Common `alpha run` options:
 
-| Option | Effect |
+| Option | What it does |
 | --- | --- |
-| `--mode read\|auto\|reviewed\|free` | Sets the permission mode. The default is `auto`. |
-| `--workspace <PATH>` | Sets the workspace root. The current directory is the default. |
-| `--provider <ID>` | Selects a provider instance or provider kind. |
-| `--model <MODEL>` | Selects a model from the active provider catalog. |
-| `--resume <SESSION_ID>` | Resumes an existing session instead of creating a new one. |
+| `--workspace <PATH>` | Choose the workspace. The current directory is the default. |
+| `--mode <MODE>` | Choose `read`, `auto`, `reviewed`, or `free` permissions. |
+| `--provider <ID>` | Choose a provider instance or provider type |
+| `--model <MODEL>` | Choose a model |
+| `--resume <SESSION_ID>` | Continue a saved session |
 
 ```sh
-alpha run --mode free "add a README section"
+alpha run "review the error handling in src"
+alpha run --mode free "fix the failing tests"
 alpha run --resume 019a7a30-0000-7000-8000-000000000000 "continue"
 ```
 
-Assistant text is written to stdout as it streams. Progress, tool events, and
-errors are written to stderr.
+While a prompt runs, assistant text is printed to stdout. Progress, tool calls,
+and errors are printed to stderr.
 
-## Terminal interface
+## Configuration
 
-`alpha chat` stays in the current terminal. `alpha tui` uses the alternate
-screen. Both use the shared front runtime and managed core process.
-
-The prompt is a multiline composer with slash-command completion:
-
-- `Enter` sends the prompt.
-- `Ctrl-Enter` or `Ctrl-J` inserts a line break.
-- `Tab` accepts the visible slash-command completion.
-- `Esc` closes the active picker or returns focus to the composer.
-
-The header shows the current provider, model, reasoning level, and permission
-mode.
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl-L` | Open the model picker |
-| `Shift-Tab` | Cycle reasoning effort |
-| `Ctrl-T` | Open the effort picker |
-| `Ctrl-P` | Open provider settings |
-| `Ctrl-R` | Open the session manager |
-
-The slash commands `/model`, `/effort`, and `/thinking` expose the same route
-controls. Route changes are appended to the session log and restored on resume.
-
-The session manager shows the first user message for each session. `Enter`
-switches sessions, `n` creates a draft, and `d` asks for confirmation before
-deleting an idle session.
-
-## Desktop interface
-
-`alpha desktop` uses a centered conversation column and an ambient workspace
-header. Sessions, context, commands, model selection, reasoning effort,
-provider settings, and permission mode open in overlays or popovers.
-
-The workspace button opens a two-level menu. The first level lists workspaces.
-The second level lists stored sessions for the selected workspace and provides
-a new-session action. Opening a workspace starts its core if needed. Switching
-workspaces changes the primary core while other opened cores keep running in
-the background. Background completion, approval requests, and core failures
-appear as desktop notifications.
-
-An empty transcript shows only the Greek alpha character. It has no circular
-background, heading, description, or prompt buttons.
-
-`Ctrl` shortcuts use `Cmd` on macOS.
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl-N` | Start a new draft |
-| `Ctrl-R` | Open the session manager |
-| `Ctrl-P` | Open provider settings |
-| `Ctrl-L` | Open the model picker |
-| `Ctrl-T` | Open the reasoning-effort picker |
-| `Ctrl-K` | Open the global command palette |
-| `?` | Open the shortcut reference |
-
-`Enter` sends, `Shift-Enter` inserts a line break, and `Tab` accepts a visible
-slash-command completion. Permission requests appear in the transcript with
-deny, once, and session choices.
-
-The context panel shows token usage, changed files, recent activity, and the
-provider capabilities for the current session. Provider instances and
-capabilities can also be changed from keyboard commands.
-
-Desktop scroll areas share an explicit GPUI `ScrollHandle` between the content
-viewport and a visible scrollbar. Wheel and touchpad deltas accumulate as
-pending displacement and are consumed on animation frames. Scrollbar dragging
-moves the handle directly and cancels pending displacement. The transcript
-keeps a cached projection and stable Markdown state so a draft that becomes a
-stored session does not rebuild the first turn. Scroll animation requests use
-an 8ms inactive-frame interval and support 120 Hz displays; the compositor and
-monitor refresh rate set the presented frame rate.
-
-## Configuration and credentials
-
-The user configuration file defaults to:
-
-```text
-$XDG_CONFIG_HOME/alpha-harness/config.toml
-```
-
-Without `XDG_CONFIG_HOME`, the path is:
+Provider settings are stored in:
 
 ```text
 ~/.config/alpha-harness/config.toml
 ```
 
-Provider instances, the default provider, default models, and model overrides
-are stored there. Credentials are written through the platform credential
-store:
+If `XDG_CONFIG_HOME` is set, the file is under that directory instead.
 
-- Secret Service on Linux.
-- Keychain on macOS.
-- Credential Manager on Windows.
+Credentials use the system credential store: Secret Service on Linux, Keychain
+on macOS, and Credential Manager on Windows. alpha-harness never writes API keys
+to the configuration file.
 
-Provider state keeps an opaque credential reference. Credential values are not
-returned to a frontend or written to the TOML file. If the platform credential
-store is unavailable, credential operations fail instead of falling back to
-plaintext storage.
-
-## Session storage
-
-The session directory defaults to:
-
-```text
-$XDG_STATE_HOME/alpha-harness/sessions
-```
-
-Without `XDG_STATE_HOME`, the path is:
+Saved sessions are stored in:
 
 ```text
 ~/.local/state/alpha-harness/sessions
 ```
 
-`ALPHA_HARNESS_STATE_DIR` can replace the base state directory.
-
-Each session directory contains a header, one or more append-only JSONL event
-generations, and a writer lease. Opening a session for reading can apply
-in-memory migrations. Repair or migration creates a successor generation and
-leaves earlier files in place.
+If `XDG_STATE_HOME` is set, the sessions are under that directory instead. You
+can override the base directory with `ALPHA_HARNESS_STATE_DIR`.
 
 ## Development
 
-Run the repository checks before committing:
+Run the repository checks before submitting changes:
 
 ```sh
 cargo fmt --all -- --check
@@ -181,7 +130,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs those checks on Ubuntu and runs workspace checks on Ubuntu, macOS, and
-Windows. The test suite covers composition validation, session recovery,
-permission decisions, provider adapters, protocol framing, prompt assembly,
-compaction, terminal behavior, and frontend state.
+CI runs the full checks on Linux and checks the workspace on macOS and Windows.
