@@ -433,3 +433,14 @@ mod tests {
         assert!(command_suggestions("missing").is_empty());
     }
 }
+
+/// Front entry for `alpha desktop`.
+pub fn __front_desktop(
+    request: alpha_host_api::FrontRequest,
+) -> Result<(), alpha_host_api::FrontError> {
+    let runtime = alpha_front_runtime::FrontRuntimeManager::start(
+        alpha_front_runtime::runtime_config(&request),
+    )
+    .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+    run_desktop(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
+}

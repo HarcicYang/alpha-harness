@@ -4,6 +4,7 @@
 
 mod chat;
 mod command;
+mod run;
 mod provider;
 mod workspace;
 
@@ -25,6 +26,7 @@ pub use chat::{
     InteractionDecision, InteractionPrompt, TranscriptItem,
 };
 pub use command::{COMMANDS, CommandSpec, FrontCommand, parse_command};
+pub use run::{__front_run, run_once, runtime_config};
 pub use provider::{
     ModelChoice, ProviderRemoved, ProviderState, resolve_model_selection,
     supported_reasoning_levels,

@@ -10,6 +10,7 @@ categories = ["development-tools"]
 
 [dependencies]
 alpha-front-runtime.workspace = true
+alpha-host-api.workspace = true
 alpha-schema.workspace = true
 crossterm.workspace = true
 pulldown-cmark.workspace = true

@@ -12,6 +12,7 @@ categories = ["development-tools"]
 alpha-front-client.workspace = true
 alpha-front-supervisor.workspace = true
 alpha-protocol.workspace = true
+alpha-host-api.workspace = true
 alpha-schema.workspace = true
 serde.workspace = true
 serde_json.workspace = true

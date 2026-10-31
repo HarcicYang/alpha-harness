@@ -232,6 +232,9 @@ dependencies = [
  "alpha-api-anthropic-messages",
  "alpha-api-openai-chat",
  "alpha-api-openai-responses",
+ "alpha-front-desktop",
+ "alpha-front-runtime",
+ "alpha-front-tui",
  "alpha-module-compaction",
  "alpha-module-config",
  "alpha-module-credential",
@@ -266,6 +269,7 @@ name = "alpha-front-desktop"
 version = "0.1.0"
 dependencies = [
  "alpha-front-runtime",
+ "alpha-host-api",
  "alpha-schema",
  "gpui-kit",
  "serde_json",
@@ -278,6 +282,7 @@ version = "0.1.0"
 dependencies = [
  "alpha-front-client",
  "alpha-front-supervisor",
+ "alpha-host-api",
  "alpha-protocol",
  "alpha-schema",
  "serde",
@@ -301,6 +306,7 @@ name = "alpha-front-tui"
 version = "0.1.0"
 dependencies = [
  "alpha-front-runtime",
+ "alpha-host-api",
  "alpha-schema",
  "crossterm",
  "pulldown-cmark",

@@ -6,6 +6,9 @@
 #![forbid(unsafe_code)]
 
 pub use alpha_api_anthropic_messages;
+pub use alpha_front_desktop;
+pub use alpha_front_runtime;
+pub use alpha_front_tui;
 pub use alpha_api_openai_chat;
 pub use alpha_api_openai_responses;
 pub use alpha_module_compaction;

@@ -3968,3 +3968,17 @@ mod tests {
         assert!(terminal_contains(&terminal, "Delete session"));
     }
 }
+
+/// Front entry for `alpha chat`.
+pub fn __front_chat(request: alpha_host_api::FrontRequest) -> Result<(), alpha_host_api::FrontError> {
+    let runtime = alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
+        .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+    run_chat(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
+}
+
+/// Front entry for `alpha tui`.
+pub fn __front_tui(request: alpha_host_api::FrontRequest) -> Result<(), alpha_host_api::FrontError> {
+    let runtime = alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
+        .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+    run_tui(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
+}

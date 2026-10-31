@@ -9,6 +9,9 @@ keywords = ["alpha-harness", "bundle", "alpha-module"]
 categories = ["development-tools"]
 
 [dependencies]
+alpha-front-desktop.workspace = true
+alpha-front-runtime.workspace = true
+alpha-front-tui.workspace = true
 alpha-module-config.workspace = true
 alpha-module-credential.workspace = true
 alpha-module-compaction.workspace = true
