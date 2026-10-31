@@ -14,7 +14,6 @@ use alpha_schema::{AssistantContentBlock, MessageId, ReasoningLevel, ToolCallId,
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
-use thiserror::Error;
 
 use crate::provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,

@@ -1,6 +1,6 @@
 //! Agent turn failures and outcomes.
 
-use alpha_schema::{MessageId, PermissionMode};
+use alpha_schema::MessageId;
 use alpha_session_log::SessionError;
 
 use crate::provider::ProviderError;

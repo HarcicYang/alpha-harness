@@ -10,7 +10,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use alpha_kernel::{ActivateError, Ctx};
+pub use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_protocol::Router;
 use alpha_schema::{PermissionMode, SessionId};
 use serde::de::DeserializeOwned;

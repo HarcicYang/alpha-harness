@@ -2,7 +2,6 @@
 
 use alpha_kernel::Ctx;
 use alpha_session_log::{SessionState, SessionWriter};
-use alpha_schema::SessionEvent;
 use futures::future::BoxFuture;
 
 use crate::error::{ContextError, LoopError, TurnOutcome};

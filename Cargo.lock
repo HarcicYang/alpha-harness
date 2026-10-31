@@ -320,6 +320,7 @@ dependencies = [
  "alpha-front-runtime",
  "alpha-front-supervisor",
  "alpha-front-tui",
+ "alpha-host-api",
  "alpha-kernel",
  "alpha-module-agent-host",
  "alpha-module-compaction",
