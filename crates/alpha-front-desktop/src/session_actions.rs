@@ -36,8 +36,9 @@ impl AlphaDesktop {
                 self.change_review_open = false;
                 self.selected_change = 0;
                 self.context_tab = ContextTab::Changes;
-                self.thinking_expanded = false;
-                self.expanded_tool_group = None;
+                self.expanded_thoughts.clear();
+                self.expanded_tool_groups.clear();
+                self.tool_outputs.clear();
                 self.jump_to_latest_hidden_until = None;
                 self.scroll_to_bottom(ScrollRegion::Transcript);
                 self.local_status = None;
@@ -58,8 +59,9 @@ impl AlphaDesktop {
         self.change_review_open = false;
         self.selected_change = 0;
         self.context_tab = ContextTab::Changes;
-        self.thinking_expanded = false;
-        self.expanded_tool_group = None;
+        self.expanded_thoughts.clear();
+        self.expanded_tool_groups.clear();
+        self.tool_outputs.clear();
         self.jump_to_latest_hidden_until = None;
         self.scroll_to_bottom(ScrollRegion::Transcript);
         self.local_status = None;

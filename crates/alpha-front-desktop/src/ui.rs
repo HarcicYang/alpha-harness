@@ -1,7 +1,7 @@
 use super::*;
 use std::cell::Cell;
 
-pub(crate) const SCROLL_REGION_COUNT: usize = 14;
+pub(crate) const SCROLL_REGION_COUNT: usize = 13;
 pub(crate) const SCROLLBAR_GUTTER: f32 = 14.;
 const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(32);
 const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(16);
@@ -19,7 +19,6 @@ pub(crate) enum ScrollRegion {
     SlashCommands,
     ChangeFiles,
     ChangeDiff,
-    ToolOutput,
     ComposerMenu,
     WorkspaceList,
     WorkspaceSessions,
@@ -38,10 +37,9 @@ impl ScrollRegion {
             Self::SlashCommands => 7,
             Self::ChangeFiles => 8,
             Self::ChangeDiff => 9,
-            Self::ToolOutput => 10,
-            Self::ComposerMenu => 11,
-            Self::WorkspaceList => 12,
-            Self::WorkspaceSessions => 13,
+            Self::ComposerMenu => 10,
+            Self::WorkspaceList => 11,
+            Self::WorkspaceSessions => 12,
         }
     }
 }
@@ -247,6 +245,16 @@ pub(crate) trait SmoothScrollShellExt: InteractiveElement + Sized {
             .interactivity()
             .on_scroll_wheel(cx.listener(move |this, event, window, cx| {
                 this.handle_smooth_scroll_wheel(region, event, window, cx);
+            }));
+        element
+    }
+
+    fn tool_scroll_shell(self, tool_id: ToolCallId, cx: &mut Context<AlphaDesktop>) -> Self {
+        let mut element = self;
+        element
+            .interactivity()
+            .on_scroll_wheel(cx.listener(move |this, event, window, cx| {
+                this.handle_tool_scroll_wheel(tool_id, event, window, cx);
             }));
         element
     }

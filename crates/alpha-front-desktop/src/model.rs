@@ -37,48 +37,65 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                     });
                 }
             }
-            other => {
-                flush_tools(&mut rendered, &mut tools);
-                match other {
-                    TranscriptItem::User { text } => {
-                        rendered.push(DesktopTranscriptItem::User(text.clone().into()));
+            other => match other {
+                TranscriptItem::User { text } => {
+                    if text.is_empty() {
+                        continue;
                     }
-                    TranscriptItem::QueuedSteer { .. } => continue,
-                    TranscriptItem::AssistantDelta { text } => {
-                        rendered.push(DesktopTranscriptItem::StreamingAssistant(
-                            text.clone().into(),
-                        ));
-                    }
-                    TranscriptItem::ThinkingDelta { text } => {
-                        rendered.push(DesktopTranscriptItem::StreamingThinking(
-                            text.clone().into(),
-                        ));
-                    }
-                    TranscriptItem::AssistantMessage { blocks } => {
-                        let thinking = blocks
-                            .iter()
-                            .filter_map(AssistantContentBlock::thinking)
-                            .map(|(text, _)| text)
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if !thinking.is_empty() {
-                            rendered.push(DesktopTranscriptItem::Thinking(thinking.into()));
-                        }
-                        let text = blocks
-                            .iter()
-                            .filter_map(AssistantContentBlock::text)
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if !text.is_empty() {
-                            rendered.push(DesktopTranscriptItem::Assistant(text.into()));
-                        }
-                    }
-                    TranscriptItem::Error { message } => {
-                        rendered.push(DesktopTranscriptItem::Error(message.clone().into()));
-                    }
-                    TranscriptItem::ToolCall { .. } | TranscriptItem::ToolResult { .. } => {}
+                    flush_tools(&mut rendered, &mut tools);
+                    rendered.push(DesktopTranscriptItem::User(text.clone().into()));
                 }
-            }
+                TranscriptItem::QueuedSteer { .. } => continue,
+                TranscriptItem::AssistantDelta { text } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    flush_tools(&mut rendered, &mut tools);
+                    rendered.push(DesktopTranscriptItem::StreamingAssistant(
+                        text.clone().into(),
+                    ));
+                }
+                TranscriptItem::ThinkingDelta { text } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    flush_tools(&mut rendered, &mut tools);
+                    rendered.push(DesktopTranscriptItem::StreamingThinking(
+                        text.clone().into(),
+                    ));
+                }
+                TranscriptItem::AssistantMessage { blocks } => {
+                    let thinking = blocks
+                        .iter()
+                        .filter_map(AssistantContentBlock::thinking)
+                        .map(|(text, _)| text)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let text = blocks
+                        .iter()
+                        .filter_map(AssistantContentBlock::text)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if thinking.is_empty() && text.is_empty() {
+                        continue;
+                    }
+                    flush_tools(&mut rendered, &mut tools);
+                    if !thinking.is_empty() {
+                        rendered.push(DesktopTranscriptItem::Thinking(thinking.into()));
+                    }
+                    if !text.is_empty() {
+                        rendered.push(DesktopTranscriptItem::Assistant(text.into()));
+                    }
+                }
+                TranscriptItem::Error { message } => {
+                    if message.is_empty() {
+                        continue;
+                    }
+                    flush_tools(&mut rendered, &mut tools);
+                    rendered.push(DesktopTranscriptItem::Error(message.clone().into()));
+                }
+                TranscriptItem::ToolCall { .. } | TranscriptItem::ToolResult { .. } => {}
+            },
         }
     }
     flush_tools(&mut rendered, &mut tools);

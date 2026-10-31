@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -53,8 +54,8 @@ struct AlphaDesktop {
     context_tab: ContextTab,
     change_review_open: bool,
     selected_change: usize,
-    thinking_expanded: bool,
-    expanded_tool_group: Option<String>,
+    expanded_thoughts: BTreeSet<usize>,
+    expanded_tool_groups: BTreeSet<String>,
     sessions_open: bool,
     session_search: Entity<TextareaState>,
     session_selected: Option<SessionId>,
@@ -83,7 +84,7 @@ struct AlphaDesktop {
     slash_scroll: ScrollHandle,
     change_file_scroll: ScrollHandle,
     change_diff_scroll: ScrollHandle,
-    tool_scroll: ScrollHandle,
+    tool_outputs: BTreeMap<ToolCallId, ToolOutputState>,
     composer_menu_scroll: ScrollHandle,
     workspace_list_scroll: ScrollHandle,
     workspace_session_scroll: ScrollHandle,
@@ -132,6 +133,13 @@ struct ToolSummary {
     name: String,
     status: Option<ToolStatus>,
     content: Option<String>,
+}
+
+#[derive(Default)]
+struct ToolOutputState {
+    expanded: bool,
+    scroll: ScrollHandle,
+    scroll_motion: SmoothScroll,
 }
 
 mod actions;
@@ -248,6 +256,49 @@ mod tests {
         assert_eq!(tools[1].name, "grep");
         assert_eq!(tools[1].status, Some(ToolStatus::Completed));
         assert_eq!(tools[1].content.as_deref(), Some("4 matches"));
+    }
+
+    #[test]
+    fn invisible_tool_only_steps_do_not_split_tool_groups() {
+        let first = ToolCallId::new();
+        let second = ToolCallId::new();
+        let rendered = desktop_transcript_items(&[
+            TranscriptItem::ToolCall {
+                id: first,
+                name: "grep".to_owned(),
+                input: serde_json::json!({ "pattern": "first" }),
+            },
+            TranscriptItem::ToolResult {
+                id: first,
+                name: "grep".to_owned(),
+                status: ToolStatus::Completed,
+                content: "first result".to_owned(),
+            },
+            TranscriptItem::AssistantMessage {
+                blocks: vec![alpha_schema::AssistantContentBlock::LocalToolCall {
+                    id: first.to_string(),
+                    name: "grep".to_owned(),
+                    arguments: serde_json::json!({ "pattern": "first" }),
+                }],
+            },
+            TranscriptItem::ToolCall {
+                id: second,
+                name: "shell".to_owned(),
+                input: serde_json::json!({ "command": "pwd" }),
+            },
+            TranscriptItem::ToolResult {
+                id: second,
+                name: "shell".to_owned(),
+                status: ToolStatus::Completed,
+                content: "workspace".to_owned(),
+            },
+        ]);
+
+        assert_eq!(rendered.len(), 1);
+        let DesktopTranscriptItem::Tools { tools, .. } = &rendered[0] else {
+            panic!("invisible assistant steps must not split tool groups");
+        };
+        assert_eq!(tools.len(), 2);
     }
 
     #[test]

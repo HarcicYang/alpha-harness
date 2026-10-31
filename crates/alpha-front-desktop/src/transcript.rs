@@ -7,8 +7,9 @@ impl AlphaDesktop {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.transcript_dirty {
-            self.transcript_items =
-                Arc::new(desktop_transcript_items(&self.runtime.chat().transcript));
+            let items = Arc::new(desktop_transcript_items(&self.runtime.chat().transcript));
+            self.sync_tool_outputs(&items);
+            self.transcript_items = items;
             self.transcript_dirty = false;
         }
         let items = self.transcript_items.clone();
@@ -35,6 +36,23 @@ impl AlphaDesktop {
             .gap(px(22.))
             .children(children)
             .into_any_element()
+    }
+
+    fn sync_tool_outputs(&mut self, items: &[DesktopTranscriptItem]) {
+        let tool_ids = items
+            .iter()
+            .flat_map(|item| match item {
+                DesktopTranscriptItem::Tools { tools, .. } => {
+                    tools.iter().map(|tool| tool.id).collect::<Vec<_>>()
+                }
+                _ => Vec::new(),
+            })
+            .collect::<BTreeSet<_>>();
+        self.tool_outputs
+            .retain(|tool_id, _| tool_ids.contains(tool_id));
+        for tool_id in tool_ids {
+            self.tool_outputs.entry(tool_id).or_default();
+        }
     }
 
     fn render_empty_transcript(&self, viewport_height: f32, cx: &mut Context<Self>) -> AnyElement {
@@ -193,14 +211,14 @@ impl AlphaDesktop {
         streaming: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let expanded = self.thinking_expanded;
+        let expanded = self.expanded_thoughts.contains(&index);
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap(px(8.))
             .child(
-                Button::new("toggle-thinking")
+                Button::new(format!("toggle-thinking:{index}"))
                     .child(
                         div()
                             .flex()
@@ -213,23 +231,21 @@ impl AlphaDesktop {
                                     .text_color(rgb(MUTED))
                                     .child("Thought"),
                             )
-                            .child(
-                                Icon::new(if expanded {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                })
-                                .size(px(11.))
-                                .text_color(rgb(FAINT)),
-                            ),
+                            .child(disclosure_chevron(
+                                format!("thought-chevron:{index}"),
+                                expanded,
+                                11.,
+                            )),
                     )
                     .ghost()
                     .h(px(26.))
                     .px(px(7.))
                     .rounded_full()
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         let follow = transcript_is_at_bottom(&this.transcript_scroll);
-                        this.thinking_expanded = !this.thinking_expanded;
+                        if !this.expanded_thoughts.remove(&index) {
+                            this.expanded_thoughts.insert(index);
+                        }
                         this.bump_overlay_generation();
                         if follow {
                             this.scroll_to_bottom(ScrollRegion::Transcript);
@@ -265,80 +281,22 @@ impl AlphaDesktop {
         tools: &[ToolSummary],
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(latest) = tools.last() else {
+        if tools.is_empty() {
             return div().into_any_element();
-        };
-        let expanded = self.expanded_tool_group.as_deref() == Some(id);
+        }
+        if tools.len() == 1 {
+            return self.render_tool_row(&tools[0], ToolRowStyle::Standalone, cx);
+        }
+
+        let expanded = self.expanded_tool_groups.contains(id);
         let group_id = id.to_owned();
-        let history_rows = tools
+        let (latest, history) = tools
+            .split_last()
+            .expect("multi-tool groups contain a latest tool");
+        let tool_ids = tools.iter().map(|tool| tool.id).collect::<Vec<_>>();
+        let history_rows = history
             .iter()
-            .map(|tool| {
-                let status = tool_status_label(tool.status);
-                let color = tool_status_color(tool.status);
-                div()
-                    .rounded(px(16.))
-                    .bg(rgb(SURFACE_INSET))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .flex()
-                    .items_start()
-                    .gap(px(9.))
-                    .child(icon_badge(
-                        tool_status_icon(tool.status),
-                        color,
-                        ACCENT_SOFT,
-                        22.,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.5))
-                                    .text_color(rgb(TEXT_SECONDARY))
-                                    .child(tool.name.clone()),
-                            )
-                            .when_some(tool.content.as_deref(), |this, content| {
-                                this.child(
-                                    div()
-                                        .id(format!("tool-scroll-shell:{}", tool.id))
-                                        .relative()
-                                        .mt(px(2.))
-                                        .max_h(px(160.))
-                                        .smooth_scroll_shell(ScrollRegion::ToolOutput, cx)
-                                        .child(
-                                            div()
-                                                .id(format!("tool-scroll:{}", tool.id))
-                                                .w_full()
-                                                .max_h(px(160.))
-                                                .overflow_y_scroll()
-                                                .track_scroll(&self.tool_scroll)
-                                                .pr(px(SCROLLBAR_GUTTER))
-                                                .font_family("monospace")
-                                                .text_size(px(8.5))
-                                                .line_height(px(15.))
-                                                .text_color(rgb(MUTED))
-                                                .child(tool_detail_content(content)),
-                                        )
-                                        .child(scrollbar_rail(
-                                            format!("tool:{}", tool.id),
-                                            &self.tool_scroll,
-                                        )),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(8.5))
-                            .text_color(rgb(color))
-                            .child(status),
-                    )
-                    .into_any_element()
-            })
+            .map(|tool| self.render_tool_row(tool, ToolRowStyle::History, cx))
             .collect::<Vec<_>>();
 
         div()
@@ -377,39 +335,24 @@ impl AlphaDesktop {
                                     }),
                             )
                             .child(div().flex_1())
-                            .child(
-                                Icon::new(if expanded {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                })
-                                .size(px(12.))
-                                .text_color(rgb(FAINT)),
-                            ),
+                            .child(disclosure_chevron(
+                                format!("tool-group-chevron:{id}"),
+                                expanded,
+                                12.,
+                            )),
                     )
                     .ghost()
                     .w_full()
                     .rounded(px(16.))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let follow = transcript_is_at_bottom(&this.transcript_scroll);
-                        this.expanded_tool_group =
-                            if this.expanded_tool_group.as_deref() == Some(group_id.as_str()) {
-                                None
-                            } else {
-                                this.bump_overlay_generation();
-                                this.reset_scroll(ScrollRegion::ToolOutput);
-                                Some(group_id.clone())
-                            };
-                        if follow {
-                            this.scroll_to_bottom(ScrollRegion::Transcript);
-                        }
-                        cx.notify();
+                        this.toggle_tool_group(&group_id, &tool_ids, cx);
                     })),
             )
             .when(expanded, |this| {
                 this.child(popover_enter(
                     div()
-                        .p(px(4.))
+                        .mx(px(3.))
+                        .my(px(3.))
                         .flex()
                         .flex_col()
                         .gap(px(4.))
@@ -417,54 +360,236 @@ impl AlphaDesktop {
                     format!("tool-expansion:{id}:{}", self.overlay_generation),
                 ))
             })
-            .when(!expanded, |this| {
-                this.child(enter_from_below(
-                    div()
-                        .rounded(px(16.))
-                        .px(px(10.))
-                        .py(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .child(icon_badge(
-                            tool_status_icon(latest.status),
-                            tool_status_color(latest.status),
-                            ACCENT_SOFT,
-                            24.,
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(11.5))
-                                        .text_color(rgb(TEXT_SECONDARY))
-                                        .child(latest.name.clone()),
-                                )
-                                .when_some(latest.content.as_deref(), |this, content| {
-                                    this.child(
+            .child(self.render_tool_row(latest, ToolRowStyle::Latest, cx))
+            .into_any_element()
+    }
+
+    fn toggle_tool_group(
+        &mut self,
+        group_id: &str,
+        tool_ids: &[ToolCallId],
+        cx: &mut Context<Self>,
+    ) {
+        let follow = transcript_is_at_bottom(&self.transcript_scroll);
+        if !self.expanded_tool_groups.remove(group_id) {
+            self.bump_overlay_generation();
+            self.expanded_tool_groups.insert(group_id.to_owned());
+        }
+        for tool_id in tool_ids {
+            self.reset_tool_scroll(*tool_id);
+        }
+        if follow {
+            self.scroll_to_bottom(ScrollRegion::Transcript);
+        }
+        cx.notify();
+    }
+
+    fn render_tool_row(
+        &self,
+        tool: &ToolSummary,
+        style: ToolRowStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = self
+            .tool_outputs
+            .get(&tool.id)
+            .expect("tool output state is synchronized before rendering");
+        let expanded = state.expanded;
+        let status = tool_status_label(tool.status);
+        let color = tool_status_color(tool.status);
+        let tool_id = tool.id;
+        let (background, border, radius, min_height) = match style {
+            ToolRowStyle::Standalone => (rgb(SURFACE), rgba(BORDER_SUBTLE), 18., 54.),
+            ToolRowStyle::History => (rgb(SURFACE_INSET), rgba(0x00000000), 16., 52.),
+            ToolRowStyle::Latest => (rgba(0x00000000), rgba(0x00000000), 16., 54.),
+        };
+        let (expansion_x, expansion_top, expansion_bottom) = match style {
+            ToolRowStyle::Latest => (4., 4., 2.),
+            ToolRowStyle::Standalone | ToolRowStyle::History => (10., 5., 1.),
+        };
+        let tool_kind = tool.name.split_whitespace().next().unwrap_or("tool");
+
+        div()
+            .w_full()
+            .rounded(px(radius))
+            .border_1()
+            .border_color(border)
+            .bg(background)
+            .child(
+                Button::new(format!("tool-call:{tool_id}"))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_h(px(min_height))
+                            .px(px(10.))
+                            .py(px(8.))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(icon_badge(
+                                tool_status_icon(tool.status),
+                                color,
+                                ACCENT_SOFT,
+                                24.,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
                                         div()
                                             .truncate()
-                                            .text_size(px(9.5))
-                                            .text_color(rgb(MUTED))
-                                            .child(compact_tool_content(content)),
+                                            .text_size(px(11.5))
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child(tool.name.clone()),
                                     )
-                                }),
-                        )
-                        .child(
-                            Icon::new(IconName::ChevronRight)
-                                .size(px(12.))
-                                .text_color(rgb(FAINT)),
-                        ),
-                    format!("tool-latest:{id}:{}", latest.id),
-                ))
+                                    .when_some(tool.content.as_deref(), |this, content| {
+                                        this.child(
+                                            div()
+                                                .mt(px(2.))
+                                                .truncate()
+                                                .text_size(px(9.5))
+                                                .text_color(rgb(MUTED))
+                                                .child(compact_tool_content(content)),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(8.5))
+                                    .text_color(rgb(color))
+                                    .child(status),
+                            )
+                            .child(disclosure_chevron(
+                                format!("tool-chevron:{tool_id}"),
+                                expanded,
+                                11.,
+                            )),
+                    )
+                    .ghost()
+                    .w_full()
+                    .h(px(min_height))
+                    .rounded(px(radius))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let follow = transcript_is_at_bottom(&this.transcript_scroll);
+                        this.bump_overlay_generation();
+                        let state = this
+                            .tool_outputs
+                            .get_mut(&tool_id)
+                            .expect("tool output state is synchronized before interaction");
+                        state.expanded = !state.expanded;
+                        this.reset_tool_scroll(tool_id);
+                        if follow {
+                            this.scroll_to_bottom(ScrollRegion::Transcript);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(expanded, |this| {
+                this.when_some(tool.content.as_deref(), |this, content| {
+                    this.child(popover_enter(
+                        div()
+                            .mx(px(expansion_x))
+                            .mb(px(expansion_bottom))
+                            .mt(px(expansion_top))
+                            .overflow_hidden()
+                            .rounded(px(20.))
+                            .border_1()
+                            .border_color(rgba(BORDER_SUBTLE))
+                            .bg(rgb(SURFACE_INSET))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .px(px(13.))
+                                    .pt(px(10.))
+                                    .flex()
+                                    .gap(px(5.))
+                                    .child(tool_meta_chip(tool_kind))
+                                    .child(tool_meta_chip(status)),
+                            )
+                            .child(
+                                div()
+                                    .id(format!("tool-scroll-shell:{tool_id}"))
+                                    .relative()
+                                    .mt(px(8.))
+                                    .max_h(px(160.))
+                                    .tool_scroll_shell(tool_id, cx)
+                                    .child(
+                                        div()
+                                            .id(format!("tool-scroll:{tool_id}"))
+                                            .w_full()
+                                            .max_h(px(160.))
+                                            .overflow_y_scroll()
+                                            .track_scroll(&state.scroll)
+                                            .px(px(13.))
+                                            .pb(px(12.))
+                                            .pr(px(SCROLLBAR_GUTTER))
+                                            .font_family("monospace")
+                                            .text_size(px(9.))
+                                            .line_height(px(15.75))
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child(tool_detail_content(content)),
+                                    )
+                                    .child(scrollbar_rail(
+                                        format!("tool:{tool_id}"),
+                                        &state.scroll,
+                                    )),
+                            ),
+                        format!("tool-detail:{tool_id}:{}", self.overlay_generation),
+                    ))
+                })
             })
             .into_any_element()
     }
+}
+
+#[derive(Clone, Copy)]
+enum ToolRowStyle {
+    Standalone,
+    History,
+    Latest,
+}
+
+fn disclosure_chevron(id: String, expanded: bool, size: f32) -> AnyElement {
+    let animation_id = format!("{id}:{expanded}");
+    Icon::new(IconName::ChevronRight)
+        .size(px(size))
+        .text_color(rgb(FAINT))
+        .with_animation(
+            animation_id,
+            Animation::new(Duration::from_millis(180)),
+            move |icon, progress| {
+                let start = if expanded {
+                    0.
+                } else {
+                    std::f32::consts::FRAC_PI_2
+                };
+                let end = if expanded {
+                    std::f32::consts::FRAC_PI_2
+                } else {
+                    0.
+                };
+                icon.rotate(radians(start + (end - start) * progress))
+            },
+        )
+        .into_any_element()
+}
+
+fn tool_meta_chip(label: &str) -> Div {
+    div()
+        .rounded_full()
+        .border_1()
+        .border_color(rgba(BORDER_SUBTLE))
+        .bg(rgb(SURFACE))
+        .px(px(8.))
+        .py(px(3.))
+        .font_family("monospace")
+        .text_size(px(8.))
+        .text_color(rgb(MUTED))
+        .child(label.to_owned())
 }
 
 fn empty_alpha_layer(size: f32, color: u32) -> Div {

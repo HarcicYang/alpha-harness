@@ -82,8 +82,9 @@ impl AlphaDesktop {
         self.capabilities_open = false;
         self.help_open = false;
         self.composer_menu = None;
-        self.expanded_tool_group = None;
-        self.thinking_expanded = false;
+        self.expanded_thoughts.clear();
+        self.expanded_tool_groups.clear();
+        self.tool_outputs.clear();
         self.local_status = None;
         self.reset_scroll(ScrollRegion::Transcript);
         self.composer

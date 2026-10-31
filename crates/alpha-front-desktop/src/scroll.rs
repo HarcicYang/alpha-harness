@@ -13,7 +13,6 @@ impl AlphaDesktop {
             ScrollRegion::SlashCommands => &self.slash_scroll,
             ScrollRegion::ChangeFiles => &self.change_file_scroll,
             ScrollRegion::ChangeDiff => &self.change_diff_scroll,
-            ScrollRegion::ToolOutput => &self.tool_scroll,
             ScrollRegion::ComposerMenu => &self.composer_menu_scroll,
             ScrollRegion::WorkspaceList => &self.workspace_list_scroll,
             ScrollRegion::WorkspaceSessions => &self.workspace_session_scroll,
@@ -28,6 +27,12 @@ impl AlphaDesktop {
     ) {
         let handle = self.scroll_handle(region).clone();
         self.scroll_motion[region.index()].prepare(&handle, window, cx);
+    }
+
+    pub(crate) fn prepare_tool_scroll_motion(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for state in self.tool_outputs.values() {
+            state.scroll_motion.prepare(&state.scroll, window, cx);
+        }
     }
 
     pub(crate) fn reset_scroll(&mut self, region: ScrollRegion) {
@@ -59,5 +64,34 @@ impl AlphaDesktop {
         window.prevent_default();
         cx.stop_propagation();
         cx.notify();
+    }
+
+    pub(crate) fn handle_tool_scroll_wheel(
+        &mut self,
+        tool_id: ToolCallId,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
+        if delta == 0. {
+            return;
+        }
+
+        let Some(state) = self.tool_outputs.get_mut(&tool_id) else {
+            return;
+        };
+        state.scroll_motion.push(&state.scroll, delta);
+        window.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    pub(crate) fn reset_tool_scroll(&mut self, tool_id: ToolCallId) {
+        let Some(state) = self.tool_outputs.get_mut(&tool_id) else {
+            return;
+        };
+        state.scroll.set_offset(point(px(0.), px(0.)));
+        state.scroll_motion.reset(0.);
     }
 }

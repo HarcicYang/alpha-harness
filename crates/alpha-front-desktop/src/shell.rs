@@ -293,9 +293,7 @@ impl Render for AlphaDesktop {
             self.prepare_scroll_motion(ScrollRegion::ChangeFiles, window, cx);
             self.prepare_scroll_motion(ScrollRegion::ChangeDiff, window, cx);
         }
-        if self.expanded_tool_group.is_some() {
-            self.prepare_scroll_motion(ScrollRegion::ToolOutput, window, cx);
-        }
+        self.prepare_tool_scroll_motion(window, cx);
 
         div()
             .id("alpha-desktop")
