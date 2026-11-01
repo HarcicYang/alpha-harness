@@ -66,8 +66,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-/// Module keys enabled by the Cargo dependency graph.
-
+// Module keys enabled by the Cargo dependency graph.
 /// Errors from one `alpha run` invocation.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -379,7 +378,6 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
                 &LoopConfig {
                     provider: "session".to_owned(),
                     model: model_route.get().model,
-                    ..LoopConfig::default()
                 },
             )
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
@@ -672,7 +670,6 @@ fn activate_loop(ctx: &Ctx, provider: &str, model: &str) -> Result<Arc<dyn Agent
         &LoopConfig {
             provider: provider.to_owned(),
             model: model.to_owned(),
-            ..LoopConfig::default()
         },
     )?;
     ctx.require::<dyn AgentDriver>()

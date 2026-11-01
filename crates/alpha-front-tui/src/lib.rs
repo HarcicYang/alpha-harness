@@ -3576,6 +3576,26 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Front entry for `alpha chat`.
+pub fn __front_chat(
+    request: alpha_host_api::FrontRequest,
+) -> Result<(), alpha_host_api::FrontError> {
+    let runtime =
+        alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
+            .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+    run_chat(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
+}
+
+/// Front entry for `alpha tui`.
+pub fn __front_tui(
+    request: alpha_host_api::FrontRequest,
+) -> Result<(), alpha_host_api::FrontError> {
+    let runtime =
+        alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
+            .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+    run_tui(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use alpha_schema::{
@@ -3738,6 +3758,7 @@ mod tests {
                 name: "shell".to_owned(),
                 status: ToolStatus::Completed,
                 content: "src\nCargo.toml".to_owned(),
+                images: Vec::new(),
             },
             80,
         );
@@ -3858,6 +3879,7 @@ mod tests {
         app.chat.transcript = vec![
             TranscriptEntry::User {
                 text: "你好".to_owned(),
+                images: Vec::new(),
             },
             TranscriptEntry::AssistantMessage {
                 blocks: vec![AssistantContentBlock::Text {
@@ -3984,24 +4006,4 @@ mod tests {
             .expect("draw confirmation");
         assert!(terminal_contains(&terminal, "Delete session"));
     }
-}
-
-/// Front entry for `alpha chat`.
-pub fn __front_chat(
-    request: alpha_host_api::FrontRequest,
-) -> Result<(), alpha_host_api::FrontError> {
-    let runtime =
-        alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
-            .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
-    run_chat(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
-}
-
-/// Front entry for `alpha tui`.
-pub fn __front_tui(
-    request: alpha_host_api::FrontRequest,
-) -> Result<(), alpha_host_api::FrontError> {
-    let runtime =
-        alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
-            .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
-    run_tui(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
 }

@@ -47,7 +47,6 @@ impl ConfigFile for LocalConfigFile {
 }
 
 /// Provider config persistence contract.
-
 /// TOML-backed provider config store.
 pub struct TomlProviderConfigStore {
     path: PathBuf,
