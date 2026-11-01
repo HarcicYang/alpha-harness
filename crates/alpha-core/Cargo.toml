@@ -1,0 +1,49 @@
+[package]
+name = "alpha-core"
+description = "Core process for alpha-harness: composition, session runtime, and protocol server."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["alpha-harness", "core"]
+categories = ["development-tools"]
+
+[dependencies]
+alpha-agent-api.workspace = true
+alpha-api-anthropic-messages.workspace = true
+alpha-api-openai-chat.workspace = true
+alpha-api-openai-responses.workspace = true
+alpha-credential-api.workspace = true
+alpha-host-api.workspace = true
+alpha-http-api.workspace = true
+alpha-kernel.workspace = true
+alpha-module-agent-host.workspace = true
+alpha-module-compaction.workspace = true
+alpha-module-config.workspace = true
+alpha-module-credential.workspace = true
+alpha-module-fs.workspace = true
+alpha-module-http.workspace = true
+alpha-module-loop.workspace = true
+alpha-module-permission.workspace = true
+alpha-module-process.workspace = true
+alpha-module-prompt.workspace = true
+alpha-module-provider-anthropic-messages.workspace = true
+alpha-module-provider-config.workspace = true
+alpha-module-provider-deepseek.workspace = true
+alpha-module-provider-openai-chat-completions.workspace = true
+alpha-module-provider-openai-responses.workspace = true
+alpha-module-provider-openai.workspace = true
+alpha-module-provider-opencode-go.workspace = true
+alpha-module-tools.workspace = true
+alpha-permission-api.workspace = true
+alpha-prompt-api.workspace = true
+alpha-protocol.workspace = true
+alpha-provider-api.workspace = true
+alpha-schema.workspace = true
+alpha-session-log.workspace = true
+clap.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "rt", "rt-multi-thread", "sync", "time", "io-std", "io-util", "macros"] }

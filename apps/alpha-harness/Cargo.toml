@@ -36,6 +36,7 @@ alpha-module-provider-config.workspace = true
 alpha-provider-api.workspace = true
 alpha-schema.workspace = true
 alpha-protocol.workspace = true
+alpha-core.workspace = true
 alpha-host-api.workspace = true
 alpha-kernel.workspace = true
 alpha-front-runtime.workspace = true

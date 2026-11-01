@@ -239,6 +239,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpha-core"
+version = "0.1.0"
+dependencies = [
+ "alpha-agent-api",
+ "alpha-api-anthropic-messages",
+ "alpha-api-openai-chat",
+ "alpha-api-openai-responses",
+ "alpha-credential-api",
+ "alpha-host-api",
+ "alpha-http-api",
+ "alpha-kernel",
+ "alpha-module-agent-host",
+ "alpha-module-compaction",
+ "alpha-module-config",
+ "alpha-module-credential",
+ "alpha-module-fs",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "alpha-module-permission",
+ "alpha-module-process",
+ "alpha-module-prompt",
+ "alpha-module-provider-anthropic-messages",
+ "alpha-module-provider-config",
+ "alpha-module-provider-deepseek",
+ "alpha-module-provider-openai",
+ "alpha-module-provider-openai-chat-completions",
+ "alpha-module-provider-openai-responses",
+ "alpha-module-provider-opencode-go",
+ "alpha-module-tools",
+ "alpha-permission-api",
+ "alpha-prompt-api",
+ "alpha-protocol",
+ "alpha-provider-api",
+ "alpha-schema",
+ "alpha-session-log",
+ "clap",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "alpha-credential-api"
 version = "0.1.0"
 dependencies = [
@@ -315,6 +359,7 @@ dependencies = [
  "alpha-api-openai-chat",
  "alpha-api-openai-responses",
  "alpha-build",
+ "alpha-core",
  "alpha-front-client",
  "alpha-front-desktop",
  "alpha-front-runtime",
