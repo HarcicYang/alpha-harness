@@ -213,6 +213,53 @@ impl SessionRuntimeFactory for BlockingFactory {
     }
 }
 
+/// A create request for the fixture session in `dir`.
+fn session_request(dir: &std::path::Path, reasoning: ReasoningLevel) -> CreateSessionRequest {
+    CreateSessionRequest {
+        workspace: dir.to_path_buf(),
+        cwd: None,
+        mode: PermissionMode::Auto,
+        provider: "test".to_owned(),
+        model: "test".to_owned(),
+        reasoning,
+    }
+}
+
+/// Wait until at least `min_count` durable notifications match `predicate`.
+async fn wait_for_durable(
+    transport: &RecordingTransport,
+    min_count: usize,
+    predicate: impl Fn(&Value) -> bool,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let seen = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned")
+            .iter()
+            .filter(|(method, params)| {
+                method == "session.event" && params["kind"] == "durable" && predicate(params)
+            })
+            .count();
+        if seen >= min_count {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Wait until the host dropped every live actor.
+async fn wait_for_idle(host: &AgentHostService) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while host.session_count() > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 #[derive(Default)]
 struct RecordingTransport {
     notifications: Mutex<Vec<(String, Value)>>,
@@ -249,34 +296,17 @@ fn actor_streams_durable_events_and_completes_a_turn() {
         let host = AgentHostService::new(store.clone(), transport.clone(), Arc::new(EchoFactory))
             .with_idle_timeout(Duration::from_millis(20));
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         host.submit(created.session_id, "hello".to_owned())
             .expect("submit");
 
-        for _ in 0..50 {
-            let done = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "turn_ended"
-                });
-            if done {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended")
+            .await,
+            "durable event did not arrive",
+        );
 
         {
             let notifications = transport
@@ -299,7 +329,7 @@ fn actor_streams_durable_events_and_completes_a_turn() {
                 .any(|envelope| envelope.payload.assistant_text().as_deref() == Some("echo:hello"))
         );
         drop(reader);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_idle(&host).await;
         assert_eq!(host.session_count(), 0);
         let resumed = host
             .resume_session(created.session_id)
@@ -321,14 +351,7 @@ fn initial_reasoning_survives_actor_eviction() {
         let host = AgentHostService::new(store.clone(), transport, Arc::new(RouteEchoFactory))
             .with_idle_timeout(Duration::from_millis(20));
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: ReasoningLevel::Max,
-            })
+            .create_session(session_request(dir.path(), ReasoningLevel::Max))
             .expect("create");
         assert_eq!(created.reasoning, ReasoningLevel::Max);
 
@@ -345,7 +368,7 @@ fn initial_reasoning_survives_actor_eviction() {
         }));
         drop(reader);
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_idle(&host).await;
         assert_eq!(host.session_count(), 0);
         let resumed = host
             .resume_session(created.session_id)
@@ -369,14 +392,7 @@ fn a_second_host_reports_session_busy() {
             Arc::new(EchoFactory),
         );
         let created = first
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         let second = AgentHostService::new(
             store,
@@ -405,14 +421,7 @@ fn route_changes_update_the_live_session_projection() {
             Arc::new(EchoFactory),
         );
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: ReasoningLevel::Auto,
-            })
+            .create_session(session_request(dir.path(), ReasoningLevel::Auto))
             .expect("create");
         host.set_route(
             created.session_id,
@@ -430,25 +439,14 @@ fn route_changes_update_the_live_session_projection() {
 
         host.submit(created.session_id, "hello".to_owned())
             .expect("submit");
-        for _ in 0..50 {
-            let completed = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "assistant_message"
-                        && params["event"]["payload"]["blocks"][0]["text"]
-                            == "echo:hello:provider-b:model-b:max"
-                });
-            if completed {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("route-aware response was not recorded");
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "assistant_message"
+                && params["event"]["payload"]["blocks"][0]["text"]
+                    == "echo:hello:provider-b:model-b:max")
+            .await,
+            "durable event did not arrive",
+        );
     });
 }
 
@@ -468,14 +466,7 @@ fn mode_changes_survive_actor_resume() {
         )
         .with_idle_timeout(Duration::from_millis(20));
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: ReasoningLevel::Auto,
-            })
+            .create_session(session_request(dir.path(), ReasoningLevel::Auto))
             .expect("create");
         host.set_mode(created.session_id, PermissionMode::Free)
             .await
@@ -487,7 +478,7 @@ fn mode_changes_survive_actor_resume() {
             PermissionMode::Free
         );
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_idle(&host).await;
         assert_eq!(host.session_count(), 0);
         let resumed = host
             .resume_session(created.session_id)
@@ -496,24 +487,14 @@ fn mode_changes_survive_actor_resume() {
 
         host.submit(created.session_id, "hello".to_owned())
             .expect("submit");
-        for _ in 0..50 {
-            let completed = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "assistant_message"
-                        && params["event"]["payload"]["blocks"][0]["text"] == "echo:hello:mode=free"
-                });
-            if completed {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("restored mode did not reach the new runtime");
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "assistant_message"
+                && params["event"]["payload"]["blocks"][0]["text"]
+                    == "echo:hello:mode=free")
+            .await,
+            "durable event did not arrive",
+        );
     });
 }
 
@@ -529,14 +510,7 @@ fn pending_steers_require_confirmation() {
         let transport = Arc::new(RecordingTransport::default());
         let host = AgentHostService::new(store, transport.clone(), Arc::new(EchoFactory));
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         host.steer(created.session_id, "confirmed".to_owned())
             .await
@@ -553,22 +527,12 @@ fn pending_steers_require_confirmation() {
         host.confirm_steers(created.session_id, true)
             .await
             .expect("confirm steer");
-        for _ in 0..50 {
-            let done = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "turn_ended"
-                });
-            if done {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended")
+            .await,
+            "durable event did not arrive",
+        );
         let notifications = transport
             .notifications
             .lock()
@@ -598,14 +562,7 @@ fn pending_steers_survive_actor_restart() {
         )
         .with_idle_timeout(Duration::from_millis(20));
         let created = first
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         first
             .steer(created.session_id, "pending".to_owned())
@@ -615,7 +572,7 @@ fn pending_steers_survive_actor_restart() {
             .set_capabilities(created.session_id, vec!["web_search".to_owned()])
             .await
             .expect("set capabilities");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_idle(&first).await;
         assert_eq!(first.session_count(), 0);
         drop(first);
 
@@ -628,22 +585,12 @@ fn pending_steers_survive_actor_restart() {
             .confirm_steers(created.session_id, true)
             .await
             .expect("confirm recovered steer");
-        for _ in 0..50 {
-            let done = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "turn_ended"
-                });
-            if done {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended")
+            .await,
+            "durable event did not arrive",
+        );
         let notifications = transport
             .notifications
             .lock()
@@ -678,14 +625,7 @@ fn running_steer_starts_the_next_turn_after_completion() {
             }),
         );
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         host.submit(created.session_id, "first".to_owned())
             .expect("submit");
@@ -694,23 +634,12 @@ fn running_steer_starts_the_next_turn_after_completion() {
             .await
             .expect("steer");
         release.notify_one();
-        for _ in 0..50 {
-            let turns = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .filter(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "turn_ended"
-                })
-                .count();
-            if turns >= 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_for_durable(&transport, 2, |params| params["event"]["payload"]["type"]
+                == "turn_ended")
+            .await,
+            "the steered turn did not run",
+        );
         let notifications = transport
             .notifications
             .lock()
@@ -744,14 +673,7 @@ fn active_steer_can_be_discarded_before_injection() {
             }),
         );
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         host.submit(created.session_id, "first".to_owned())
             .expect("submit");
@@ -766,22 +688,12 @@ fn active_steer_can_be_discarded_before_injection() {
         assert_eq!(discarded.len(), 1);
         assert_eq!(discarded[0].text, "undo me");
         release.notify_one();
-        for _ in 0..50 {
-            let done = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "turn_ended"
-                });
-            if done {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended")
+            .await,
+            "durable event did not arrive",
+        );
         let notifications = transport
             .notifications
             .lock()
@@ -821,14 +733,7 @@ fn cancel_stops_the_turn_without_replaying_it() {
             }),
         );
         let created = host
-            .create_session(CreateSessionRequest {
-                workspace: dir.path().to_path_buf(),
-                cwd: None,
-                mode: PermissionMode::Auto,
-                provider: "test".to_owned(),
-                model: "test".to_owned(),
-                reasoning: Default::default(),
-            })
+            .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         let turn_id = host
             .submit(created.session_id, "cancel me".to_owned())
@@ -837,23 +742,13 @@ fn cancel_stops_the_turn_without_replaying_it() {
         host.cancel(created.session_id, turn_id)
             .await
             .expect("cancel");
-        for _ in 0..50 {
-            let interrupted = transport
-                .notifications
-                .lock()
-                .expect("notification lock poisoned")
-                .iter()
-                .any(|(method, params)| {
-                    method == "session.event"
-                        && params["kind"] == "durable"
-                        && params["event"]["payload"]["type"] == "turn_ended"
-                        && params["event"]["payload"]["reason"] == "interrupted"
-                });
-            if interrupted {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended"
+                && params["event"]["payload"]["reason"] == "interrupted")
+            .await,
+            "durable event did not arrive",
+        );
         let notifications = transport
             .notifications
             .lock()
