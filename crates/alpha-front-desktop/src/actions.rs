@@ -16,8 +16,13 @@ impl AlphaDesktop {
         });
         let composer_subscription =
             cx.subscribe(&composer, |this, composer, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.submit_requested = true;
+                if let InputEvent::PressEnter { shift, .. } = event {
+                    // The composer is multi-line with submit-on-enter: the input
+                    // already inserted a newline for shift+enter, so only a plain
+                    // enter submits.
+                    if !shift {
+                        this.submit_requested = true;
+                    }
                 }
                 if matches!(event, InputEvent::Change) {
                     let value = composer.read(cx).value();
