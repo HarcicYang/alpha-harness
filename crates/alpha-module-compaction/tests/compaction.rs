@@ -130,6 +130,16 @@ async fn compaction_replaces_a_complete_prefix() {
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
     let ctx = Ctx::root();
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let collected = progress.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentCompactionProgress, _>(move |event| {
+        collected
+            .lock()
+            .expect("progress lock")
+            .push((event.done, event.total));
+        Box::pin(async {})
+    })
+    .expect("progress listener");
     compactor
         .prepare(
             &ctx,
@@ -142,6 +152,13 @@ async fn compaction_replaces_a_complete_prefix() {
         .await
         .expect("prepare");
 
+    let progress = progress.lock().expect("progress lock").clone();
+    assert_eq!(progress.first(), Some(&(0, progress[0].1)));
+    assert!(
+        progress
+            .iter()
+            .all(|(_, total)| *total == progress.len() as u64)
+    );
     let compaction = state.compaction.expect("compaction");
     assert!(
         compaction.summary.starts_with("compressed history"),
