@@ -165,13 +165,15 @@ impl AlphaDesktop {
                                 );
                                 match this.runtime.set_capabilities(tools) {
                                     Ok(()) => {
-                                        this.local_status =
-                                            Some("provider capabilities updated".to_owned());
+                                        this.local_status = Some(StatusMessage::success(
+                                            "provider capabilities updated",
+                                        ));
                                         this.capabilities_open = false;
                                         this.focus_composer(window, cx);
                                     }
                                     Err(error) => {
-                                        this.local_status = Some(error.to_string());
+                                        this.local_status =
+                                            Some(StatusMessage::error(error.to_string()));
                                     }
                                 }
                                 cx.notify();

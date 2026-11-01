@@ -30,7 +30,7 @@ impl AlphaDesktop {
                     self.provider_remove_confirm = None;
                 }
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }

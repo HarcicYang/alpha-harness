@@ -24,7 +24,7 @@ impl AlphaDesktop {
             Ok(sessions) => self.workspace_menu_sessions = sessions,
             Err(error) => {
                 self.workspace_menu_sessions.clear();
-                self.local_status = Some(error.to_string());
+                self.local_status = Some(StatusMessage::error(error.to_string()));
             }
         }
         let mut workspaces = BTreeSet::new();
@@ -64,7 +64,7 @@ impl AlphaDesktop {
                 true
             }
             Err(error) => {
-                self.local_status = Some(error.to_string());
+                self.local_status = Some(StatusMessage::error(error.to_string()));
                 cx.notify();
                 false
             }
@@ -148,7 +148,9 @@ impl AlphaDesktop {
             }
             Ok(Err(error)) => {
                 let _ = this.update_in(cx, |this, _, cx| {
-                    this.local_status = Some(format!("workspace picker failed: {error}"));
+                    this.local_status = Some(StatusMessage::error(format!(
+                        "workspace picker failed: {error}"
+                    )));
                     cx.notify();
                 });
             }

@@ -142,9 +142,13 @@ impl AlphaDesktop {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     match this.runtime.confirm_steers(false) {
                                         Ok(()) => {
-                                            this.local_status = Some("steer discarded".into())
+                                            this.local_status =
+                                                Some(StatusMessage::success("steer discarded"))
                                         }
-                                        Err(error) => this.local_status = Some(error.to_string()),
+                                        Err(error) => {
+                                            this.local_status =
+                                                Some(StatusMessage::error(error.to_string()))
+                                        }
                                     }
                                     cx.notify();
                                 })),
@@ -154,7 +158,11 @@ impl AlphaDesktop {
         )
     }
 
-    fn render_status_toast(&self, status: &str) -> AnyElement {
+    fn render_status_toast(&self, status: &StatusMessage) -> AnyElement {
+        let (icon, icon_color, icon_background, title) = match status.tone {
+            StatusTone::Success => (IconName::CircleCheck, ACCENT, ACCENT_SOFT, "Updated"),
+            StatusTone::Error => (IconName::CircleX, DANGER, DANGER_SOFT, "Failed"),
+        };
         enter_from_below(
             div()
                 .absolute()
@@ -171,7 +179,7 @@ impl AlphaDesktop {
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .child(icon_badge(IconName::CircleCheck, ACCENT, ACCENT_SOFT, 26.))
+                .child(icon_badge(icon, icon_color, icon_background, 26.))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -183,17 +191,19 @@ impl AlphaDesktop {
                                 .text_size(px(9.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(TEXT))
-                                .child("Updated"),
+                                .child(title),
                         )
                         .child(
                             div()
-                                .truncate()
+                                .max_h(px(72.))
+                                .overflow_hidden()
+                                .line_height(px(13.))
                                 .text_size(px(8.5))
                                 .text_color(rgb(MUTED))
-                                .child(status.to_owned()),
+                                .child(status.text.clone()),
                         ),
                 ),
-            format!("status-toast:{status}"),
+            format!("status-toast:{}:{}", title, status.text),
         )
     }
 }

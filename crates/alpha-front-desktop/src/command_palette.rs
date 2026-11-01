@@ -58,10 +58,10 @@ impl AlphaDesktop {
             }
             DesktopCommand::Diagnostics => {
                 let info = self.runtime.core_info();
-                self.local_status = Some(format!(
+                self.local_status = Some(StatusMessage::success(format!(
                     "core pid={} · protocol={} · instance={}",
                     info.pid, info.protocol, info.core_instance_id
-                ));
+                )));
                 self.focus_composer(window, cx);
             }
             DesktopCommand::Help => {
@@ -166,10 +166,10 @@ impl AlphaDesktop {
                         }
                     }
                     if attached > 0 {
-                        self.local_status = Some(format!(
+                        self.local_status = Some(StatusMessage::success(format!(
                             "attached {attached} image{}",
                             if attached == 1 { "" } else { "s" }
-                        ));
+                        )));
                         self.focus_composer(window, cx);
                         true
                     } else {

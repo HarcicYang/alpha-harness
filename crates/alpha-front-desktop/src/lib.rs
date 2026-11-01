@@ -96,7 +96,7 @@ struct AlphaDesktop {
     transcript_dirty: bool,
     jump_to_latest_hidden_until: Option<Instant>,
     help_open: bool,
-    local_status: Option<String>,
+    local_status: Option<StatusMessage>,
     _poll_task: Option<Task<()>>,
     _composer_subscription: Subscription,
     _model_search_subscription: Subscription,
@@ -116,6 +116,36 @@ enum ComposerMenu {
 enum ContextTab {
     Changes,
     Activity,
+}
+
+/// How a transient status line should read: success or failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusTone {
+    Success,
+    Error,
+}
+
+/// A transient status line shown above the composer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StatusMessage {
+    tone: StatusTone,
+    text: String,
+}
+
+impl StatusMessage {
+    fn success(text: impl Into<String>) -> Self {
+        Self {
+            tone: StatusTone::Success,
+            text: text.into(),
+        }
+    }
+
+    fn error(text: impl Into<String>) -> Self {
+        Self {
+            tone: StatusTone::Error,
+            text: text.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

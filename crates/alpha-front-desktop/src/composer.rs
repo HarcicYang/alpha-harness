@@ -371,7 +371,7 @@ impl AlphaDesktop {
             if self.runtime.chat().running_turn.is_some()
                 && let Err(error) = self.runtime.cancel()
             {
-                self.local_status = Some(error.to_string());
+                self.local_status = Some(StatusMessage::error(error.to_string()));
             }
             cx.notify();
             return;
@@ -409,7 +409,7 @@ impl AlphaDesktop {
                 self.composer
                     .update(cx, |state, cx| state.set_value("", window, cx));
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }
@@ -428,7 +428,7 @@ impl AlphaDesktop {
                     for path in paths {
                         if is_image_path(&path) {
                             if let Err(error) = this.runtime.attach_image(&path) {
-                                this.local_status = Some(error.to_string());
+                                this.local_status = Some(StatusMessage::error(error.to_string()));
                             }
                         } else {
                             if !value.is_empty() {
@@ -447,7 +447,8 @@ impl AlphaDesktop {
             }
             Ok(Err(error)) => {
                 let _ = this.update_in(cx, |this, _, cx| {
-                    this.local_status = Some(format!("file picker failed: {error}"));
+                    this.local_status =
+                        Some(StatusMessage::error(format!("file picker failed: {error}")));
                     cx.notify();
                 });
             }

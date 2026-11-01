@@ -20,7 +20,7 @@ impl AlphaDesktop {
                 self.sessions_open = true;
                 self.local_status = None;
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }
@@ -44,7 +44,7 @@ impl AlphaDesktop {
                 self.scroll_to_bottom(ScrollRegion::Transcript);
                 self.local_status = None;
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }

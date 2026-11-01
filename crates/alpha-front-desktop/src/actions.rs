@@ -189,14 +189,16 @@ impl AlphaDesktop {
                                 changed |= poll.active_changed;
                                 any_workspace_changed |= poll.any_changed;
                             }
-                            Err(error) => this.local_status = Some(error.to_string()),
+                            Err(error) => {
+                                this.local_status = Some(StatusMessage::error(error.to_string()))
+                            }
                         }
                         for notice in this.runtime.take_notices() {
-                            this.local_status = Some(format!(
+                            this.local_status = Some(StatusMessage::success(format!(
                                 "{}: {}",
                                 workspace_name(&notice.workspace.display().to_string()),
                                 notice.message
-                            ));
+                            )));
                             cx.notify();
                         }
                         this.transcript_dirty |= changed;
@@ -256,13 +258,13 @@ impl AlphaDesktop {
             if menu == ComposerMenu::Model
                 && let Err(error) = self.runtime.refresh_providers()
             {
-                self.local_status = Some(error.to_string());
+                self.local_status = Some(StatusMessage::error(error.to_string()));
             }
             let provider = self.runtime.chat().provider.clone();
             if menu == ComposerMenu::Model
                 && let Err(error) = self.runtime.refresh_models(Some(&provider))
             {
-                self.local_status = Some(error.to_string());
+                self.local_status = Some(StatusMessage::error(error.to_string()));
             }
             self.model_choices = self.runtime.providers().model_choices();
             self.reset_scroll(ScrollRegion::ComposerMenu);
@@ -283,7 +285,7 @@ impl AlphaDesktop {
                 self.composer_menu = None;
                 self.local_status = None;
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }
@@ -310,7 +312,7 @@ impl AlphaDesktop {
                 self.composer_menu = None;
                 self.local_status = None;
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }
@@ -323,7 +325,7 @@ impl AlphaDesktop {
                 self.composer_menu = None;
                 self.local_status = None;
             }
-            Err(error) => self.local_status = Some(error.to_string()),
+            Err(error) => self.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }

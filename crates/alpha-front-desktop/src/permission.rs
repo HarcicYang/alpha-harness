@@ -186,13 +186,15 @@ fn permission_button(
         match this.runtime.respond_interaction(decision) {
             Ok(()) => {
                 this.local_status = Some(match decision {
-                    InteractionDecision::Deny => "permission denied".to_owned(),
-                    InteractionDecision::Session => "allowed for this session".to_owned(),
-                    InteractionDecision::Once => "allowed once".to_owned(),
-                    InteractionDecision::Timeout => "permission timed out".to_owned(),
+                    InteractionDecision::Deny => StatusMessage::error("permission denied"),
+                    InteractionDecision::Session => {
+                        StatusMessage::success("allowed for this session")
+                    }
+                    InteractionDecision::Once => StatusMessage::success("allowed once"),
+                    InteractionDecision::Timeout => StatusMessage::error("permission timed out"),
                 });
             }
-            Err(error) => this.local_status = Some(error.to_string()),
+            Err(error) => this.local_status = Some(StatusMessage::error(error.to_string())),
         }
         cx.notify();
     }))
