@@ -89,22 +89,44 @@ fn front_command(front: &'static FrontEntry) -> Command {
 }
 
 fn run_front(front: &'static FrontEntry, matches: &ArgMatches) -> ExitCode {
+    // Commands that take no prompt do not declare these arguments, so every
+    // lookup has to tolerate their absence.
     let workspace = matches
-        .get_one::<std::path::PathBuf>("workspace")
+        .try_get_one::<std::path::PathBuf>("workspace")
+        .ok()
+        .flatten()
         .cloned()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let request = FrontRequest {
         workspace,
         mode: matches
-            .get_one::<PermissionMode>("mode")
+            .try_get_one::<PermissionMode>("mode")
+            .ok()
+            .flatten()
             .copied()
             .unwrap_or(PermissionMode::Auto),
-        provider: matches.get_one::<String>("provider").cloned().unwrap_or_default(),
-        model: matches.get_one::<String>("model").cloned().unwrap_or_default(),
-        resume: matches.get_one::<alpha_schema::SessionId>("resume").copied(),
+        provider: matches
+            .try_get_one::<String>("provider")
+            .ok()
+            .flatten()
+            .cloned()
+            .unwrap_or_default(),
+        model: matches
+            .try_get_one::<String>("model")
+            .ok()
+            .flatten()
+            .cloned()
+            .unwrap_or_default(),
+        resume: matches
+            .try_get_one::<alpha_schema::SessionId>("resume")
+            .ok()
+            .flatten()
+            .copied(),
         prompt: matches
-            .get_many::<String>("prompt")
+            .try_get_many::<String>("prompt")
+            .ok()
+            .flatten()
             .map(|values| values.cloned().collect())
             .unwrap_or_default(),
     };
@@ -151,5 +173,65 @@ fn serve_core(matches: &ArgMatches) -> ExitCode {
             eprintln!("alpha __core: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    static RAN: AtomicBool = AtomicBool::new(false);
+
+    fn fake_desktop(_request: FrontRequest) -> Result<(), alpha_host_api::FrontError> {
+        RAN.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    static FRONTS: &[FrontEntry] = &[FrontEntry {
+        command: "desktop",
+        about: "Open the desktop app",
+        takes_prompt: false,
+        run: fake_desktop,
+    }];
+
+    static HOST: Host = Host {
+        modules: &[],
+        fronts: FRONTS,
+    };
+
+    #[test]
+    fn prompt_less_fronts_do_not_declare_run_options() {
+        let matches = command(&HOST)
+            .try_get_matches_from(["alpha", "desktop"])
+            .expect("desktop parses");
+        let (name, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(name, "desktop");
+        let front = HOST
+            .fronts
+            .iter()
+            .find(|front| front.command == name)
+            .expect("front");
+        assert_eq!(run_front(front, sub), ExitCode::SUCCESS);
+        assert!(RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn run_command_still_accepts_its_options() {
+        let matches = command(&HOST)
+            .try_get_matches_from([
+                "alpha",
+                "run",
+                "--mode",
+                "free",
+                "--workspace",
+                "/tmp",
+                "--resume",
+                "019a7a30-0000-7000-8000-000000000000",
+                "hello",
+            ])
+            .ok();
+        assert!(matches.is_none(), "unknown subcommand must not parse");
     }
 }
