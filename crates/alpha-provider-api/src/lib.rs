@@ -127,14 +127,23 @@ impl ProviderInstanceRegistry {
 
     /// Insert or replace one instance.
     ///
-    /// A replaced instance drops its discovered catalog: the metadata belongs to
-    /// the configuration that produced it.
+    /// A replaced instance keeps its discovered catalog unless the connection it
+    /// describes changed: per-model limits come from the endpoint at `base_url`,
+    /// so rewriting the default model or reasoning effort must not discard them.
     pub fn upsert(&self, instance: ProviderInstance) {
         let id = instance.id.clone();
-        self.catalogs
-            .write()
-            .expect("provider catalog lock poisoned")
-            .remove(&id);
+        let connection_changed = self
+            .instances
+            .read()
+            .expect("provider instance lock poisoned")
+            .get(&id)
+            .is_some_and(|known| known.kind != instance.kind || known.config != instance.config);
+        if connection_changed {
+            self.catalogs
+                .write()
+                .expect("provider catalog lock poisoned")
+                .remove(&id);
+        }
         self.instances
             .write()
             .expect("provider instance lock poisoned")

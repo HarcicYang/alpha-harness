@@ -220,7 +220,7 @@ fn dynamic_provider_reports_effective_model_context_windows() {
         .register(Arc::new(TestKind))
         .expect("register provider kind");
     let instances = Arc::new(ProviderInstanceRegistry::new());
-    instances.upsert(instance);
+    instances.upsert(instance.clone());
     ctx.provide(kinds).expect("provide kinds");
     ctx.provide(instances.clone()).expect("provide instances");
     let route = Arc::new(ModelRouteOverride::new(ModelRoute::new(
@@ -253,6 +253,19 @@ fn dynamic_provider_reports_effective_model_context_windows() {
     assert_eq!(provider.context_window("small"), Some(1_048_576));
     assert_eq!(provider.output_limit("small"), Some(393_216));
     assert_eq!(provider.context_window("large"), Some(999_999));
+
+    // Rewriting user metadata keeps the catalog: only a new connection
+    // invalidates limits that were discovered from the old one.
+    instances.upsert(ProviderInstance {
+        model_overrides: json!({ "default": "small" }),
+        ..instance.clone()
+    });
+    assert_eq!(provider.context_window("small"), Some(1_048_576));
+    instances.upsert(ProviderInstance {
+        config: json!({ "base_url": "https://other.test/v1" }),
+        ..instance
+    });
+    assert_eq!(provider.context_window("small"), Some(1_000));
 }
 
 #[test]
