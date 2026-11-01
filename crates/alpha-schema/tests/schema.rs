@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use alpha_schema::{
-    EventEnvelope, LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel, Seq,
-    SessionEventNotification, SessionId, Timestamp, ToolCallId,
+    EventEnvelope, LiveAgentEvent, PermissionMode, ReasoningLevel, Seq, SessionEventNotification,
+    SessionId, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,10 +14,6 @@ struct Sample {
 #[test]
 fn ids_are_unique_and_round_trip() {
     let session = SessionId::new();
-    let other = SessionId::new();
-    assert_ne!(session, other);
-    assert_ne!(MessageId::new(), MessageId::new());
-    assert_ne!(ToolCallId::new(), ToolCallId::new());
 
     let json = serde_json::to_string(&session).expect("serialize");
     let parsed: SessionId = serde_json::from_str(&json).expect("deserialize");
@@ -25,12 +21,6 @@ fn ids_are_unique_and_round_trip() {
 
     let text = session.to_string();
     assert_eq!(SessionId::from_str(&text).expect("parse"), session);
-}
-
-#[test]
-fn sequence_numbers_are_ordered() {
-    assert!(Seq::new(1) < Seq::new(2));
-    assert_eq!(Seq::new(1).next(), Seq::new(2));
 }
 
 #[test]

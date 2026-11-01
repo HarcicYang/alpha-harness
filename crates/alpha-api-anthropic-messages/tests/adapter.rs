@@ -1,13 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use alpha_api_anthropic_messages::{ADAPTER_KEY, AnthropicMessagesApiModule};
 use alpha_http_api::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
-use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
-use alpha_provider_api::{
-    AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
-};
+use alpha_provider_api::{AdapterRequest, ApiAdapter, ReasoningLevel};
 use alpha_schema::{AssistantContentBlock, ImageAttachment};
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -467,19 +463,4 @@ async fn streams_and_replays_signed_thinking_blocks() {
     assert_eq!(payload["messages"][0]["content"][0]["type"], "thinking");
     assert_eq!(payload["messages"][0]["content"][0]["signature"], "sig");
     assert_eq!(payload["messages"][0]["content"][1]["text"], "visible");
-}
-
-#[test]
-fn module_registers_the_adapter() {
-    let ctx = Ctx::root();
-    ProviderApiModule.activate(&ctx, &()).expect("provider api");
-    AnthropicMessagesApiModule
-        .activate(&ctx, &())
-        .expect("anthropic adapter");
-    let registry = ctx
-        .require::<ApiAdapterRegistry>()
-        .expect("adapter registry");
-    assert!(registry.get(ADAPTER_KEY).is_some());
-    ctx.dispose();
-    assert!(registry.get(ADAPTER_KEY).is_none());
 }

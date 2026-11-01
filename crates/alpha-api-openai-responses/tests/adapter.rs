@@ -1,13 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use alpha_api_openai_responses::{ADAPTER_KEY, OpenAiResponsesApiModule};
 use alpha_http_api::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
-use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
-use alpha_provider_api::{
-    AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
-};
+use alpha_provider_api::{AdapterRequest, ApiAdapter, ReasoningLevel};
 use alpha_schema::{AssistantContentBlock, ImageAttachment};
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -331,19 +327,4 @@ async fn streams_and_replays_reasoning_items() {
     assert_eq!(payload["input"][0]["encrypted_content"], "sig");
     assert_eq!(payload["input"][0]["summary"][0]["text"], "remembered");
     assert_eq!(payload["input"][1]["content"][0]["text"], "visible");
-}
-
-#[test]
-fn module_registers_the_adapter() {
-    let ctx = Ctx::root();
-    ProviderApiModule.activate(&ctx, &()).expect("provider api");
-    OpenAiResponsesApiModule
-        .activate(&ctx, &())
-        .expect("responses adapter");
-    let registry = ctx
-        .require::<ApiAdapterRegistry>()
-        .expect("adapter registry");
-    assert!(registry.get(ADAPTER_KEY).is_some());
-    ctx.dispose();
-    assert!(registry.get(ADAPTER_KEY).is_none());
 }

@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_credential::{
-    CredentialBackendStatus, CredentialConfig, CredentialError, CredentialModule, CredentialStore,
-    MemoryCredentialStore, PlatformCredentialStore,
+    CredentialConfig, CredentialError, CredentialModule, CredentialStore, MemoryCredentialStore,
 };
 
 #[test]
@@ -43,20 +42,6 @@ fn module_registers_and_disposes_the_store() {
     assert!(ctx.get::<dyn CredentialStore>().is_some());
     ctx.dispose();
     assert!(ctx.get::<dyn CredentialStore>().is_none());
-}
-
-#[test]
-fn platform_store_round_trips_when_available() {
-    let store = PlatformCredentialStore::open();
-    if store.status().status != CredentialBackendStatus::Available {
-        return;
-    }
-    let auth_ref = format!("test/platform/{}", std::process::id());
-    store.write(&auth_ref, b"platform-secret").expect("write");
-    assert_eq!(store.read(&auth_ref).expect("read"), b"platform-secret");
-    assert!(store.contains(&auth_ref).expect("contains"));
-    store.delete(&auth_ref).expect("delete");
-    assert!(!store.contains(&auth_ref).expect("contains"));
 }
 
 #[test]

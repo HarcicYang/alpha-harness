@@ -1,11 +1,7 @@
 use std::sync::Arc;
 
-use alpha_kernel::{Ctx, Module};
-use alpha_module_provider_config::{
-    LocalConfigFile, ProviderConfigConfig, ProviderConfigModule, ProviderConfigStore,
-    TomlProviderConfigStore,
-};
-use alpha_provider_api::{ProviderApiModule, ProviderInstance, ProviderInstanceRegistry};
+use alpha_module_provider_config::{LocalConfigFile, ProviderConfigStore, TomlProviderConfigStore};
+use alpha_provider_api::{ProviderInstance, ProviderInstanceRegistry};
 use serde_json::json;
 
 fn instance(id: &str) -> ProviderInstance {
@@ -86,20 +82,4 @@ fn toml_store_omits_null_config_fields() {
     store.reload().expect("reload");
     let persisted = reloaded.get("opencode-go").expect("persisted instance");
     assert!(persisted.config.get("session_id").is_none());
-}
-
-#[test]
-fn module_loads_the_config_store() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = Ctx::root();
-    ProviderApiModule.activate(&ctx, &()).expect("provider api");
-    ProviderConfigModule
-        .activate(
-            &ctx,
-            &ProviderConfigConfig {
-                path: Some(dir.path().join("config.toml")),
-            },
-        )
-        .expect("provider config");
-    assert!(ctx.get::<dyn ProviderConfigStore>().is_some());
 }

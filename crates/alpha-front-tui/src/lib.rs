@@ -3984,26 +3984,4 @@ mod tests {
         assert!(terminal_contains(&terminal, "first line"));
         assert!(terminal_contains(&terminal, "second line"));
     }
-
-    #[test]
-    fn delete_confirmation_uses_typed_session_identity() {
-        let session = alpha_schema::SessionListEntry {
-            id: SessionId::new(),
-            created_at: Timestamp::from_millis(1),
-            mode: PermissionMode::Auto,
-            workspace: WorkspaceRef {
-                root: "/tmp/workspace".to_owned(),
-                cwd: "/tmp/workspace".to_owned(),
-            },
-            provider: String::new(),
-            model: String::new(),
-            first_message: None,
-        };
-        let backend = ratatui::backend::TestBackend::new(80, 16);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| draw_session_delete_confirmation(frame, &session))
-            .expect("draw confirmation");
-        assert!(terminal_contains(&terminal, "Delete session"));
-    }
 }

@@ -1,13 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use alpha_api_openai_chat::{ADAPTER_KEY, OpenAiChatApiModule};
 use alpha_http_api::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
-use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
-use alpha_provider_api::{
-    AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
-};
+use alpha_provider_api::{AdapterRequest, ApiAdapter, ReasoningLevel};
 use alpha_schema::{AssistantContentBlock, ImageAttachment};
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -356,19 +352,4 @@ async fn streams_and_replays_reasoning_content() {
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["messages"][1]["reasoning_content"], "remembered");
     assert_eq!(payload["messages"][1]["content"], "visible");
-}
-
-#[test]
-fn module_registers_the_adapter() {
-    let ctx = Ctx::root();
-    ProviderApiModule.activate(&ctx, &()).expect("provider api");
-    OpenAiChatApiModule
-        .activate(&ctx, &())
-        .expect("openai chat adapter");
-    let registry = ctx
-        .require::<ApiAdapterRegistry>()
-        .expect("adapter registry");
-    assert!(registry.get(ADAPTER_KEY).is_some());
-    ctx.dispose();
-    assert!(registry.get(ADAPTER_KEY).is_none());
 }

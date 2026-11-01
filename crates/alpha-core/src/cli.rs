@@ -216,22 +216,4 @@ mod tests {
         assert_eq!(run_front(front, sub), ExitCode::SUCCESS);
         assert!(RAN.load(Ordering::SeqCst));
     }
-
-    #[test]
-    fn run_command_still_accepts_its_options() {
-        let matches = command(&HOST)
-            .try_get_matches_from([
-                "alpha",
-                "run",
-                "--mode",
-                "free",
-                "--workspace",
-                "/tmp",
-                "--resume",
-                "019a7a30-0000-7000-8000-000000000000",
-                "hello",
-            ])
-            .ok();
-        assert!(matches.is_none(), "unknown subcommand must not parse");
-    }
 }

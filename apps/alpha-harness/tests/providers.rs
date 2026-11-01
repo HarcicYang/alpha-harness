@@ -7,7 +7,7 @@ use alpha_module_provider_deepseek::DeepSeekProviderModule;
 use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
 use alpha_module_provider_openai_responses::OpenAiResponsesProviderModule;
 use alpha_module_provider_opencode_go::OpenCodeGoProviderModule;
-use alpha_provider_api::{ProviderApiModule, ProviderKindRegistry};
+use alpha_provider_api::{ApiAdapterRegistry, ProviderApiModule, ProviderKindRegistry};
 
 #[test]
 fn default_composition_registers_all_first_provider_kinds() {
@@ -41,6 +41,16 @@ fn default_composition_registers_all_first_provider_kinds() {
     let registry = ctx
         .require::<ProviderKindRegistry>()
         .expect("provider registry");
+    let adapters = ctx
+        .require::<ApiAdapterRegistry>()
+        .expect("adapter registry");
+    for key in [
+        "openai-chat-completions",
+        "openai-responses",
+        "anthropic-messages",
+    ] {
+        assert!(adapters.get(key).is_some(), "missing adapter `{key}`");
+    }
     let kinds: Vec<String> = registry
         .descriptors()
         .into_iter()

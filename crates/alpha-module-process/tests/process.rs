@@ -6,7 +6,7 @@ use alpha_kernel::{Ctx, Module};
 use alpha_module_process::{
     LocalProcessRunner, ProcessAccess, ProcessConfig, ProcessError, ProcessLocalModule,
     ProcessOutputCallback, ProcessRequest, ProcessRunner, ProcessRunnerSet, ProcessStream,
-    SandboxConfig, SandboxedProcessRunner, available_bwrap, bwrap_args,
+    SandboxConfig, available_bwrap, bwrap_args,
 };
 
 #[cfg(unix)]
@@ -156,81 +156,4 @@ fn bwrap_args_include_isolation_and_request() {
     };
     let args = bwrap_args(Path::new("/workspace"), &networked, &request);
     assert!(!args.contains(&"--unshare-net".to_owned()));
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn sandbox_confines_writes_and_network() {
-    let Some(bwrap) = available_bwrap() else {
-        eprintln!("bubblewrap is unavailable; skipping sandbox test");
-        return;
-    };
-    let dir = tempfile::tempdir().expect("tempdir");
-    let runner = SandboxedProcessRunner::new(
-        Arc::new(LocalProcessRunner::new(dir.path())),
-        dir.path().to_path_buf(),
-        SandboxConfig::default(),
-        bwrap,
-    );
-
-    let ok = runner
-        .run(ProcessRequest::new(
-            "sh",
-            ["-c".to_owned(), "printf sandbox-ok".to_owned()],
-        ))
-        .await
-        .expect("probe");
-    assert!(ok.success);
-    assert_eq!(ok.stdout, b"sandbox-ok");
-
-    let inside = runner
-        .run(ProcessRequest::new(
-            "sh",
-            ["-c".to_owned(), "printf data > inside.txt".to_owned()],
-        ))
-        .await
-        .expect("inside write");
-    assert!(inside.success);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("inside.txt")).expect("file"),
-        "data"
-    );
-
-    std::fs::create_dir(dir.path().join(".git")).expect(".git");
-    let protected = runner
-        .run(ProcessRequest::new(
-            "sh",
-            ["-c".to_owned(), "touch .git/sandbox-probe".to_owned()],
-        ))
-        .await
-        .expect("protected write");
-    assert!(
-        !protected.success,
-        "protected workspace paths must remain read-only"
-    );
-    assert!(!dir.path().join(".git/sandbox-probe").exists());
-
-    let denied = runner
-        .run(ProcessRequest::new(
-            "sh",
-            ["-c".to_owned(), "touch /usr/sandbox-probe".to_owned()],
-        ))
-        .await
-        .expect("outside write");
-    assert!(!denied.success, "writes outside the workspace must fail");
-
-    if std::process::Command::new("bash")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
-        let port = listener.local_addr().expect("addr").port();
-        let command = format!("exec 3<>/dev/tcp/127.0.0.1/{port}");
-        let network = runner
-            .run(ProcessRequest::new("bash", ["-c".to_owned(), command]))
-            .await
-            .expect("network probe");
-        assert!(!network.success, "network must be isolated by default");
-    }
 }

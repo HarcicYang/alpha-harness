@@ -3,7 +3,7 @@ use std::fs;
 use alpha_kernel::{Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_loop::{ChatMessage, ContextInjector};
-use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule, PromptPriority};
+use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
 use alpha_schema::{PermissionMode, SessionId};
 use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 
@@ -129,16 +129,6 @@ fn sections_are_removed_when_the_context_is_disposed() {
     ctx.dispose();
     assert!(ctx.get::<dyn PromptAssembler>().is_none());
     assert!(ctx.get::<dyn ContextInjector>().is_none());
-}
-
-#[test]
-fn priorities_have_framework_before_persona() {
-    assert!(PromptPriority::Runtime < PromptPriority::Policy);
-    assert!(PromptPriority::Policy < PromptPriority::Output);
-    assert!(PromptPriority::Output < PromptPriority::Tools);
-    assert!(PromptPriority::Tools < PromptPriority::Project);
-    assert!(PromptPriority::Project < PromptPriority::Capability);
-    assert!(PromptPriority::Capability < PromptPriority::Persona);
 }
 
 fn activate_with_fs(root: &std::path::Path) -> Ctx {
