@@ -134,6 +134,8 @@ pub(crate) struct SmoothListScroll {
     applied_y: Cell<f32>,
     remaining_y: Cell<f32>,
     last_frame: Cell<Option<Instant>>,
+    /// Sub-pixel motion already consumed but not applied yet.
+    pending_px: Cell<f32>,
 }
 
 impl SmoothListScroll {
@@ -141,6 +143,7 @@ impl SmoothListScroll {
         self.applied_y.set(offset_y);
         self.remaining_y.set(0.);
         self.last_frame.set(Some(Instant::now()));
+        self.pending_px.set(0.);
     }
 
     pub(crate) fn push(&self, list: &ListState, delta_y: f32) {
@@ -181,21 +184,39 @@ impl SmoothListScroll {
         let progress = 1. - (-(elapsed.as_secs_f32()) / SCROLL_TIME_CONSTANT.as_secs_f32()).exp();
         let (consumed_y, next_remaining) =
             smooth_list_scroll_step(actual_y, maximum, remaining_y, progress, cx.reduce_motion());
-        if consumed_y.abs() > 0.001 {
-            list.scroll_by(px(consumed_y));
-        }
+        // A virtualized list re-measures whatever the scroll reveals, so moving
+        // it for less than a pixel buys a relayout nobody can see. Accumulate
+        // the fraction and scroll one whole pixel at a time instead.
+        let (whole_px, pending_px) = quantize_list_scroll(consumed_y, self.pending_px.get());
+        self.pending_px.set(pending_px);
         let next_y = (actual_y + consumed_y).clamp(0., maximum);
-        self.remaining_y.set(if next_remaining.abs() <= 0.05 {
-            0.
-        } else {
-            next_remaining
-        });
+        let finished = next_remaining.abs() <= 0.05 || consumed_y.abs() <= 0.001;
+        if whole_px != 0. {
+            list.scroll_by(px(whole_px));
+        }
+        if finished {
+            // Land on the intended offset with a single final step.
+            let rest = pending_px;
+            if rest != 0. {
+                list.scroll_by(px(rest));
+                self.pending_px.set(0.);
+            }
+        }
+        self.remaining_y
+            .set(if finished { 0. } else { next_remaining });
         self.applied_y.set(next_y);
         self.last_frame.set(Some(now));
         if self.remaining_y.get() != 0. {
             window.request_animation_frame();
         }
     }
+}
+
+/// Split one frame of motion into whole pixels and a carried remainder.
+pub(crate) fn quantize_list_scroll(consumed_y: f32, pending_px: f32) -> (f32, f32) {
+    let total = pending_px + consumed_y;
+    let whole = total.trunc();
+    (whole, total - whole)
 }
 
 pub(crate) fn smooth_list_scroll_step(
@@ -235,5 +256,16 @@ mod tests {
         assert_eq!(remaining_at_top, -70.);
         assert_eq!(reduced, -80.);
         assert_eq!(reduced_remaining, 0.);
+    }
+
+    #[test]
+    fn list_scroll_quantizes_to_whole_pixels() {
+        let (first, pending) = super::quantize_list_scroll(0.4, 0.);
+        assert_eq!(first, 0.);
+        let (second, pending) = super::quantize_list_scroll(0.4, pending);
+        assert_eq!(second, 0.);
+        let (third, pending) = super::quantize_list_scroll(0.4, pending);
+        assert_eq!(third, 1.);
+        assert!((pending - 0.2).abs() < 0.001);
     }
 }
