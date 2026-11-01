@@ -283,9 +283,12 @@ impl AlphaDesktop {
             {
                 self.local_status = Some(StatusMessage::error(error.to_string()));
             }
-            let provider = self.runtime.chat().provider.clone();
+            // Discover every enabled instance: a relay can serve models that no
+            // static catalog knows about, and those are exactly the ids users of
+            // relay services need to pick.
             if menu == ComposerMenu::Model
-                && let Err(error) = self.runtime.refresh_models(Some(&provider))
+                && let Err(error) = self.runtime.refresh_models(None)
+                && self.runtime.providers().model_choices().is_empty()
             {
                 self.local_status = Some(StatusMessage::error(error.to_string()));
             }

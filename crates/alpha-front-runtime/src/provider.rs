@@ -416,6 +416,56 @@ mod tests {
     }
 
     #[test]
+    fn slash_and_unicode_model_ids_resolve_to_the_catalog_entry() {
+        let mut configured = descriptor();
+        configured.models[0].id = "anthropic/claude-3.5-sonnet".to_owned();
+        configured.models[0].name = "Claude 3.5 Sonnet".to_owned();
+        let state = ProviderState {
+            kinds: vec![configured],
+            instances: vec![ProviderInstance {
+                id: "relay".to_owned(),
+                kind: "test".to_owned(),
+                config_version: 1,
+                config: json!({}),
+                auth_ref: None,
+                model_overrides: json!({}),
+                disabled: false,
+            }],
+            ..ProviderState::default()
+        };
+        let choices = state.model_choices();
+        for target in [
+            "anthropic/claude-3.5-sonnet",
+            "relay/anthropic/claude-3.5-sonnet",
+        ] {
+            let selected = resolve_model_selection(&choices, "relay", target).expect("selection");
+            assert_eq!(selected.provider, "relay");
+            assert_eq!(selected.model, "anthropic/claude-3.5-sonnet");
+        }
+
+        let mut configured = descriptor();
+        configured.models[0].id = "模型/测试-v1".to_owned();
+        let state = ProviderState {
+            kinds: vec![configured],
+            instances: vec![ProviderInstance {
+                id: "中转".to_owned(),
+                kind: "test".to_owned(),
+                config_version: 1,
+                config: json!({}),
+                auth_ref: None,
+                model_overrides: json!({}),
+                disabled: false,
+            }],
+            ..ProviderState::default()
+        };
+        let choices = state.model_choices();
+        let selected =
+            resolve_model_selection(&choices, "中转", "模型/测试-v1").expect("unicode selection");
+        assert_eq!(selected.provider, "中转");
+        assert_eq!(selected.model, "模型/测试-v1");
+    }
+
+    #[test]
     fn arbitrary_model_ids_resolve_to_the_current_provider() {
         let state = ProviderState {
             kinds: vec![descriptor()],

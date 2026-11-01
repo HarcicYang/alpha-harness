@@ -66,7 +66,7 @@ async fn streams_openai_chat_text_deltas() {
                 base_url: "https://api.test/v1".to_owned(),
                 api_key: Some("secret".to_owned()),
                 headers: BTreeMap::new(),
-                model: "test-model".to_owned(),
+                model: "group/模型-v1".to_owned(),
                 reasoning: Default::default(),
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
@@ -102,6 +102,8 @@ async fn streams_openai_chat_text_deltas() {
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["stream"], json!(true));
     assert_eq!(payload["max_tokens"], json!(384_000));
+    // Model ids are opaque: slashes and non-ASCII characters reach the wire as-is.
+    assert_eq!(payload["model"], json!("group/模型-v1"));
 }
 
 #[tokio::test]

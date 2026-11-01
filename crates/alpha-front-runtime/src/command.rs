@@ -261,5 +261,19 @@ mod tests {
             parse_command("/image /tmp/example.png"),
             FrontCommand::AttachImage("/tmp/example.png".to_owned())
         );
+        assert_eq!(
+            parse_command("/model anthropic/claude-3.5-sonnet high"),
+            FrontCommand::SelectModel {
+                target: "anthropic/claude-3.5-sonnet".to_owned(),
+                reasoning: Some(ReasoningLevel::High),
+            }
+        );
+        assert_eq!(
+            parse_command("/model 模型/测试-v1"),
+            FrontCommand::SelectModel {
+                target: "模型/测试-v1".to_owned(),
+                reasoning: None,
+            }
+        );
     }
 }
