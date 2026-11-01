@@ -1,149 +1,144 @@
-# Composition decoupling — status and remaining work
+# Composition and replacement
 
-This note records where the fixed-layer decoupling stands so the work can be
-resumed without re-deriving the plan. It is deliberately specific: every item
-names the file and symbol involved.
+Composition is part of the Cargo dependency graph. The app crate lists the
+modules, providers, and frontends it contains. `alpha-build` validates that
+graph and generates the activation table used by the binary.
 
-## Goal
+There is no plugin loader, dynamic library host, or WASM runtime.
 
-`apps/alpha-harness/src/main.rs` must not name any concrete `alpha-*` crate, so
-that trimming or replacing a capability is a `Cargo.toml` change and nothing
-else. Capability replacement means: remove the old implementation crate, add the
-new one. Two implementations of the same singleton capability may not coexist;
-`alpha_build::check()` rejects that at build time.
+## What a package declares
 
-## Done
+A package declares its role in `[package.metadata.alpha]`:
 
-| Commit | Change |
+| Field | Meaning |
 | --- | --- |
-| `e09d93a` | `alpha-module-session` → `alpha-session-log` (infrastructure crate, no module metadata) |
-| `75fb2bf` | `alpha-host-api` contracts; module activation metadata (`scope`, `module`, `config`, `requires_config`); generation of a callable `alpha_composition.rs` with `ALPHA_MODULES` (topologically ordered per scope) and `ALPHA_FRONTS` |
-| `3752ca7` | Front entry points: `__front_run` (`alpha-front-runtime`), `__front_chat`/`__front_tui` (`alpha-front-tui`), `__front_desktop` (`alpha-front-desktop`) |
-| `759621f` | Contract keys stay in the generated module key list |
-| `811a6ba` | Coexisting providers are a build error; the `overrides` mechanism is gone |
-| `4bc3806` | `alpha-bundle-default` deleted; the composition root's direct dependencies are the module set |
-| `d718fc0` | `alpha-credential-api`, `alpha-http-api` contracts; API adapters and `alpha-provider-api` depend on the contracts, not the drivers |
-| `eb3f357` | `ProviderConfigError`, `ConfigFile`, `ProviderConfigStore` moved into `alpha-provider-api` |
-| `8126ff5` | `alpha-prompt-api`: `PromptAssembler`, `PromptError` |
-| `22b9a71` | `alpha-permission-api`: requests, approvals, audit, `PermissionService` |
-| `891058e` | `alpha-agent-api`: providers, routes, registries, `AgentDriver`, turn errors |
-| `43ddd9b` | `apps/alpha-harness/src/cli.rs`: clap **builder** driven by `Host::fronts` |
-| `75bf502` | `main.rs` is four lines with no `alpha-*` import; the generated `ALPHA_HOST` supplies every command |
+| `api` | Metadata format version |
+| `kind` | `module`, `contract`, `front`, or `bundle` |
+| `key` | Stable module key |
+| `scope` | `global`, `location`, or `agent` |
+| `module` | Module type exported at the crate root |
+| `config` | Configuration type exported at the crate root |
+| `requires_config` | Config keys that must exist before activation |
+| `provides` | Capability keys supplied by the package |
+| `requires` | Capability keys consumed by the package |
+| `registry_entries` | Static names placed in a named registry |
+| `commands` | Commands contributed by a frontend crate |
 
-Current invariant: `cargo check --workspace --all-targets` passes and the tree is
-clean.
+A singleton capability has one provider in a composition. A registry
+capability can have several named entries. Requirements are resolved before a
+module activates.
 
-## Remaining
+Contract crates declare capability interfaces without an activation step.
+Implementation crates use the contract and may re-export its public types.
 
-### 1. Contract crates — done
+## Generated composition
 
-All six contracts exist: `alpha-credential-api`, `alpha-http-api`,
-`alpha-provider-api` (extended), `alpha-prompt-api`, `alpha-permission-api`,
-`alpha-agent-api`. Each implementation crate keeps `pub use` re-exports, so
-existing imports and tests are unchanged.
+The build helper reads Cargo metadata and the resolved dependency graph. It
+writes these files into `OUT_DIR`:
 
+- `alpha_composition.rs`: activation code, ordered module table, capability
+  keys, and frontend commands.
+- `alpha_modules.rs`: module keys available to the composition.
 
-| Crate | Move out of | Symbols |
-| --- | --- | --- |
-| `alpha-prompt-api` | `alpha-module-prompt/src/lib.rs` | `PromptAssembler` (line ~136), prompt section/context registry types |
-| `alpha-permission-api` | `alpha-module-permission/src/` | `PermissionService`, `PermissionRequest`, `PermissionOutcome`, `GrantScope`, `ApprovalChannel`, `ApprovalPrompt`, `ApprovalDecision`, `AuditSink`, `AuditRecord`, `DecisionSource`, `IntentClassifier`, `ApprovalReviewer`, `Policy` |
-| `alpha-agent-api` | `alpha-module-loop/src/agent.rs`, `alpha-module-agent-host/src/lib.rs` | `AgentDriver`, `ModelProvider`, `ModelRoute`, `ModelRouteOverride`, `ProviderRegistry`, `ProviderToolsOverride`, `SteerQueue`, `SessionRuntime`, `SessionRuntimeFactory`, `SessionRuntimeRequest` |
+The helper does not rewrite `Cargo.toml` or source files. A failed validation
+stops the build before the binary links.
 
-Each implementation crate keeps `pub use alpha_<capability>_api::*;` so existing
-imports and tests keep compiling.
+Validation rejects:
 
-Acceptance: `grep -rn "alpha_module_loop\|alpha_module_permission\|alpha_module_prompt" apps/alpha-harness/src` returns nothing.
+- A required capability with no provider.
+- More than one provider for a singleton capability.
+- Invalid package metadata.
+- Static registry name collisions.
+- Frontend commands that do not resolve to an entry function.
+- Composition cycles or activation-order conflicts.
 
-### 2. Generated slot assertions
+Frontends are data in the generated host. The CLI model does not contain a
+hand-written match over every frontend.
 
-After activating a scope, the generated code should assert the capability slots
-the shell consumes exist, for example:
+## Remove a capability
 
-```rust
-assert_service::<dyn AgentDriver>(ctx, "agent.loop")?;
+Delete the implementation crate from the composition root's dependency list,
+then rebuild:
+
+```sh
+cargo build -p alpha-harness
 ```
 
-Emitted from `crates/alpha-build/src/generate.rs`; the helper lives in
-`alpha-host-api` and returns an error naming the missing capability instead of
-failing later with a bare "service not found".
+If another module still requires a capability supplied only by that crate, the
+build fails and names the missing requirement. Otherwise the implementation,
+its commands, and its transitive dependencies disappear from the binary.
 
-### 3. `alpha-core` — done
+`apps/alpha-min` is a checked example. It includes the core, one provider kind,
+and the headless `run` frontend. Its help output contains `run` and `sessions`
+and does not contain `desktop` or `tui`.
 
-The core server (composition, session runtime, router) lives in
-`crates/alpha-core`. It depends on module crates but not on any frontend crate,
-so a composition root decides which fronts exist.
-
-`apps/alpha-min` is the working proof: it depends on `alpha-core` plus one
-provider kind and the headless `run` front. Its `--help` lists only
-`run` and `sessions`, and `cargo tree -p alpha-min` contains no `gpui`,
-`ratatui`, or `crossterm`. CI checks both.
-
-### 3a. `alpha-shell` — superseded
-
-`apps/alpha-harness/src/cli.rs` already holds the fixed shell: clap command
-builder over `Host::fronts`, dispatch, `sessions`, and `__core --stdio`. `main.rs`
-no longer names any `alpha-*` crate.
-
-Still inside `apps/alpha-harness/src/lib.rs` is the core server (router, session
-runtime factory, ~2070 lines). Extracting it into a crate that depends only on
-the contracts is what would let a second composition root (`apps/alpha-min`)
-avoid linking the desktop front. Until then, keeping the CLI here is enough for
-the trimming goal, because the generated table is per-crate.
-
-The remaining extraction is:
-
-- CLI built with the `clap` builder API from `Host::fronts` plus `sessions` and
-  the hidden `__core --stdio` command (no `#[derive(Subcommand)]` enum, because
-  commands are data).
-- `serve_*` and the JSON-RPC router.
-- The session runtime factory, activating Location and Agent modules by walking
-  `Host::modules_at(scope)` with `RuntimeValues`.
-- Dependencies limited to `alpha-kernel`, `alpha-schema`, `alpha-protocol`,
-  `alpha-session-log`, `alpha-host-api`, `alpha-provider-api`,
-  `alpha-agent-api`, `alpha-permission-api`, `alpha-prompt-api`,
-  `alpha-credential-api`, `alpha-http-api` and `clap`.
-
-### 4. Composition root
-
-`apps/alpha-harness`:
-
-```rust
-// src/main.rs
-fn main() -> std::process::ExitCode {
-    alpha_shell::run(alpha_composition::host())
-}
+```sh
+cargo build -p alpha-min
+./target/debug/alpha-min --help
+cargo tree -p alpha-min
 ```
 
-- `src/lib.rs` keeps `include!(concat!(env!("OUT_DIR"), "/alpha_composition.rs"));`
-  and `pub use alpha_shell::*;`.
-- The six integration tests move to `crates/alpha-shell/tests/`.
+The dependency tree for `alpha-min` must not contain `gpui`, `ratatui`, or
+`crossterm`. CI checks this.
 
-### 5. Documentation
+## Replace a capability
 
-- `docs/architecture.md`: remove the stale `alpha_kernel::bootstrap!()` claim
-  (line ~101); document that the shell holds no module references.
-- `docs/usage.md`: state that the command list follows the build.
-- `CONTRIBUTING.md`: explain trimming and replacement (delete a dependency line,
-  add a replacement crate, rebuild; the build fails if a capability is left
-  without exactly one provider).
+1. Keep the contract crate required by consumers.
+2. Remove the old implementation dependency from the composition root.
+3. Add the replacement implementation crate.
+4. Build the workspace.
 
-### 6. Templates and CI
+```toml
+[dependencies]
+# The old implementation is no longer listed.
+my-agent-loop = { path = "../../crates/my-agent-loop" }
+```
 
-- `apps/alpha-default`: the current dependency list, as a copyable composition
-  root.
-- `apps/alpha-min`: run + tui only, no desktop, no provider kinds beyond one.
-- CI jobs:
-  1. `alpha-min` builds and `alpha --help` has no `desktop`; `cargo tree -p
-     alpha-min` has no `gpui`.
-  2. A fixture that replaces `alpha-module-loop` with a stub crate providing
-     `agent.loop`; the build succeeds.
-  3. A fixture that keeps both loop crates; the build fails with
-     `SingletonConflict`.
+The replacement must provide the same capability key in the same scope. Once
+the old dependency is removed, no overrides or coexistence switch is needed.
 
-## Notes
+Keeping both providers is a composition error. This makes replacement
+symmetric with removal and prevents a development-only override from becoming
+an untested runtime path.
 
-- `alpha-build` still supports `kind = "bundle"` for grouping, but no bundle
-  exists; the code path is kept for future aggregation crates.
-- `crates/alpha-build/tests/fixture.rs` builds temporary workspaces and runs
-  `cargo check` on them; it is the natural place for the replacement/trimming
-  fixtures in item 6.
+## Contract boundaries
+
+Contracts exist where consumers must not depend on a concrete implementation:
+
+| Contract | Main interface |
+| --- | --- |
+| `alpha-host-api` | Module and frontend entry points |
+| `alpha-credential-api` | Credential storage |
+| `alpha-http-api` | HTTP client and cassette replay |
+| `alpha-provider-api` | Providers, adapters, model routes, and catalogs |
+| `alpha-prompt-api` | Prompt assembly |
+| `alpha-permission-api` | Permission requests, decisions, review, and audit |
+| `alpha-agent-api` | Agent driver, session runtime, and provider registry |
+
+An implementation crate can add behavior behind a contract without making
+frontends or unrelated modules depend on that implementation.
+
+## Frontend replacement
+
+A frontend crate contributes command metadata and an entry function. The
+function receives `FrontRequest` and returns `FrontError` on failure.
+
+The full composition wires `desktop`, `chat`, `tui`, and `run`. The trimmed
+composition wires only `run`. Adding a new frontend requires a crate, one entry
+function, and metadata under `[package.metadata.alpha]`.
+
+Frontend crates do not depend on core implementation crates such as
+`alpha-provider-api`. They use `alpha-front-runtime` and shared schema types.
+
+## CI coverage
+
+Composition tests build temporary Cargo workspaces and verify:
+
+- The dependency graph produces the expected module set.
+- Missing requirements fail `cargo check`.
+- Duplicate singleton providers fail without modifying source files.
+- Registry collisions fail.
+- Removing a frontend removes its commands.
+- The trimmed app contains no desktop or terminal UI crates.
+
+The generated file is a build artifact. Do not edit or commit it.

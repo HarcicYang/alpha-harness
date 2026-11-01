@@ -2,11 +2,11 @@
 
 ## Build from source
 
-The workspace requires Rust 1.99 or newer; `rust-toolchain.toml` selects the
-stable toolchain.
+The workspace uses Rust 1.99 or newer. `rust-toolchain.toml` selects the
+toolchain used by the repository.
 
-The `alpha` binary always links the desktop front, so every build needs the GPUI
-system packages on Linux:
+The `alpha` binary includes the desktop frontend, so Linux builds need the GPUI
+system packages:
 
 ```sh
 sudo apt-get update
@@ -17,50 +17,50 @@ sudo apt-get install -y \
   libxkbcommon-x11-dev pkg-config
 ```
 
-Then build or install:
+Build the binary:
 
 ```sh
 cargo build --release
+```
+
+Install it from the workspace:
+
+```sh
 cargo install --path apps/alpha-harness
 ```
 
+The trimmed headless binary is available through `cargo build -p alpha-min`.
+See [docs/composition-decoupling.md](docs/composition-decoupling.md) for how
+Cargo dependencies select modules and frontends.
+
 ## Checks
 
-Run the repository checks before submitting changes:
+Run these checks before committing:
 
 ```sh
-cargo check --workspace --all-targets
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs those checks on Linux and `cargo check --workspace --all-targets` on
-macOS and Windows.
+The desktop test binaries are large. On a machine with limited memory, run the
+tests one link at a time:
 
-## Trimming and replacing capabilities
+```sh
+CARGO_BUILD_JOBS=1 cargo test --workspace
+```
 
-The composition root's direct dependencies decide what the binary contains.
-There is no bundle crate and no feature switch:
+CI disables test debug information and limits Cargo to two build jobs for the
+same reason.
 
-- To drop a capability, delete its dependency line from
-  `apps/alpha-harness/Cargo.toml`. The build then either succeeds without it or
-  fails with a missing-requirement error naming what still needs it.
-- To replace a capability, delete the default implementation crate and add the
-  replacement. Both may not be present: two providers of the same singleton
-  capability fail the build, because replacement is a dependency swap.
+## Changes
 
-`docs/composition-decoupling.md` lists the contracts each capability must
-implement.
+Keep each commit to one logical change. Use an English Conventional Commit
+subject with no body.
 
-## Commits
+Documentation is written in English. [docs/architecture.md](docs/architecture.md)
+is the source of truth for the current architecture. Update the relevant
+user-facing page when behavior changes.
 
-Use an English Conventional Commit subject with no body, keep each commit scoped
-to one logical change, and commit after each small, self-contained change.
-[`AGENTS.md`](AGENTS.md) holds the full repository rules.
-
-## Architecture
-
-[`docs/architecture.md`](docs/architecture.md) is the single source of truth for
-the architecture. User-facing reference material lives in
-[`docs/usage.md`](docs/usage.md).
+Do not add JavaScript, TypeScript, Node.js, npm, pnpm, or JavaScript build tools
+to the repository or its shipped dependency chain.

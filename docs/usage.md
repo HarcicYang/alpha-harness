@@ -1,68 +1,66 @@
-# alpha-harness usage reference
+# alpha-harness usage
 
-Reference material for the terminal interfaces, the desktop app, the shell
-sandbox, and the files alpha-harness keeps. The [README](../README.md) covers
-installation and the first run.
+This page covers the terminal and desktop apps, images, permissions, shell
+commands, and local files. [README.md](../README.md) covers installation and
+the first run.
 
-## Commands follow the build
+## Commands in a build
 
-The `alpha` binary contains the frontends and provider kinds this build was
-compiled with. Removing a frontend crate from the composition root removes its
-subcommand; removing a provider kind removes it from the provider list. See
-[`composition-decoupling.md`](composition-decoupling.md) for the dependency
-layout.
+The `alpha` binary contains the frontends and provider kinds linked into that
+build. Removing a frontend crate removes its command. Removing a provider kind
+removes it from the provider list.
 
-## Terminal interfaces
+## Terminal
 
 ```sh
 alpha chat
 alpha tui
 ```
 
-`alpha chat` keeps the conversation in the current terminal; `alpha tui` uses
-the alternate screen. Both show the current provider, model, reasoning level,
-and permission mode, and both print the session ID with a `/resume` hint on
-exit.
+`alpha chat` keeps the conversation in the current terminal. `alpha tui` uses
+the alternate screen. Both show the provider, model, reasoning level, and
+permission mode. The session ID is printed on exit.
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Send the message |
 | `Ctrl-Enter`, `Ctrl-J` | Insert a newline |
 | `Tab` | Accept the visible slash-command completion |
-| `Shift-Tab` | Select the previous completion, or cycle reasoning effort when none is visible |
+| `Shift-Tab` | Previous completion, or reasoning effort when no completion is shown |
 | `Esc` | Dismiss a completion, recall a queued prompt, or cancel the turn |
-| `Ctrl-P` | Provider settings |
+| `Ctrl-P` | Open provider settings |
 | `Ctrl-L` | Choose a model |
 | `Ctrl-T` | Choose reasoning effort |
 | `Ctrl-R` | Open saved sessions |
-| `PageUp`, `PageDown`, wheel | Scroll the transcript |
+| `PageUp`, `PageDown`, mouse wheel | Scroll the transcript |
 | `Ctrl-C` | Quit |
 
 ### Slash commands
 
-Both interfaces accept the same commands, and `Tab` completes them.
+`alpha chat` and `alpha tui` accept the same commands.
 
-| Command | What it does |
+| Command | Action |
 | --- | --- |
 | `/provider [ID]` | Open the provider manager or switch provider |
 | `/model [MODEL] [EFFORT]` | Open the model picker or switch the route |
-| `/thinking LEVEL`, `/effort LEVEL` | Set the reasoning effort |
+| `/thinking LEVEL`, `/effort LEVEL` | Set reasoning effort |
 | `/mode MODE` | Set `read`, `auto`, `reviewed`, or `free` |
+| `/image PATH` | Attach an image to the next prompt |
 | `/confirm`, `/discard` | Run or discard pending steers |
-| `/capabilities TOOLS` | Set provider-native tools, for example `web_search` |
+| `/capabilities TOOLS` | Set provider-native tools |
 | `/new` | Start a new session draft |
 | `/resume ID` | Resume a session |
 | `/sessions` | Open the session manager |
 | `/diagnostics` | Show core connection details |
-| `/help`, `/quit` | Show help, exit |
+| `/help`, `/quit` | Show help or exit |
 
-## Desktop app
+## Desktop
 
-The workspace menu has two levels. The first lists workspaces, and the second
-lists sessions in the selected workspace. You can also open another folder or
-start a new session there. Work in other open workspaces continues in the
-background, and the desktop app shows a notice when that work needs attention
-or finishes.
+The top-left menu lists workspaces in its first panel and sessions in its
+second panel. You can open another folder or create a session for the selected
+workspace there. Switching workspaces changes the primary core. Other workspace
+cores stay running, and the app reports background completion, disconnection,
+or input requests.
 
 | Shortcut | Action |
 | --- | --- |
@@ -72,64 +70,100 @@ or finishes.
 | `Ctrl-L` | Choose a model |
 | `Ctrl-T` | Choose reasoning effort |
 | `Ctrl-K` | Open the command palette |
-| `?` | Show all shortcuts |
+| `Ctrl-V` | Paste an image from the clipboard |
+| `?` | Show shortcuts |
 | `Enter` | Send the message |
 | `Shift-Enter` | Insert a newline |
-| `Tab` | Accept a visible slash-command suggestion |
+| `Tab` | Accept a slash-command suggestion |
 
-On macOS, use `Cmd` instead of `Ctrl`.
+On macOS, use `Cmd` in place of `Ctrl`.
+
+Wheel, touchpad, and scrollbar movement update the transcript through the GPUI
+list and settle smoothly in both directions. Tool output has its own scroll
+position.
+
+## Images
+
+In the desktop app, use the attach button, paste an image while the composer is
+focused, or drop an image on the window. Pending images appear above the
+composer and can be removed before sending. The terminal uses `/image PATH`.
+
+Images are stored with the user message in the session log and encoded for the
+selected provider adapter. The model can call `view_image` to inspect a PNG,
+JPEG, GIF, or WebP file in the workspace without waiting for an attachment.
+
+## Long-running work
+
+The agent does not impose a model-step or tool-call count limit for a turn. A
+turn ends when the model responds without tool calls, the user cancels it, or
+an operational error ends it.
+
+Shell commands have no built-in wall-clock timeout. `shell` can return a job ID,
+and later calls can wait for the job and read output from a byte offset with
+`job_id`, `wait_ms`, and `since_bytes`. A response is capped at 64 KiB and
+marks truncated output, while a running job keeps producing output. The desktop
+and TUI receive streamed output while the command runs.
 
 ## Shell sandbox
 
-On Linux, shell commands run inside `bubblewrap`: the workspace is writable,
-system paths and the home directory are read-only, `/tmp` is a private tmpfs,
-and the network is unshared by default.
+On Linux, sandboxed commands run through `bubblewrap`. The workspace is
+writable. System paths and the home directory are read-only, `/tmp` is a private
+tmpfs, and networking is disabled by default.
 
-- Sandboxing is controlled by module configuration (`sandbox.enabled`,
-  `sandbox.network`), not by the permission mode. The default is to probe for a
-  working `bwrap` at startup.
-- If `bwrap` is missing and `sandbox.enabled` is unset, alpha-harness warns and
-  disables the sandbox. Commands then run unsandboxed, so in `auto` and
-  `reviewed` every non-read-only command asks for approval first.
-- If `sandbox.enabled = true` and `bwrap` is missing, startup fails with an
-  error instead.
-- Without an approval channel, an unsandboxed request is denied rather than
-  allowed.
-- The bubblewrap sandbox targets Linux. The user configuration file does not
-  currently expose these settings.
+| Setting | Behavior |
+| --- | --- |
+| `sandbox.enabled = true` | Fail startup when `bwrap` is unavailable |
+| `sandbox.enabled = false` | Run commands without `bubblewrap` |
+| unset | Probe for `bwrap` and warn when it is unavailable |
+| `sandbox.network = true` | Keep networking enabled in the sandbox |
+| `sandbox.read_only` | Add read-only bind mounts |
+| `sandbox.writable` | Add writable bind mounts |
 
-## Providers
+Without an approval channel, an unsandboxed request is denied.
 
-Provider kinds are modules, so the panel lists exactly the kinds compiled into
-your build. The reference composition is listed in
-[`architecture.md#providers-and-models`](architecture.md#providers-and-models).
+## Providers and output limits
+
+Provider kinds are selected at build time, so the provider panel only lists the
+kinds in the binary. The model catalog supplies context windows and model
+output limits.
+
+When a model has an output limit, the adapter sends it as `max_tokens` for Chat
+Completions and Anthropic Messages, or `max_output_tokens` for Responses. An
+explicit matching provider option takes precedence. Models without a catalog
+limit send no output-limit field, leaving the provider default in control.
 
 ## Files and environment
 
-Provider settings are stored in:
+Provider settings are stored at:
 
 ```text
 ~/.config/alpha-harness/config.toml
 ```
 
-The path resolves in this order: `$XDG_CONFIG_HOME/alpha-harness/config.toml`,
-then `$HOME/.config/alpha-harness/config.toml`, then
-`./.config/alpha-harness/config.toml`. The file holds provider instances, the
-default instance, and per-instance model overrides.
+The path resolves in this order:
 
-Saved sessions are stored in:
+1. `$XDG_CONFIG_HOME/alpha-harness/config.toml`
+2. `$HOME/.config/alpha-harness/config.toml`
+
+When `HOME` is unset, the fallback is
+`./.config/alpha-harness/config.toml`.
+
+The file stores provider instances, the default instance, and model overrides.
+API keys are kept in the system credential store.
+
+Sessions are stored at:
 
 ```text
 ~/.local/state/alpha-harness/sessions
 ```
 
-The path resolves in this order: `$ALPHA_HARNESS_STATE_DIR/sessions`,
-`$XDG_STATE_HOME/alpha-harness/sessions`, then
-`$HOME/.local/state/alpha-harness/sessions`, then `./sessions`.
+The state path resolves in this order:
 
-macOS sets `HOME`, so the defaults above apply. Windows usually does not, which
-puts both paths under the current directory; set `HOME` or `XDG_*` there to move
-them.
+1. `$ALPHA_HARNESS_STATE_DIR/sessions`
+2. `$XDG_STATE_HOME/alpha-harness/sessions`
+3. `$HOME/.local/state/alpha-harness/sessions`
 
-`alpha sessions` prints one tab-separated line per session with the fields `id`,
+When `HOME` is unset, the fallback is `./sessions`.
+
+`alpha sessions` prints one tab-separated line per session with the session ID,
 permission mode, creation time in milliseconds, and workspace root.

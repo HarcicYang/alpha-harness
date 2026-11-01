@@ -1,113 +1,107 @@
 # alpha-harness
 
-**Harness of your own.** Modular, lightweight, atomic.
-
-- **Modular** — the feature set is the Cargo dependency graph. Tools, providers,
-  prompts, permissions, and compaction are modules with declared requirements
-  and provisions, checked at build time: no plugin runtime, no dynamic loading,
-  no WASM.
-- **Lightweight** — the kernel holds only the component runtime and terminal and
-  stdio plumbing. The desktop app, the terminal UI, and the CLI are one binary
-  with no JavaScript in the build.
-- **Atomic** — nothing is installed or patched in place. The module set is
-  resolved from the locked dependency graph and baked into the binary at build
-  time, so a capability cannot be half-installed; repair and migration write a
-  successor session generation beside the untouched source file.
+alpha-harness is a coding agent for the desktop and terminal. It works in a
+local repository and saves each conversation as a session you can resume later.
 
 ## Install
+
+Rust 1.99 or newer is required. Linux desktop builds also need the system
+packages listed in [CONTRIBUTING.md](CONTRIBUTING.md#build-from-source).
 
 ```sh
 cargo install --path apps/alpha-harness
 ```
 
-Building requires Rust 1.99 or newer, and the installed binary is named
-`alpha`. On Linux the build also needs the system packages listed in
-[CONTRIBUTING.md](CONTRIBUTING.md#build-from-source). To build without
-installing, run `cargo build --release`; the binary lands in
+For a local build, run `cargo build --release`. The binary is
 `target/release/alpha`.
 
-## Quick start
+## Start
 
 ```sh
 alpha desktop
 ```
 
-On first use, pick a provider from the list the app shows and add its API key.
-Then choose a workspace from the top-left menu and describe the task in the
-composer.
+Choose a provider in the app and add its API key. The menu in the top-left
+corner switches workspaces and sessions. Other open workspaces keep running
+when you switch away.
 
-From a terminal:
+To use the terminal instead:
+
+```sh
+alpha tui
+```
+
+For a single prompt:
 
 ```sh
 alpha run "review the error handling in src"
 ```
 
-Assistant text goes to stdout; progress, tool calls, errors, and the final
-session ID go to stderr.
-
 ## Commands
 
-| Command | What it does |
+| Command | Purpose |
 | --- | --- |
-| `alpha run [OPTIONS] [PROMPT]...` | Run one prompt and exit |
-| `alpha chat` | Chat without switching to the alternate screen |
-| `alpha tui` | Open the full-screen terminal interface |
 | `alpha desktop` | Open the desktop app |
-| `alpha sessions` | List stored sessions |
+| `alpha tui` | Open the full-screen terminal interface |
+| `alpha chat` | Chat in the current terminal |
+| `alpha run [OPTIONS] [PROMPT]...` | Run one prompt and exit |
+| `alpha sessions` | List saved sessions |
 
-`alpha chat`, `alpha tui`, and `alpha desktop` use the current directory as the
-workspace. Only `alpha run` can be pointed at another directory.
+Interactive commands use the current directory as the workspace.
 
-### `alpha run` options
+### `alpha run`
 
-| Option | What it does |
+| Option | Purpose |
 | --- | --- |
-| `--workspace <PATH>` | Choose the workspace. The current directory is the default. |
-| `--mode <MODE>` | Choose `read`, `auto`, `reviewed`, or `free`. Defaults to `auto`. |
-| `--provider <ID>` | Choose a provider instance or provider kind. Defaults to the configured default instance. |
-| `--model <MODEL>` | Choose a model. Defaults to the provider catalog. |
-| `--resume <SESSION_ID>` | Continue a saved session instead of starting a new one |
+| `--workspace <PATH>` | Run in another workspace |
+| `--mode <MODE>` | Use `read`, `auto`, `reviewed`, or `free` |
+| `--provider <ID>` | Select a provider instance or provider kind |
+| `--model <MODEL>` | Select a model |
+| `--resume <SESSION_ID>` | Continue an existing session |
 
 ```sh
 alpha run --mode free "fix the failing tests"
 alpha run --resume <SESSION_ID> "continue"
 ```
 
-A prompt is required unless `--resume` is given.
+## Images
 
-## Permission modes
+In the desktop app, attach an image from the composer, paste it from the
+clipboard, or drop a file on the window. In the terminal, use `/image PATH`.
 
-`auto` is the default. Interactive fronts show the active mode; `alpha run`
-takes it from `--mode`.
+The model can also call `view_image` to inspect a PNG, JPEG, GIF, or WebP file
+in the workspace.
 
-- `read` allows reading only. Every mutation is denied.
-- `auto` allows sandboxed work without prompting; anything else needs approval.
-- `reviewed` also routes writes through an automated reviewer.
-- `free` allows everything.
+## Permissions
 
-Prompts offer deny, allow once, and allow for the session, and session grants
-end with the session. See
-[`docs/architecture.md`](docs/architecture.md#permissions) for the full matrix
-and policy rules.
+`auto` is the default mode.
+
+| Mode | Access |
+| --- | --- |
+| `read` | Read-only |
+| `auto` | Sandboxed work; other access needs approval |
+| `reviewed` | Sandboxed work with automatic review for broader access |
+| `free` | Full local access without prompts |
+
+Approval prompts can deny a request, allow it once, or allow it for the current
+session.
 
 ## Files
 
-Provider settings live in `~/.config/alpha-harness/config.toml`; saved sessions
-live in `~/.local/state/alpha-harness/sessions`. Both locations honour
-`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `ALPHA_HARNESS_STATE_DIR`; see
-[`docs/usage.md`](docs/usage.md#files-and-environment) for the exact order.
+Provider settings are stored in `~/.config/alpha-harness/config.toml`.
+Sessions are stored in `~/.local/state/alpha-harness/sessions`. Both paths
+respect the relevant XDG variables. [docs/usage.md](docs/usage.md) lists the
+lookup order.
 
-API keys never enter the configuration file. They go to the system credential
-store and the file keeps only an opaque reference.
+API keys are kept in the system credential store.
 
 ## Documentation
 
-- [`docs/usage.md`](docs/usage.md) — terminal keys, slash commands, desktop
-  shortcuts, sandbox behavior, file locations.
-- [`docs/architecture.md`](docs/architecture.md) — how the agent, modules, and
-  frontends fit together.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — building from source, checks, commits.
+- [Usage](docs/usage.md): commands, shortcuts, images, sandbox behavior, files
+- [Architecture](docs/architecture.md): modules, core, sessions, and frontends
+- [Composition](docs/composition-decoupling.md): trimming and replacing crates
+- [Contributing](CONTRIBUTING.md): build, checks, and commits
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See [LICENSE](LICENSE).
