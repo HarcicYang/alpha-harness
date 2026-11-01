@@ -158,7 +158,7 @@ impl AlphaDesktop {
         )
     }
 
-    fn render_status_toast(&self, status: &StatusMessage) -> AnyElement {
+    fn render_status_toast(&self, status: &StatusMessage, cx: &mut Context<Self>) -> AnyElement {
         let (icon, icon_color, icon_background, title) = match status.tone {
             StatusTone::Success => (IconName::CircleCheck, ACCENT, ACCENT_SOFT, "Updated"),
             StatusTone::Error => (IconName::CircleX, DANGER, DANGER_SOFT, "Failed"),
@@ -179,6 +179,14 @@ impl AlphaDesktop {
                 .flex()
                 .items_center()
                 .gap(px(9.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.local_status = None;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
                 .child(icon_badge(icon, icon_color, icon_background, 26.))
                 .child(
                     div()
@@ -333,7 +341,7 @@ impl Render for AlphaDesktop {
             })
             .child(self.render_composer(cx))
             .when_some(status, |this, status| {
-                this.child(self.render_status_toast(&status))
+                this.child(self.render_status_toast(&status, cx))
             })
             .when(
                 has_transcript && !transcript_at_bottom && !jump_to_latest_hidden,

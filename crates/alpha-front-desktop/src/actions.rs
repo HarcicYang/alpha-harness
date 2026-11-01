@@ -178,6 +178,14 @@ impl AlphaDesktop {
                             this.jump_to_latest_hidden_until = None;
                             cx.notify();
                         }
+                        if this
+                            .local_status
+                            .as_ref()
+                            .is_some_and(|status| status.expired(Instant::now()))
+                        {
+                            this.local_status = None;
+                            cx.notify();
+                        }
                         if this.submit_requested {
                             this.submit_requested = false;
                             this.submit_composer(window, cx);

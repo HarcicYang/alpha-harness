@@ -125,26 +125,42 @@ enum StatusTone {
     Error,
 }
 
+/// How long a success status stays on screen.
+const STATUS_SUCCESS_LIFETIME: Duration = Duration::from_secs(3);
+/// How long an error status stays on screen.
+const STATUS_ERROR_LIFETIME: Duration = Duration::from_secs(8);
+
 /// A transient status line shown above the composer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StatusMessage {
     tone: StatusTone,
     text: String,
+    deadline: Instant,
 }
 
 impl StatusMessage {
     fn success(text: impl Into<String>) -> Self {
-        Self {
-            tone: StatusTone::Success,
-            text: text.into(),
-        }
+        Self::new(StatusTone::Success, text)
     }
 
     fn error(text: impl Into<String>) -> Self {
+        Self::new(StatusTone::Error, text)
+    }
+
+    fn new(tone: StatusTone, text: impl Into<String>) -> Self {
+        let lifetime = match tone {
+            StatusTone::Success => STATUS_SUCCESS_LIFETIME,
+            StatusTone::Error => STATUS_ERROR_LIFETIME,
+        };
         Self {
-            tone: StatusTone::Error,
+            tone,
             text: text.into(),
+            deadline: Instant::now() + lifetime,
         }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now >= self.deadline
     }
 }
 
@@ -256,11 +272,21 @@ mod tests {
         WorkspaceRef,
     };
 
+    use std::time::Instant;
+
     use super::{
-        DesktopTranscriptItem, command_suggestions, context_capabilities, desktop_transcript_items,
-        format_token_count, parse_provider_config, path_parts, pretty_provider_config,
-        session_matches_query, workspace_name,
+        DesktopTranscriptItem, StatusMessage, command_suggestions, context_capabilities,
+        desktop_transcript_items, format_token_count, parse_provider_config, path_parts,
+        pretty_provider_config, session_matches_query, workspace_name,
     };
+
+    #[test]
+    fn error_statuses_stay_visible_longer_than_successes() {
+        let success = StatusMessage::success("saved");
+        let error = StatusMessage::error("boom");
+        assert!(!success.expired(Instant::now()));
+        assert!(error.deadline > success.deadline);
+    }
 
     #[test]
     fn consecutive_tool_items_render_as_one_group_with_the_latest_tool() {
