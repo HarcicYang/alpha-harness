@@ -718,8 +718,10 @@ impl FrontRuntime {
             }
             FrontCommand::SelectModel { target, reasoning } => {
                 self.refresh_providers()?;
-                let current_provider = self.chat.provider.clone();
-                self.refresh_models(Some(&current_provider))?;
+                // Resolve against every instance: a relay can serve a model whose id
+                // never appears under the provider that is currently routed, and
+                // resolving against one provider silently picks the wrong one.
+                self.refresh_models(None)?;
                 let choices = self.providers.model_choices();
                 let selected = resolve_model_selection(&choices, &self.chat.provider, &target)
                     .ok_or_else(|| FrontError::Protocol(format!("unknown model: {target}")))?;
