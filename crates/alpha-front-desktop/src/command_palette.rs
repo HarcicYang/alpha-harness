@@ -1,4 +1,5 @@
 use super::*;
+use crate::composer::is_image_path;
 
 impl AlphaDesktop {
     pub(crate) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -137,6 +138,44 @@ impl AlphaDesktop {
 
         if event.keystroke.modifiers.secondary() {
             let handled = match key.as_str() {
+                "v" => {
+                    let Some(item) = cx.read_from_clipboard() else {
+                        return;
+                    };
+                    let mut attached = 0usize;
+                    for entry in item.entries() {
+                        match entry {
+                            ClipboardEntry::Image(image) => {
+                                self.runtime.attach_image_bytes(
+                                    format!("clipboard-{attached}.{}", image.format().extension()),
+                                    image.format().mime_type(),
+                                    image.bytes().to_vec(),
+                                );
+                                attached = attached.saturating_add(1);
+                            }
+                            ClipboardEntry::ExternalPaths(paths) => {
+                                for path in &paths.0 {
+                                    if is_image_path(path)
+                                        && self.runtime.attach_image(path).is_ok()
+                                    {
+                                        attached = attached.saturating_add(1);
+                                    }
+                                }
+                            }
+                            ClipboardEntry::String(_) => {}
+                        }
+                    }
+                    if attached > 0 {
+                        self.local_status = Some(format!(
+                            "attached {attached} image{}",
+                            if attached == 1 { "" } else { "s" }
+                        ));
+                        self.focus_composer(window, cx);
+                        true
+                    } else {
+                        false
+                    }
+                }
                 "n" => {
                     self.new_session(cx);
                     self.focus_composer(window, cx);

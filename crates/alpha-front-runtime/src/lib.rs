@@ -275,17 +275,29 @@ impl FrontRuntime {
         })?;
         let bytes = std::fs::read(path)
             .map_err(|error| FrontError::Protocol(format!("read {}: {error}", path.display())))?;
-        self.pending_images.push(ImageAttachment {
-            name: path
-                .file_name()
+        self.attach_image_bytes(
+            path.file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("image")
-                .to_owned(),
-            mime_type: mime_type.to_owned(),
-            data: base64::engine::general_purpose::STANDARD.encode(bytes),
-        });
+                .unwrap_or("image"),
+            mime_type,
+            bytes,
+        );
         self.chat.status = Some(format!("attached {}", path.display()));
         Ok(())
+    }
+
+    /// Queue image bytes for the next prompt.
+    pub fn attach_image_bytes(
+        &mut self,
+        name: impl Into<String>,
+        mime_type: impl Into<String>,
+        bytes: Vec<u8>,
+    ) {
+        self.pending_images.push(ImageAttachment {
+            name: name.into(),
+            mime_type: mime_type.into(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        });
     }
 
     /// Remove one queued image.

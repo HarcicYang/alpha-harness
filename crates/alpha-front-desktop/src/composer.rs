@@ -457,7 +457,7 @@ impl AlphaDesktop {
     }
 }
 
-fn is_image_path(path: &std::path::Path) -> bool {
+pub(crate) fn is_image_path(path: &std::path::Path) -> bool {
     matches!(
         path.extension()
             .and_then(|extension| extension.to_str())
