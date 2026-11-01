@@ -3,9 +3,9 @@ use std::cell::Cell;
 
 pub(crate) const SCROLL_REGION_COUNT: usize = 13;
 pub(crate) const SCROLLBAR_GUTTER: f32 = 14.;
-pub(crate) const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(32);
-pub(crate) const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(16);
-pub(crate) const SCROLL_EXTERNAL_DISTANCE: f32 = 0.25;
+pub(crate) const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(90);
+pub(crate) const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(32);
+pub(crate) const SCROLL_EXTERNAL_DISTANCE: f32 = 1.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScrollRegion {
@@ -68,8 +68,8 @@ impl SmoothScroll {
         let target_y =
             (self.applied_y.get() + self.remaining_y.get() + delta_y).clamp(-maximum, 0.);
         self.remaining_y.set(target_y - applied_y);
-        self.last_frame.set(Some(Instant::now()));
-        set_vertical_offset(handle, applied_y);
+        // Leave the offset alone and keep the frame clock running: snapping back to
+        // `applied_y` here made every wheel event interrupt the running animation.
     }
 
     pub(crate) fn prepare(

@@ -152,7 +152,8 @@ impl SmoothListScroll {
         let applied_y = self.applied_y.get();
         let target_y = (applied_y + self.remaining_y.get() - delta_y).clamp(0., maximum);
         self.remaining_y.set(target_y - applied_y);
-        self.last_frame.set(Some(Instant::now()));
+        // Do not restart the frame clock here: a burst of wheel events would reset
+        // the easing every time and the motion would stutter.
     }
 
     pub(crate) fn prepare(
