@@ -307,8 +307,10 @@ dependencies = [
  "alpha-front-runtime",
  "alpha-host-api",
  "alpha-schema",
+ "base64",
  "gpui-kit",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

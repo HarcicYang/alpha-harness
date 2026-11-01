@@ -468,6 +468,88 @@ pub(crate) fn is_image_path(path: &std::path::Path) -> bool {
     )
 }
 
+/// An image carried by a clipboard text entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardImage {
+    /// A path copied by a screenshot tool or a file manager.
+    Path(std::path::PathBuf),
+    /// A `data:image/...;base64,` payload.
+    Data {
+        name: String,
+        mime_type: String,
+        bytes: Vec<u8>,
+    },
+}
+
+/// Images encoded in clipboard text.
+///
+/// The platform clipboard returns text before it returns images, and most
+/// screenshot tools publish a `text/uri-list` entry next to `image/png`, so an
+/// image paste has to look into the text entry to find the attachment.
+pub(crate) fn clipboard_images(text: &str) -> Vec<ClipboardImage> {
+    let mut images = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(data) = clipboard_data_url(line) {
+            images.push(data);
+            continue;
+        }
+        let path =
+            std::path::PathBuf::from(percent_decode(line.strip_prefix("file://").unwrap_or(line)));
+        if is_image_path(&path) && path.is_file() {
+            images.push(ClipboardImage::Path(path));
+        }
+    }
+    images
+}
+
+fn clipboard_data_url(text: &str) -> Option<ClipboardImage> {
+    let payload = text.strip_prefix("data:")?;
+    let (header, encoded) = payload.split_once(',')?;
+    let mime_type = header.strip_suffix(";base64")?;
+    if !mime_type.starts_with("image/") {
+        return None;
+    }
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim()).ok()?;
+    let extension = match mime_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    Some(ClipboardImage::Data {
+        name: format!("clipboard.{}", extension),
+        mime_type: mime_type.to_owned(),
+        bytes,
+    })
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && let Some(byte) = bytes
+                .get(index + 1..index + 3)
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            decoded.push(byte);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
 fn menu_option(
     id: String,
     icon: IconName,
@@ -535,5 +617,37 @@ fn reasoning_description(level: ReasoningLevel) -> &'static str {
         ReasoningLevel::High => "Deep reasoning",
         ReasoningLevel::XHigh => "Extra-deep reasoning",
         ReasoningLevel::Max => "Maximum reasoning",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClipboardImage, clipboard_images};
+
+    #[test]
+    fn clipboard_text_yields_images_and_ignores_plain_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shot = dir.path().join("shot.png");
+        std::fs::write(&shot, b"png").expect("image");
+
+        let uris = format!("file://{}\nhttps://example.test/page", shot.display());
+        assert_eq!(
+            clipboard_images(&uris),
+            vec![ClipboardImage::Path(shot.clone())]
+        );
+        assert_eq!(
+            clipboard_images(&shot.display().to_string()),
+            vec![ClipboardImage::Path(shot.clone())]
+        );
+
+        let data = clipboard_images("data:image/png;base64,aGVsbG8=");
+        assert!(matches!(
+            data.as_slice(),
+            [ClipboardImage::Data { mime_type, bytes, .. }]
+                if mime_type == "image/png" && bytes == b"hello"
+        ));
+
+        assert!(clipboard_images("just some text").is_empty());
+        assert!(clipboard_images("data:text/plain;base64,aGVsbG8=").is_empty());
     }
 }

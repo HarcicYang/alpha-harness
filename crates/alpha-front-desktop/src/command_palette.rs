@@ -1,5 +1,5 @@
 use super::*;
-use crate::composer::is_image_path;
+use crate::composer::{ClipboardImage, clipboard_images, is_image_path};
 
 impl AlphaDesktop {
     pub(crate) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -162,7 +162,25 @@ impl AlphaDesktop {
                                     }
                                 }
                             }
-                            ClipboardEntry::String(_) => {}
+                            ClipboardEntry::String(text) => {
+                                for image in clipboard_images(text.text()) {
+                                    match image {
+                                        ClipboardImage::Path(path) => {
+                                            if self.runtime.attach_image(&path).is_ok() {
+                                                attached = attached.saturating_add(1);
+                                            }
+                                        }
+                                        ClipboardImage::Data {
+                                            name,
+                                            mime_type,
+                                            bytes,
+                                        } => {
+                                            self.runtime.attach_image_bytes(name, mime_type, bytes);
+                                            attached = attached.saturating_add(1);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     if attached > 0 {
