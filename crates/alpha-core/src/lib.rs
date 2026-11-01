@@ -1280,6 +1280,47 @@ fn build_router_with_transport(
     }
 }
 
+/// Discover every enabled provider catalog once at startup.
+///
+/// Per-model limits live in the catalog endpoint, and request shaping and
+/// compaction read them from the registry. Without a warm-up the runtime only
+/// knows the limits a frontend happened to request.
+fn warm_catalogs(ctx: &Ctx) {
+    // A host without a reactor (host tests, `alpha-min`) keeps the catalogs that
+    // frontends request explicitly.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let Ok(instances) = ctx.require::<ProviderInstanceRegistry>() else {
+        return;
+    };
+    let Ok(kinds) = ctx.require::<ProviderKindRegistry>() else {
+        return;
+    };
+    let Ok(http) = ctx.require::<dyn HttpClient>() else {
+        return;
+    };
+    for instance in instances
+        .list()
+        .into_iter()
+        .filter(|instance| !instance.disabled)
+    {
+        let Some(kind) = kinds.get(&instance.kind) else {
+            continue;
+        };
+        let Ok(credential) = resolve_credential(ctx, &instance) else {
+            continue;
+        };
+        let registry = instances.clone();
+        let http = http.clone();
+        let _ = ctx.scope().spawn(async move {
+            if let Ok(models) = discover_models(&instance, kind.as_ref(), http, credential).await {
+                registry.cache_catalog(&instance.id, models);
+            }
+        });
+    }
+}
+
 fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
     let kind_registry = ctx
         .require::<ProviderKindRegistry>()
@@ -1288,6 +1329,7 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
         .require::<ProviderInstanceRegistry>()
         .expect("provider instance registry is required by the core");
     let config_store = ctx.get::<dyn ProviderConfigStore>();
+    warm_catalogs(&ctx);
 
     let router = router.method("provider.credential_status", {
         let ctx = ctx.clone();

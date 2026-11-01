@@ -115,7 +115,6 @@ fn config() -> CompactionConfig {
         threshold_percent: 50,
         keep_recent_percent: 10,
         max_summary_input_tokens: 100,
-        fallback_summary_tokens: 50,
         scope: CompactionScope::Total,
     }
 }
@@ -130,8 +129,10 @@ async fn compaction_replaces_a_complete_prefix() {
     let provider = SummaryProvider::new("compressed history");
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
+    let ctx = Ctx::root();
     compactor
         .prepare(
+            &ctx,
             &writer,
             &mut state,
             &provider,
@@ -142,7 +143,13 @@ async fn compaction_replaces_a_complete_prefix() {
         .expect("prepare");
 
     let compaction = state.compaction.expect("compaction");
-    assert_eq!(compaction.summary, "compressed history");
+    assert!(
+        compaction.summary.starts_with("compressed history"),
+        "{}",
+        compaction.summary
+    );
+    // The model keeps a durable pointer to the history that was replaced.
+    assert!(compaction.summary.contains("still on disk at"));
     assert_eq!(compaction.from_seq.get(), 1);
     assert_eq!(compaction.through_seq.get(), 2);
     assert!(!provider.requests.lock().expect("requests").is_empty());
@@ -158,8 +165,16 @@ async fn compaction_does_not_run_below_the_threshold() {
     let provider = SummaryProvider::new("unused");
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
+    let ctx = Ctx::root();
     compactor
-        .prepare(&writer, &mut state, &provider, "summary-model", "small")
+        .prepare(
+            &ctx,
+            &writer,
+            &mut state,
+            &provider,
+            "summary-model",
+            "small",
+        )
         .await
         .expect("prepare");
 
@@ -169,7 +184,7 @@ async fn compaction_does_not_run_below_the_threshold() {
 }
 
 #[tokio::test]
-async fn failed_summarization_commits_a_deterministic_fallback() {
+async fn failed_summarization_asks_for_a_new_session() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());
     let header = header();
@@ -179,8 +194,10 @@ async fn failed_summarization_commits_a_deterministic_fallback() {
     let provider = SummaryProvider::failing();
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
-    compactor
+    let ctx = Ctx::root();
+    let error = compactor
         .prepare(
+            &ctx,
             &writer,
             &mut state,
             &provider,
@@ -188,16 +205,16 @@ async fn failed_summarization_commits_a_deterministic_fallback() {
             &"d".repeat(200),
         )
         .await
-        .expect("fallback compaction");
-    let compaction = state.compaction.expect("fallback compaction");
-    assert!(compaction.summary.contains("# Fallback Compacted History"));
-    assert!(compaction.summary.contains("summary-model") || compaction.summary.contains("user:"));
-    assert_eq!(writer.last_seq().get(), 4);
+        .expect_err("overflow");
+    assert!(error.requires_new_session());
+    assert!(state.compaction.is_none());
+    let last_seq = writer.last_seq().get();
     drop(writer);
 
     let reader = store.open_read(id).expect("read");
+    assert_eq!(reader.events().len() as u64, last_seq);
     assert!(
-        reader
+        !reader
             .events()
             .iter()
             .any(|event| matches!(event.payload, SessionEvent::ContextCompacted { .. }))
@@ -214,8 +231,10 @@ async fn model_context_window_takes_precedence_over_the_fallback() {
     let provider = SummaryProvider::new("unused").with_context_window(1_000);
     let compactor = DefaultContextCompactor::new(config(), Arc::new(ConservativeTokenEstimator));
 
+    let ctx = Ctx::root();
     compactor
         .prepare(
+            &ctx,
             &writer,
             &mut state,
             &provider,
@@ -242,8 +261,10 @@ async fn body_after_prefix_scope_ignores_the_carried_prefix() {
     compact.scope = CompactionScope::BodyAfterPrefix;
     let compactor = DefaultContextCompactor::new(compact, Arc::new(ConservativeTokenEstimator));
 
+    let ctx = Ctx::root();
     compactor
         .prepare(
+            &ctx,
             &writer,
             &mut state,
             &provider,

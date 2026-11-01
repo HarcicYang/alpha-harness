@@ -74,12 +74,18 @@ impl AlphaDesktop {
         let pending_images = self.runtime.pending_images().to_vec();
         let composer_value = self.composer.read(cx).value();
         let cancel_action = running && composer_value.trim().is_empty();
-        let status = if running {
-            "Working"
+        let status = if let Some(compaction) = chat.compaction {
+            format!(
+                "Compacting context {}/{}",
+                compaction.done.saturating_add(1),
+                compaction.total
+            )
+        } else if running {
+            "Working".to_owned()
         } else if chat.status.as_deref() == Some("new session") {
-            "New session draft"
+            "New session draft".to_owned()
         } else {
-            "Ready"
+            "Ready".to_owned()
         };
 
         div()

@@ -213,6 +213,46 @@ impl SessionRuntimeFactory for BlockingFactory {
     }
 }
 
+struct OverflowDriver;
+
+impl AgentDriver for OverflowDriver {
+    fn run_turn<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        _state: &'a SessionState,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        Box::pin(async move {
+            writer.append(SessionEvent::TurnStarted)?;
+            writer.append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: prompt.to_owned(),
+                images: Vec::new(),
+            })?;
+            writer.append(SessionEvent::TurnEnded {
+                reason: TurnEndReason::Failed,
+            })?;
+            Err(LoopError::Context(
+                alpha_module_loop::ContextError::overflow("history does not fit"),
+            ))
+        })
+    }
+}
+
+struct OverflowFactory;
+
+impl SessionRuntimeFactory for OverflowFactory {
+    fn build(&self, _request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError> {
+        Ok(SessionRuntime {
+            ctx: Ctx::root(),
+            agent: Arc::new(OverflowDriver),
+            provider_tools_override: Arc::new(ProviderToolsOverride::default()),
+            model_route: Arc::new(ModelRouteOverride::default()),
+        })
+    }
+}
+
 /// A create request for the fixture session in `dir`.
 fn session_request(dir: &std::path::Path, reasoning: ReasoningLevel) -> CreateSessionRequest {
     CreateSessionRequest {
@@ -247,6 +287,32 @@ async fn wait_for_durable(
         }
         if tokio::time::Instant::now() >= deadline {
             return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Wait until one live notification matches `predicate`.
+async fn wait_for_live(
+    transport: &RecordingTransport,
+    predicate: impl Fn(&Value) -> bool,
+) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let found = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned")
+            .iter()
+            .find(|(method, params)| {
+                method == "session.event" && params["kind"] == "live" && predicate(params)
+            })
+            .map(|(_, params)| params.clone());
+        if found.is_some() {
+            return found;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -763,5 +829,55 @@ fn cancel_stops_the_turn_without_replaying_it() {
             params["kind"] == "durable" && params["event"]["payload"]["type"] == "assistant_message"
         }));
         drop(release);
+    });
+}
+
+#[test]
+fn context_overflow_continues_in_a_new_session() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let transport = Arc::new(RecordingTransport::default());
+        let host =
+            AgentHostService::new(store.clone(), transport.clone(), Arc::new(OverflowFactory));
+        let created = host
+            .create_session(session_request(dir.path(), Default::default()))
+            .expect("create");
+        host.submit(created.session_id, "keep going".to_owned())
+            .expect("submit");
+        let rotated = wait_for_live(&transport, |params| {
+            params["event"]["type"] == "session_rotated"
+        })
+        .await
+        .expect("session_rotated did not arrive");
+        let next: alpha_schema::SessionId = rotated["event"]["session_id"]
+            .as_str()
+            .expect("rotated session id")
+            .parse()
+            .expect("session id");
+        assert_ne!(next, created.session_id);
+        let reader = store.open_read(next).expect("read the new session");
+        let handoff = reader
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                SessionEvent::ContextInjected { key, text, .. } if key == "handoff" => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("handoff note");
+        assert!(handoff.contains(&created.session_id.to_string()));
+        assert!(
+            reader.events().iter().any(
+                |event| matches!(&event.payload, SessionEvent::UserMessage { text, .. }
+                    if text == "keep going")
+            ),
+            "the prompt follows the session"
+        );
     });
 }

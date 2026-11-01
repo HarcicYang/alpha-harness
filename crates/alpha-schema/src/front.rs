@@ -94,6 +94,18 @@ pub enum LiveAgentEvent {
         /// Model-visible result.
         content: String,
     },
+    /// Context compaction moved to another chunk.
+    CompactionProgress {
+        /// Chunks already summarized.
+        done: u64,
+        /// Chunks this compaction will summarize.
+        total: u64,
+    },
+    /// The session overflowed and work continues in a fresh session.
+    SessionRotated {
+        /// Session that now carries the work.
+        session_id: crate::SessionId,
+    },
     /// A turn failed.
     Error {
         /// Human-readable failure.

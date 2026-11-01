@@ -120,6 +120,11 @@ pub enum FrontEvent {
         /// Interaction kind.
         kind: String,
     },
+    /// Work moved to a fresh session.
+    SessionRotated {
+        /// Session that now carries the work.
+        session_id: SessionId,
+    },
     /// The core restarted.
     CoreRestarted {
         /// Whether the active session was resumed.
@@ -438,6 +443,24 @@ impl FrontRuntime {
             resumed.messages, attached.replayed
         ));
         Ok(resumed)
+    }
+
+    /// Re-attach to the session that took over after a context overflow.
+    fn follow_rotation(
+        &mut self,
+        session_id: SessionId,
+        out: &mut Vec<FrontEvent>,
+    ) -> Result<(), FrontError> {
+        match self.resume_session(session_id) {
+            Ok(_) => {
+                out.push(FrontEvent::SessionRotated { session_id });
+                Ok(())
+            }
+            Err(error) => {
+                self.chat.status = Some(format!("could not follow session {session_id}: {error}"));
+                Err(error)
+            }
+        }
     }
 
     /// Start a new unpersisted draft.
@@ -855,12 +878,17 @@ impl FrontRuntime {
                     return Ok(());
                 };
                 let notification: SessionEventNotification = parse_response(params)?;
-                out.extend(
-                    self.chat
-                        .apply(notification)
-                        .into_iter()
-                        .map(map_chat_update),
-                );
+                let mut rotated = None;
+                for update in self.chat.apply(notification) {
+                    if let ChatUpdate::SessionRotated { session_id } = update {
+                        rotated = Some(session_id);
+                        continue;
+                    }
+                    out.push(map_chat_update(update));
+                }
+                if let Some(session_id) = rotated {
+                    self.follow_rotation(session_id, out)?;
+                }
                 out.push(FrontEvent::StateChanged);
             }
             ConnectionEvent::Request(request) if request.method == "interaction.request" => {
@@ -950,6 +978,7 @@ fn map_chat_update(update: ChatUpdate) -> FrontEvent {
         ChatUpdate::Live(event) => FrontEvent::Live { event },
         ChatUpdate::TurnEnded { reason } => FrontEvent::TurnEnded { reason },
         ChatUpdate::InteractionRequested { kind } => FrontEvent::InteractionRequested { kind },
+        ChatUpdate::SessionRotated { session_id } => FrontEvent::SessionRotated { session_id },
     }
 }
 

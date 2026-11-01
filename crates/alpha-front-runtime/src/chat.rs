@@ -214,6 +214,8 @@ pub struct ChatState {
     pub reported_output_tokens: usize,
     /// Context window the latest request was shaped against.
     pub requested_context_window: Option<usize>,
+    /// Compaction progress while the history is being summarized.
+    pub compaction: Option<CompactionProgress>,
     /// Local tools frozen by the latest request header.
     pub local_tools: Vec<String>,
     /// Provider-native tools active for the current route.
@@ -255,6 +257,7 @@ impl ChatState {
         self.reported_input_tokens = None;
         self.reported_output_tokens = 0;
         self.requested_context_window = None;
+        self.compaction = None;
         self.local_tools.clear();
         self.provider_tools.clear();
         self.file_changes.clear();
@@ -423,6 +426,7 @@ impl ChatState {
                 None
             }
             SessionEvent::TurnEnded { reason } => {
+                self.compaction = None;
                 self.running_turn = None;
                 self.status = Some("turn finished".to_owned());
                 return vec![ChatUpdate::TurnEnded { reason: *reason }];
@@ -773,7 +777,20 @@ impl ChatState {
                 }
             }
             LiveAgentEvent::StepStarted { step } => {
+                self.compaction = None;
                 self.status = Some(format!("model step {step}"));
+            }
+            LiveAgentEvent::CompactionProgress { done, total } => {
+                self.compaction = Some(CompactionProgress {
+                    done: *done,
+                    total: *total,
+                });
+                self.status = Some(format!("compacting context {done}/{total}"));
+            }
+            LiveAgentEvent::SessionRotated { session_id } => {
+                return vec![ChatUpdate::SessionRotated {
+                    session_id: *session_id,
+                }];
             }
             LiveAgentEvent::ToolStarted { name, .. } => {
                 self.status = Some(format!("running {name}"));
@@ -962,6 +979,20 @@ pub enum ChatUpdate {
         /// Interaction kind.
         kind: String,
     },
+    /// Work continues in a fresh session.
+    SessionRotated {
+        /// Session that now carries the work.
+        session_id: alpha_schema::SessionId,
+    },
+}
+
+/// Progress of one context compaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompactionProgress {
+    /// Chunks already summarized.
+    pub done: u64,
+    /// Chunks this compaction will summarize.
+    pub total: u64,
 }
 
 #[cfg(test)]

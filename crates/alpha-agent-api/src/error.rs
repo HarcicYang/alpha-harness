@@ -28,13 +28,35 @@ pub enum LoopError {
 
 /// Failure from an optional context-preparation step.
 #[derive(Debug, Error)]
-#[error("context preparation failed: {0}")]
-pub struct ContextError(String);
+#[error("context preparation failed: {message}")]
+pub struct ContextError {
+    message: String,
+    overflow: bool,
+}
 
 impl ContextError {
     /// Create an error from a plain message.
     pub fn message(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            overflow: false,
+        }
+    }
+
+    /// Create an error for a context that no longer fits the model window.
+    ///
+    /// The session cannot continue: the history has to be replaced instead of
+    /// being retried in place.
+    pub fn overflow(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            overflow: true,
+        }
+    }
+
+    /// Whether the session must continue in a fresh log.
+    pub fn requires_new_session(&self) -> bool {
+        self.overflow
     }
 }
 

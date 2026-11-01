@@ -142,7 +142,13 @@ impl AgentLoop {
         })?;
         let mut effective_state = state.clone();
         let preparation = self
-            .prepare_turn(writer, &mut effective_state, &initial_route.model, prompt)
+            .prepare_turn(
+                ctx,
+                writer,
+                &mut effective_state,
+                &initial_route.model,
+                prompt,
+            )
             .await;
         if let Err(error) = preparation {
             writer.append(SessionEvent::TurnEnded {
@@ -295,6 +301,7 @@ impl AgentLoop {
     /// the provider, so the turn is already open when it runs.
     async fn prepare_turn(
         &self,
+        ctx: &Ctx,
         writer: &SessionWriter,
         state: &mut SessionState,
         model: &str,
@@ -304,7 +311,7 @@ impl AgentLoop {
             return Ok(());
         };
         preparer
-            .prepare(writer, state, self.provider.as_ref(), model, prompt)
+            .prepare(ctx, writer, state, self.provider.as_ref(), model, prompt)
             .await?;
         Ok(())
     }
@@ -754,9 +761,10 @@ impl Event for AgentError {}
 /// Implementations may append durable context events and update the supplied
 /// session projection. Returning an error leaves the original history intact.
 pub trait ContextPreparer: Send + Sync + 'static {
-    /// Prepare context before the driver records a new user message.
+    /// Prepare the projected context for the next turn.
     fn prepare<'a>(
         &'a self,
+        ctx: &'a Ctx,
         writer: &'a SessionWriter,
         state: &'a mut SessionState,
         provider: &'a dyn ModelProvider,
@@ -764,6 +772,18 @@ pub trait ContextPreparer: Send + Sync + 'static {
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<(), ContextError>>;
 }
+
+/// One compaction chunk finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AgentCompactionProgress {
+    /// Chunks already summarized.
+    pub done: u64,
+    /// Chunks this compaction will summarize.
+    pub total: u64,
+}
+
+impl ParallelEvent for AgentCompactionProgress {}
+impl Event for AgentCompactionProgress {}
 
 impl AgentDriver for AgentLoop {
     fn run_turn<'a>(

@@ -13,9 +13,9 @@ use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
 pub use agent::{
-    AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta, AgentToolFinished,
-    AgentToolOutput, AgentToolStarted, AgentTurnFinished, ContextPreparer, SteerMessage,
-    SteerQueue,
+    AgentCompactionProgress, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta,
+    AgentThinkingDelta, AgentToolFinished, AgentToolOutput, AgentToolStarted, AgentTurnFinished,
+    ContextPreparer, SteerMessage, SteerQueue,
 };
 pub use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
 

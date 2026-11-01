@@ -83,11 +83,20 @@ pub fn run_once(request: FrontRequest) -> Result<(), FrontError> {
                     LiveAgentEvent::ToolFinished { name, status, .. } => {
                         eprintln!("alpha run: <- {name} {}", tool_status_label(status));
                     }
+                    LiveAgentEvent::CompactionProgress { done, total } => {
+                        eprintln!("alpha run: compacting context {done}/{total}");
+                    }
+                    LiveAgentEvent::SessionRotated { session_id } => {
+                        eprintln!("alpha run: continuing in session {session_id}");
+                    }
                     LiveAgentEvent::Error { message } => {
                         eprintln!("alpha run: {message}");
                     }
                     LiveAgentEvent::ThinkingDelta { .. } => {}
                 },
+                FrontEvent::SessionRotated { session_id } => {
+                    eprintln!("alpha run: context overflowed, continuing in {session_id}");
+                }
                 FrontEvent::InteractionRequested { .. } => {
                     let prompt = runtime
                         .chat()

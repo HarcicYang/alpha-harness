@@ -241,6 +241,7 @@ struct SummaryPreparer;
 impl ContextPreparer for SummaryPreparer {
     fn prepare<'a>(
         &'a self,
+        _ctx: &'a alpha_kernel::Ctx,
         writer: &'a alpha_session_log::SessionWriter,
         state: &'a mut SessionState,
         _provider: &'a dyn ModelProvider,

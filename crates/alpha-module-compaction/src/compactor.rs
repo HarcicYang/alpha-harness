@@ -1,7 +1,9 @@
 //! Default conservative token estimator and compaction implementation.
 
+use alpha_kernel::Ctx;
 use alpha_module_loop::{
-    ChatMessage, CompletionRequest, ContextError, ContextPreparer, ModelProvider,
+    AgentCompactionProgress, ChatMessage, CompletionRequest, ContextError, ContextPreparer,
+    ModelProvider,
 };
 use alpha_session_log::{MessageRecord, SessionEvent, SessionState, SessionWriter, ToolStatus};
 use futures::future::BoxFuture;
@@ -139,6 +141,7 @@ impl DefaultContextCompactor {
 
     async fn summarize(
         &self,
+        ctx: &Ctx,
         provider: &dyn ModelProvider,
         model: &str,
         session_id: &str,
@@ -149,13 +152,19 @@ impl DefaultContextCompactor {
         if chunks.is_empty() {
             return Err(ContextError::message("no records to summarize"));
         }
+        let total = u64::try_from(chunks.len()).unwrap_or(u64::MAX);
         let mut summary = state
             .compaction
             .as_ref()
             .map(|compaction| compaction.summary.clone())
             .unwrap_or_default();
 
-        for chunk in chunks {
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            ctx.parallel(AgentCompactionProgress {
+                done: u64::try_from(index).unwrap_or(u64::MAX),
+                total,
+            })
+            .await;
             let mut input = String::new();
             if !summary.is_empty() {
                 input.push_str("Existing summary:\n");
@@ -177,10 +186,10 @@ impl DefaultContextCompactor {
                     max_output_tokens: None,
                 })
                 .await
-                .map_err(|error| ContextError::message(error.to_string()))?;
+                .map_err(|error| ContextError::overflow(error.to_string()))?;
             let text = response.text.trim();
             if text.is_empty() {
-                return Err(ContextError::message("summarizer returned empty text"));
+                return Err(ContextError::overflow("summarizer returned no summary"));
             }
             summary = text.to_owned();
         }
@@ -216,29 +225,12 @@ impl DefaultContextCompactor {
         }
         chunks
     }
-
-    fn fallback_summary(&self, records: &[&MessageRecord]) -> String {
-        let rendered = records
-            .iter()
-            .map(|record| render_record(record))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let excerpt = truncate_to_tokens(
-            &rendered,
-            self.config.fallback_summary_tokens,
-            self.estimator.as_ref(),
-        );
-        format!(
-            "# Fallback Compacted History\n\n\
-             Model-generated summarization was unavailable. This deterministic excerpt preserves \
-             the oldest replaced records:\n\n{excerpt}"
-        )
-    }
 }
 
 impl ContextPreparer for DefaultContextCompactor {
     fn prepare<'a>(
         &'a self,
+        ctx: &'a Ctx,
         writer: &'a SessionWriter,
         state: &'a mut SessionState,
         provider: &'a dyn ModelProvider,
@@ -252,8 +244,12 @@ impl ContextPreparer for DefaultContextCompactor {
             let context_window = provider
                 .context_window(model)
                 .filter(|window| *window > 0)
+                .or(state.context_window.filter(|window| *window > 0))
                 .unwrap_or(self.config.context_window_tokens);
-            let total = self.estimate_state(state, prompt);
+            // The provider's own report is a floor: a local estimate that
+            // undershoots it would keep a full session from compacting.
+            let observed = usize::try_from(state.last_input_tokens.unwrap_or(0)).unwrap_or(0);
+            let total = self.estimate_state(state, prompt).max(observed);
             let body_after_prefix = total.saturating_sub(self.estimate_prefix(state));
             if !self.should_compact(total, body_after_prefix, context_window) {
                 return Ok(());
@@ -264,21 +260,25 @@ impl ContextPreparer for DefaultContextCompactor {
             if records.is_empty() {
                 return Ok(());
             }
-            let summary = match self
+            let from_seq = records.first().expect("non-empty records").seq();
+            let through_seq = records.last().expect("non-empty records").seq();
+            let summary = self
                 .summarize(
+                    ctx,
                     provider,
                     model,
                     &writer.header().id.to_string(),
                     state,
                     &records,
                 )
-                .await
-            {
-                Ok(summary) => summary,
-                Err(_) => self.fallback_summary(&records),
-            };
-            let from_seq = records.first().expect("non-empty records").seq();
-            let through_seq = records.last().expect("non-empty records").seq();
+                .await?;
+            // The replaced history stays addressable: exact earlier content is
+            // one read away instead of lost.
+            let summary = format!(
+                "{summary}\n\nThe replaced history (sequences {from_seq} through {through_seq}) \
+                 is still on disk at {}.",
+                writer.dir().display()
+            );
             let envelope = writer
                 .append(SessionEvent::ContextCompacted {
                     summary,

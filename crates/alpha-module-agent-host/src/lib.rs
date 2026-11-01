@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -20,8 +20,8 @@ use alpha_schema::{
     SessionEventNotification, SessionId, TurnId,
 };
 use alpha_session_log::{
-    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
-    TurnEndReason, WorkspaceRef,
+    MessageRecord, SessionError, SessionEvent, SessionHeader, SessionState, SessionStore,
+    SessionWriter, TurnEndReason, WorkspaceRef,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -658,6 +658,49 @@ impl AgentHostService {
         steer_queue: Arc<ActorSteerQueue>,
         recovered_steers: Vec<SteerMessage>,
     ) -> Result<(), AgentHostError> {
+        self.spawner()
+            .spawn(
+                header,
+                writer,
+                runtime,
+                state,
+                steer_queue,
+                recovered_steers,
+            )
+            .map(|_| ())
+    }
+
+    fn spawner(&self) -> ActorSpawner {
+        ActorSpawner {
+            store: self.store.clone(),
+            factory: self.factory.clone(),
+            sink: self.sink.clone(),
+            actors: Arc::downgrade(&self.actors),
+            idle_timeout: self.idle_timeout,
+        }
+    }
+}
+
+/// Everything needed to start and replace session actors.
+#[derive(Clone)]
+struct ActorSpawner {
+    store: SessionStore,
+    factory: Arc<dyn SessionRuntimeFactory>,
+    sink: Arc<SessionEventSink>,
+    actors: Weak<Mutex<HashMap<SessionId, Arc<SessionActor>>>>,
+    idle_timeout: Duration,
+}
+
+impl ActorSpawner {
+    fn spawn(
+        &self,
+        header: SessionHeader,
+        writer: SessionWriter,
+        runtime: SessionRuntime,
+        state: SessionState,
+        steer_queue: Arc<ActorSteerQueue>,
+        recovered_steers: Vec<SteerMessage>,
+    ) -> Result<Arc<SessionActor>, AgentHostError> {
         let session_id = header.id;
         let state = Arc::new(Mutex::new(state));
         let current_turn = Arc::new(Mutex::new(None::<TurnId>));
@@ -676,10 +719,12 @@ impl AgentHostService {
             running: running.clone(),
             state: state.clone(),
         });
-        self.actors
-            .lock()
-            .expect("agent host lock poisoned")
-            .insert(session_id, actor);
+        if let Some(actors) = self.actors.upgrade() {
+            actors
+                .lock()
+                .expect("agent host lock poisoned")
+                .insert(session_id, actor.clone());
+        }
         let spawn_ctx = runtime.ctx.clone();
         spawn_ctx
             .scope()
@@ -692,12 +737,80 @@ impl AgentHostService {
                 steer_queue,
                 running,
                 rx,
-                Arc::downgrade(&self.actors),
+                self.actors.clone(),
                 self.idle_timeout,
                 recovered_steers,
+                self.clone(),
             ))
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
-        Ok(())
+        Ok(actor)
+    }
+
+    /// Continue `previous` in a fresh session that points at the old log.
+    ///
+    /// A context that cannot be compacted must not be retried in place: the
+    /// history moves to a new log and the model is told where the old one is.
+    fn rotate(
+        &self,
+        previous: &SessionState,
+        old_log: &Path,
+        prompt: String,
+        images: Vec<alpha_schema::ImageAttachment>,
+    ) -> Result<SessionId, AgentHostError> {
+        let workspace = previous.workspace.clone();
+        let mut header = SessionHeader::new(SessionId::new(), previous.mode, workspace.clone());
+        header.provider = previous.provider.clone();
+        header.model = previous.model.clone();
+        let session_id = header.id;
+        let writer = self.store.create(header.clone())?;
+        let steer_queue = Arc::new(ActorSteerQueue::new());
+        let runtime = self.factory.build(SessionRuntimeRequest {
+            session_id,
+            workspace,
+            mode: previous.mode,
+            provider: previous.provider.clone(),
+            model: previous.model.clone(),
+            reasoning: previous.reasoning,
+            provider_tools_override: previous.provider_tools_override.clone(),
+            steer_queue: steer_queue.clone(),
+        })?;
+        let route = runtime.model_route.get();
+        let route_event = writer.append(SessionEvent::RouteChanged {
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            reasoning: route.reasoning,
+        })?;
+        let note = writer.append(SessionEvent::ContextInjected {
+            id: MessageId::new(),
+            key: "handoff".to_owned(),
+            text: format!(
+                "This session continues work that outgrew its context window. The earlier \
+                 conversation is not compacted; read its log at {} before you continue, and \
+                 keep using it for exact details the new history does not contain.",
+                old_log.display()
+            ),
+        })?;
+        let mut state = SessionState::new(&header);
+        state.apply(&route_event);
+        state.apply(&note);
+        let actor = self.spawn(header, writer, runtime, state, steer_queue, Vec::new())?;
+        let turn_id = TurnId::new();
+        actor
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| AgentHostError::SessionBusy(session_id))?;
+        actor
+            .tx
+            .send(SessionCommand::Submit {
+                turn_id,
+                prompt,
+                images,
+            })
+            .map_err(|_| {
+                actor.running.store(false, Ordering::SeqCst);
+                AgentHostError::ActorStopped(session_id)
+            })?;
+        Ok(session_id)
     }
 }
 
@@ -992,6 +1105,34 @@ fn install_live_observers(
     })
     .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
+    let compaction_sink = sink.clone();
+    let compaction_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentCompactionProgress, _>(move |event| {
+        let sink = compaction_sink.clone();
+        let turn = compaction_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = sink.publish(
+                session_id,
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id),
+                    stream_id: None,
+                    step_id: None,
+                    event: LiveAgentEvent::CompactionProgress {
+                        done: event.done,
+                        total: event.total,
+                    },
+                },
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
     let error_sink = sink;
     ctx.on_parallel::<alpha_module_loop::AgentError, _>(move |event| {
         let sink = error_sink.clone();
@@ -1027,10 +1168,12 @@ async fn actor_loop(
     actors: Weak<Mutex<HashMap<SessionId, Arc<SessionActor>>>>,
     idle_timeout: Duration,
     mut recovered_steers: Vec<SteerMessage>,
+    spawner: ActorSpawner,
 ) {
     let (completion_tx, mut completions) = mpsc::unbounded_channel();
     let mut cancel: Option<CancellationToken> = None;
     let mut active_turn: Option<TurnId> = None;
+    let mut active_prompt: Option<(String, Vec<alpha_schema::ImageAttachment>)> = None;
     let mut delete_reply = None;
     loop {
         tokio::select! {
@@ -1044,6 +1187,7 @@ async fn actor_loop(
                         prompt,
                         images,
                     } => {
+                        active_prompt = Some((prompt.clone(), images.clone()));
                         start_turn(
                             &runtime,
                             &writer,
@@ -1215,7 +1359,62 @@ async fn actor_loop(
                 *current_turn.lock().expect("turn lock poisoned") = None;
                 cancel = None;
                 active_turn = None;
-                let _ = completion.result;
+                let prompt = active_prompt.take();
+                let overflow = matches!(
+                    &completion.result,
+                    Err(LoopError::Context(error)) if error.requires_new_session()
+                );
+                // A session that is itself an unusable handoff must not hand
+                // off again: a gateway that cannot summarize would otherwise
+                // rotate sessions forever.
+                let can_rotate = {
+                    let state = state.lock().expect("session state lock poisoned");
+                    let handoff = state.messages.iter().any(|record| {
+                        matches!(record, MessageRecord::Context { key, .. } if key == "handoff")
+                    });
+                    !handoff
+                        || state
+                            .messages
+                            .iter()
+                            .any(|record| matches!(record, MessageRecord::Assistant { .. }))
+                };
+                if overflow
+                    && can_rotate
+                    && let Some((text, images)) = prompt
+                {
+                    let previous = state.lock().expect("session state lock poisoned").clone();
+                    let old_log = writer.dir().to_path_buf();
+                    match spawner.rotate(&previous, &old_log, text, images) {
+                        Ok(next) => {
+                            let _ = spawner.sink.publish(
+                                session_id,
+                                SessionEventNotification::Live {
+                                    session_id,
+                                    turn_id: None,
+                                    stream_id: None,
+                                    step_id: None,
+                                    event: LiveAgentEvent::SessionRotated { session_id: next },
+                                },
+                            );
+                        }
+                        Err(error) => {
+                            let _ = spawner.sink.publish(
+                                session_id,
+                                SessionEventNotification::Live {
+                                    session_id,
+                                    turn_id: None,
+                                    stream_id: None,
+                                    step_id: None,
+                                    event: LiveAgentEvent::Error {
+                                        message: format!(
+                                            "could not continue in a new session: {error}"
+                                        ),
+                                    },
+                                },
+                            );
+                        }
+                    }
+                }
                 let queued = steer_queue.drain();
                 if !queued.is_empty() {
                     for steer in &queued {
