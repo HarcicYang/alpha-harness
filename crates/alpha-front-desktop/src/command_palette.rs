@@ -138,62 +138,6 @@ impl AlphaDesktop {
 
         if event.keystroke.modifiers.secondary() {
             let handled = match key.as_str() {
-                "v" => {
-                    let Some(item) = cx.read_from_clipboard() else {
-                        return;
-                    };
-                    let mut attached = 0usize;
-                    for entry in item.entries() {
-                        match entry {
-                            ClipboardEntry::Image(image) => {
-                                self.runtime.attach_image_bytes(
-                                    format!("clipboard-{attached}.{}", image.format().extension()),
-                                    image.format().mime_type(),
-                                    image.bytes().to_vec(),
-                                );
-                                attached = attached.saturating_add(1);
-                            }
-                            ClipboardEntry::ExternalPaths(paths) => {
-                                for path in &paths.0 {
-                                    if is_image_path(path)
-                                        && self.runtime.attach_image(path).is_ok()
-                                    {
-                                        attached = attached.saturating_add(1);
-                                    }
-                                }
-                            }
-                            ClipboardEntry::String(text) => {
-                                for image in clipboard_images(text.text()) {
-                                    match image {
-                                        ClipboardImage::Path(path) => {
-                                            if self.runtime.attach_image(&path).is_ok() {
-                                                attached = attached.saturating_add(1);
-                                            }
-                                        }
-                                        ClipboardImage::Data {
-                                            name,
-                                            mime_type,
-                                            bytes,
-                                        } => {
-                                            self.runtime.attach_image_bytes(name, mime_type, bytes);
-                                            attached = attached.saturating_add(1);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if attached > 0 {
-                        self.local_status = Some(StatusMessage::success(format!(
-                            "attached {attached} image{}",
-                            if attached == 1 { "" } else { "s" }
-                        )));
-                        self.focus_composer(window, cx);
-                        true
-                    } else {
-                        false
-                    }
-                }
                 "n" => {
                     self.new_session(cx);
                     self.focus_composer(window, cx);
@@ -474,5 +418,69 @@ impl AlphaDesktop {
                 format!("command-dialog:{}", self.overlay_generation),
             ))
             .into_any_element()
+    }
+
+    /// Attach every image the clipboard carries.
+    ///
+    /// Bound through a keystroke interceptor rather than a key listener: the
+    /// composer binds `ctrl-v` to a text paste action, and dispatched actions
+    /// return before capture listeners run.
+    pub(crate) fn paste_clipboard_images(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            return false;
+        };
+        let mut attached = 0usize;
+        for entry in item.entries() {
+            match entry {
+                ClipboardEntry::Image(image) => {
+                    self.runtime.attach_image_bytes(
+                        format!("clipboard-{attached}.{}", image.format().extension()),
+                        image.format().mime_type(),
+                        image.bytes().to_vec(),
+                    );
+                    attached = attached.saturating_add(1);
+                }
+                ClipboardEntry::ExternalPaths(paths) => {
+                    for path in &paths.0 {
+                        if is_image_path(path) && self.runtime.attach_image(path).is_ok() {
+                            attached = attached.saturating_add(1);
+                        }
+                    }
+                }
+                ClipboardEntry::String(text) => {
+                    for image in clipboard_images(text.text()) {
+                        match image {
+                            ClipboardImage::Path(path) => {
+                                if self.runtime.attach_image(&path).is_ok() {
+                                    attached = attached.saturating_add(1);
+                                }
+                            }
+                            ClipboardImage::Data {
+                                name,
+                                mime_type,
+                                bytes,
+                            } => {
+                                self.runtime.attach_image_bytes(name, mime_type, bytes);
+                                attached = attached.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if attached == 0 {
+            return false;
+        }
+        self.local_status = Some(StatusMessage::success(format!(
+            "attached {attached} image{}",
+            if attached == 1 { "" } else { "s" }
+        )));
+        self.focus_composer(window, cx);
+        cx.notify();
+        true
     }
 }

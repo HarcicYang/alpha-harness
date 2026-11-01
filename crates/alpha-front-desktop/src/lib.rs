@@ -103,6 +103,7 @@ struct AlphaDesktop {
     _command_palette_subscription: Subscription,
     _session_search_subscription: Subscription,
     _capabilities_subscription: Subscription,
+    _paste_subscription: Subscription,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

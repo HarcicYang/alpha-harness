@@ -160,7 +160,22 @@ impl AlphaDesktop {
             _command_palette_subscription: command_palette_subscription,
             _session_search_subscription: session_search_subscription,
             _capabilities_subscription: capabilities_subscription,
+            _paste_subscription: cx.intercept_keystrokes(|_, _, _| {}),
         };
+        let paste_target = cx.entity().downgrade();
+        this._paste_subscription = cx.intercept_keystrokes(move |event, window, cx| {
+            if !event.keystroke.modifiers.secondary()
+                || !event.keystroke.key.eq_ignore_ascii_case("v")
+            {
+                return;
+            }
+            let attached = paste_target
+                .update(cx, |this, cx| this.paste_clipboard_images(window, cx))
+                .unwrap_or(false);
+            if attached {
+                cx.stop_propagation();
+            }
+        });
         this.transcript_list.set_follow_mode(FollowMode::Tail);
         let composer_focus = this.composer.read(cx).focus_handle(cx);
         window.focus(&composer_focus, cx);
