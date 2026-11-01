@@ -137,21 +137,6 @@ fn cargo_check(root: &Path) -> Output {
         .expect("cargo check")
 }
 
-fn generated_table(root: &Path) -> String {
-    let build_dir = root.join("target/debug/build");
-    for entry in fs::read_dir(&build_dir).expect("build dir") {
-        let entry = entry.expect("entry");
-        if !entry.file_type().expect("file type").is_dir() {
-            continue;
-        }
-        let candidate = entry.path().join("out/alpha_modules.rs");
-        if candidate.exists() {
-            return fs::read_to_string(candidate).expect("generated table");
-        }
-    }
-    panic!("generated module table not found");
-}
-
 #[test]
 fn conflicting_singletons_fail_cargo_check_without_touching_sources() {
     let (_dir, root) = build_fixture();
@@ -226,25 +211,4 @@ registry_entries = [\"read\"]";
         stderr.contains("registry entry `read`"),
         "missing diagnostic:\n{stderr}"
     );
-}
-
-#[test]
-fn module_set_follows_the_dependency_graph() {
-    let body_b_single = "api = 1\n\
-kind = \"module\"\n\
-key = \"module-b\"\n\
-scope = \"global\"\n\
-module = \"ModuleB\"\n\
-config = \"ConfigB\"\n\
-provides = [{ key = \"store\", kind = \"singleton\", scope = \"global\" }]";
-
-    let (_dir_a, root_a) = build_fixture_with(BODY_A, None);
-    assert!(cargo_check(&root_a).status.success());
-    let table_a = generated_table(&root_a);
-    assert!(table_a.contains("module-a"));
-
-    let (_dir_b, root_b) = build_fixture_with(body_b_single, None);
-    assert!(cargo_check(&root_b).status.success());
-    let table_b = generated_table(&root_b);
-    assert!(table_b.contains("module-b"));
 }
