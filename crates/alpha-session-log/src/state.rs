@@ -180,12 +180,15 @@ impl SessionState {
             SessionEvent::SteerQueued { .. } => {}
             SessionEvent::SteerDiscarded { .. } => {}
             SessionEvent::SteerInjected {
-                message_id, text, ..
+                message_id,
+                text,
+                images,
+                ..
             } => self.messages.push(MessageRecord::User {
                 seq: envelope.seq,
                 id: *message_id,
                 text: text.clone(),
-                images: Vec::new(),
+                images: images.clone(),
             }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::RequestHeader { .. } => {}

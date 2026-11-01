@@ -357,6 +357,65 @@ impl Tool for PreparedTool {
     }
 }
 
+#[derive(Default)]
+struct OneSteerQueue {
+    drained: AtomicBool,
+    images: Mutex<Vec<ImageAttachment>>,
+}
+
+impl alpha_module_loop::SteerQueue for OneSteerQueue {
+    fn drain(&self) -> Vec<alpha_module_loop::SteerMessage> {
+        if self.drained.swap(true, Ordering::SeqCst) {
+            return Vec::new();
+        }
+        vec![alpha_module_loop::SteerMessage {
+            steer_id: MessageId::new(),
+            turn_id: Default::default(),
+            text: "look at this".to_owned(),
+            images: self.images.lock().expect("images lock").clone(),
+        }]
+    }
+}
+
+#[tokio::test]
+async fn steer_images_reach_the_model_and_the_durable_log() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![CompletionResponse {
+        text: "done".to_owned(),
+        tool_calls: Vec::new(),
+        blocks: Vec::new(),
+    }]));
+    let images = vec![ImageAttachment {
+        name: "steer.png".to_owned(),
+        mime_type: "image/png".to_owned(),
+        data: "aGVsbG8=".to_owned(),
+    }];
+    let queue = Arc::new(OneSteerQueue {
+        drained: AtomicBool::new(false),
+        images: Mutex::new(images.clone()),
+    });
+    let agent = AgentLoop::new(provider.clone(), "scripted").with_steer_queue(queue);
+
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    run_turn(&agent, &writer, &state, "hi").await.expect("turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert!(requests[0].messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::UserContent { text, images: sent }
+            if text == "look at this" && sent == &images
+    )));
+    drop(requests);
+    drop(writer);
+
+    let reader = store.open_read(header.id).expect("read");
+    assert!(reader.events().iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::SteerInjected { images: sent, .. } if sent == &images
+    )));
+}
+
 fn store_and_header() -> (tempfile::TempDir, SessionStore, SessionHeader) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());

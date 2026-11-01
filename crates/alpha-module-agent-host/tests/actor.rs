@@ -512,7 +512,7 @@ fn pending_steers_require_confirmation() {
         let created = host
             .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
-        host.steer(created.session_id, "confirmed".to_owned())
+        host.steer(created.session_id, "confirmed".to_owned(), Vec::new())
             .await
             .expect("queue steer");
         let discarded = host
@@ -521,7 +521,7 @@ fn pending_steers_require_confirmation() {
             .expect("discard steer");
         assert_eq!(discarded.len(), 1);
         assert_eq!(discarded[0].text, "confirmed");
-        host.steer(created.session_id, "confirmed".to_owned())
+        host.steer(created.session_id, "confirmed".to_owned(), Vec::new())
             .await
             .expect("queue steer");
         host.confirm_steers(created.session_id, true)
@@ -565,7 +565,7 @@ fn pending_steers_survive_actor_restart() {
             .create_session(session_request(dir.path(), Default::default()))
             .expect("create");
         first
-            .steer(created.session_id, "pending".to_owned())
+            .steer(created.session_id, "pending".to_owned(), Vec::new())
             .await
             .expect("queue steer");
         first
@@ -630,7 +630,7 @@ fn running_steer_starts_the_next_turn_after_completion() {
         host.submit(created.session_id, "first".to_owned())
             .expect("submit");
         started.notified().await;
-        host.steer(created.session_id, "steer".to_owned())
+        host.steer(created.session_id, "steer".to_owned(), Vec::new())
             .await
             .expect("steer");
         release.notify_one();
@@ -678,7 +678,7 @@ fn active_steer_can_be_discarded_before_injection() {
         host.submit(created.session_id, "first".to_owned())
             .expect("submit");
         started.notified().await;
-        host.steer(created.session_id, "undo me".to_owned())
+        host.steer(created.session_id, "undo me".to_owned(), Vec::new())
             .await
             .expect("steer");
         let discarded = host

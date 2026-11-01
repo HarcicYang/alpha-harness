@@ -207,6 +207,7 @@ enum SessionCommand {
     },
     Steer {
         text: String,
+        images: Vec<alpha_schema::ImageAttachment>,
         reply: oneshot::Sender<Result<(), AgentHostError>>,
     },
     SetMode {
@@ -449,8 +450,13 @@ impl AgentHostService {
     }
 
     /// Queue a steer message for the current or next turn.
-    pub async fn steer(&self, session_id: SessionId, text: String) -> Result<(), AgentHostError> {
-        if text.trim().is_empty() {
+    pub async fn steer(
+        &self,
+        session_id: SessionId,
+        text: String,
+        images: Vec<alpha_schema::ImageAttachment>,
+    ) -> Result<(), AgentHostError> {
+        if text.trim().is_empty() && images.is_empty() {
             return Err(AgentHostError::Invalid("steer is empty".to_owned()));
         }
         let actor = self
@@ -459,7 +465,11 @@ impl AgentHostService {
         let (reply, receiver) = oneshot::channel();
         actor
             .tx
-            .send(SessionCommand::Steer { text, reply })
+            .send(SessionCommand::Steer {
+                text,
+                images,
+                reply,
+            })
             .map_err(|_| AgentHostError::ActorStopped(session_id))?;
         receiver
             .await
@@ -786,8 +796,9 @@ fn pending_steers(events: &[alpha_schema::EventEnvelope<SessionEvent>]) -> Vec<S
                 steer_id,
                 turn_id,
                 text,
+                images,
             } => {
-                queued.insert(*steer_id, (*turn_id, text.clone()));
+                queued.insert(*steer_id, (*turn_id, text.clone(), images.clone()));
             }
             SessionEvent::SteerInjected { steer_id, .. }
             | SessionEvent::SteerDiscarded { steer_id } => {
@@ -799,10 +810,11 @@ fn pending_steers(events: &[alpha_schema::EventEnvelope<SessionEvent>]) -> Vec<S
     queued
         .into_iter()
         .filter(|(steer_id, _)| !settled.contains(steer_id))
-        .map(|(steer_id, (turn_id, text))| SteerMessage {
+        .map(|(steer_id, (turn_id, text, images))| SteerMessage {
             steer_id,
             turn_id,
             text,
+            images,
         })
         .collect()
 }
@@ -1058,7 +1070,7 @@ async fn actor_loop(
                         };
                         let _ = reply.send(result);
                     }
-                    SessionCommand::Steer { text, reply } => {
+                    SessionCommand::Steer { text, images, reply } => {
                         let turn_id = active_turn.unwrap_or_default();
                         let steer_id = MessageId::new();
                         let result = writer
@@ -1066,6 +1078,7 @@ async fn actor_loop(
                                 steer_id,
                                 turn_id,
                                 text: text.clone(),
+                                images: images.clone(),
                             })
                             .map(|_| ())
                             .map_err(AgentHostError::Session)
@@ -1074,6 +1087,7 @@ async fn actor_loop(
                                     steer_id,
                                     turn_id,
                                     text,
+                                    images,
                                 })
                             });
                         let _ = reply.send(result);

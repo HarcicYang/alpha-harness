@@ -75,6 +75,9 @@ pub enum SessionEvent {
         turn_id: TurnId,
         /// Steer text.
         text: String,
+        /// Images attached to the steer.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
     },
     /// A queued steer was injected at a safe boundary.
     SteerInjected {
@@ -87,6 +90,9 @@ pub enum SessionEvent {
         message_id: MessageId,
         /// Steer text.
         text: String,
+        /// Images attached to the steer.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
     },
     /// A queued steer was discarded before injection.
     SteerDiscarded {

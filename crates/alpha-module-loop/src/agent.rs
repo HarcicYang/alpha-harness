@@ -31,6 +31,8 @@ pub struct SteerMessage {
     pub turn_id: TurnId,
     /// Steer text.
     pub text: String,
+    /// Images attached to the steer.
+    pub images: Vec<alpha_schema::ImageAttachment>,
 }
 
 /// Queue drained by the loop at step boundaries.
@@ -439,8 +441,16 @@ impl AgentLoop {
                 turn_id: steer.turn_id,
                 message_id,
                 text: steer.text.clone(),
+                images: steer.images.clone(),
             })?;
-            messages.push(ChatMessage::User(steer.text));
+            messages.push(if steer.images.is_empty() {
+                ChatMessage::User(steer.text)
+            } else {
+                ChatMessage::UserContent {
+                    text: steer.text,
+                    images: steer.images,
+                }
+            });
         }
         Ok(())
     }

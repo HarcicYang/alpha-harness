@@ -467,14 +467,13 @@ impl FrontRuntime {
             .session_id
             .ok_or_else(|| FrontError::Protocol("no active session".to_owned()))?;
         if self.chat.running_turn.is_some() {
-            if !images.is_empty() {
-                return Err(FrontError::Protocol(
-                    "images cannot be added to a running turn".to_owned(),
-                ));
-            }
             self.supervisor.request(
                 "session.steer",
-                Some(json!({ "sessionId": session_id, "text": prompt })),
+                Some(json!({
+                    "sessionId": session_id,
+                    "text": prompt,
+                    "images": images,
+                })),
             )?;
             self.chat.status = Some("steer queued".to_owned());
         } else {

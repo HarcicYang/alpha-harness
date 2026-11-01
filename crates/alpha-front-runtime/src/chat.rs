@@ -442,7 +442,12 @@ impl ChatState {
                 });
                 Some("steer queued".to_owned())
             }
-            SessionEvent::SteerInjected { steer_id, text, .. } => {
+            SessionEvent::SteerInjected {
+                steer_id,
+                text,
+                images,
+                ..
+            } => {
                 self.transcript.retain(|item| {
                     !matches!(
                         item,
@@ -451,7 +456,7 @@ impl ChatState {
                 });
                 self.transcript.push(TranscriptItem::User {
                     text: text.clone(),
-                    images: Vec::new(),
+                    images: images.clone(),
                 });
                 Some("steer injected".to_owned())
             }
@@ -1065,6 +1070,7 @@ mod tests {
                     steer_id: injected_id,
                     turn_id,
                     text: "adjust direction".to_owned(),
+                    images: Vec::new(),
                 },
             ),
         });
@@ -1086,6 +1092,7 @@ mod tests {
                     turn_id,
                     message_id: MessageId::new(),
                     text: "adjust direction".to_owned(),
+                    images: Vec::new(),
                 },
             ),
         });
@@ -1107,6 +1114,7 @@ mod tests {
                     steer_id: discarded_id,
                     turn_id,
                     text: "undo this".to_owned(),
+                    images: Vec::new(),
                 },
             ),
         });
