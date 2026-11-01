@@ -144,7 +144,9 @@ impl AlphaDesktop {
                         Textarea::new(&self.composer)
                             .appearance(false)
                             .bordered(false)
-                            .h(px(50.))
+                            // Let `auto_grow(1, 6)` size the field: a fixed height
+                            // pins it to one line and hides every extra line.
+                            .min_h(px(50.))
                             .aria_label("Message"),
                     )
                     .child(
