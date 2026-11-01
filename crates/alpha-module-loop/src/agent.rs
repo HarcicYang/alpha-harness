@@ -644,9 +644,18 @@ fn output_budget(
     let Some(window) = window.filter(|window| *window > 0) else {
         return Some(limit);
     };
-    let used = usize::try_from(used.unwrap_or(0)).unwrap_or(usize::MAX);
-    let headroom = window.saturating_sub(used).saturating_sub(window / 20);
-    Some(u64::try_from(headroom).unwrap_or(u64::MAX).min(limit))
+    // Without a reported prompt size the request only has room for a quarter of
+    // the window: a session that was opened before usage was recorded must not
+    // reserve a full output budget on top of an almost full context.
+    let available = match used {
+        Some(used) => {
+            let used = usize::try_from(used).unwrap_or(usize::MAX);
+            window.saturating_sub(used).saturating_sub(window / 20)
+        }
+        None => window / 4,
+    }
+    .max(1024);
+    Some(u64::try_from(available).unwrap_or(u64::MAX).min(limit))
 }
 
 fn record_partial_blocks(

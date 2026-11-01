@@ -1072,6 +1072,9 @@ fn serve_router_concurrent<R: BufRead, W: Write + Send + 'static>(
         .enable_all()
         .build()
         .map_err(ServeError::Runtime)?;
+    // Per-model limits gate request shaping and compaction, so no turn may run
+    // before the catalogs they come from are known.
+    runtime.block_on(warm_catalogs(&shutdown_ctx));
     let writer_thread = thread::spawn(move || {
         let mut writer = writer;
         while let Some(message) = outbound.blocking_recv() {
@@ -1280,24 +1283,19 @@ fn build_router_with_transport(
     }
 }
 
-/// Discover every enabled provider catalog once at startup.
+/// Discover every enabled provider catalog before serving requests.
 ///
 /// Per-model limits live in the catalog endpoint, and request shaping and
-/// compaction read them from the registry. Without a warm-up the runtime only
-/// knows the limits a frontend happened to request.
-fn warm_catalogs(ctx: &Ctx) {
-    // A host without a reactor (host tests, `alpha-min`) keeps the catalogs that
-    // frontends request explicitly.
-    if tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
-    let Ok(instances) = ctx.require::<ProviderInstanceRegistry>() else {
+/// compaction read them from the registry. Without this warm-up the first turn
+/// of a session could run on limits nobody has fetched yet.
+pub async fn warm_catalogs(ctx: &Ctx) {
+    let Some(instances) = ctx.get::<ProviderInstanceRegistry>() else {
         return;
     };
-    let Ok(kinds) = ctx.require::<ProviderKindRegistry>() else {
+    let Some(kinds) = ctx.get::<ProviderKindRegistry>() else {
         return;
     };
-    let Ok(http) = ctx.require::<dyn HttpClient>() else {
+    let Some(http) = ctx.get::<dyn HttpClient>() else {
         return;
     };
     for instance in instances
@@ -1311,13 +1309,11 @@ fn warm_catalogs(ctx: &Ctx) {
         let Ok(credential) = resolve_credential(ctx, &instance) else {
             continue;
         };
-        let registry = instances.clone();
-        let http = http.clone();
-        let _ = ctx.scope().spawn(async move {
-            if let Ok(models) = discover_models(&instance, kind.as_ref(), http, credential).await {
-                registry.cache_catalog(&instance.id, models);
-            }
-        });
+        if let Ok(models) =
+            discover_models(&instance, kind.as_ref(), http.clone(), credential).await
+        {
+            instances.cache_catalog(&instance.id, models);
+        }
     }
 }
 
@@ -1329,7 +1325,6 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
         .require::<ProviderInstanceRegistry>()
         .expect("provider instance registry is required by the core");
     let config_store = ctx.get::<dyn ProviderConfigStore>();
-    warm_catalogs(&ctx);
 
     let router = router.method("provider.credential_status", {
         let ctx = ctx.clone();
