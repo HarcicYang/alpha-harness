@@ -1,9 +1,14 @@
 use super::*;
+use std::cell::Cell;
+
+use crate::ui::{SCROLL_EXTERNAL_DISTANCE, SCROLL_MAX_FRAME_TIME, SCROLL_TIME_CONSTANT};
 
 impl AlphaDesktop {
     pub(crate) fn scroll_handle(&self, region: ScrollRegion) -> &ScrollHandle {
         match region {
-            ScrollRegion::Transcript => &self.transcript_scroll,
+            ScrollRegion::Transcript => {
+                unreachable!("the transcript uses GPUI list scrolling")
+            }
             ScrollRegion::ModelPicker => &self.model_scroll,
             ScrollRegion::Sessions => &self.session_scroll,
             ScrollRegion::ProviderKinds => &self.provider_kind_scroll,
@@ -25,23 +30,44 @@ impl AlphaDesktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if region == ScrollRegion::Transcript {
+            self.transcript_motion
+                .prepare(&self.transcript_list, window, cx);
+            return;
+        }
         let handle = self.scroll_handle(region).clone();
         self.scroll_motion[region.index()].prepare(&handle, window, cx);
     }
 
     pub(crate) fn prepare_tool_scroll_motion(&self, window: &mut Window, cx: &mut Context<Self>) {
-        for state in self.tool_outputs.values() {
+        for state in self.tool_outputs.values().filter(|state| state.expanded) {
             state.scroll_motion.prepare(&state.scroll, window, cx);
         }
     }
 
     pub(crate) fn reset_scroll(&mut self, region: ScrollRegion) {
+        if region == ScrollRegion::Transcript {
+            self.transcript_list.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+            self.transcript_motion.reset(0.);
+            return;
+        }
         let handle = self.scroll_handle(region).clone();
         handle.set_offset(point(px(0.), px(0.)));
         self.scroll_motion[region.index()].reset(f32::from(handle.offset().y));
     }
 
     pub(crate) fn scroll_to_bottom(&mut self, region: ScrollRegion) {
+        if region == ScrollRegion::Transcript {
+            self.transcript_list.set_follow_mode(FollowMode::Tail);
+            self.transcript_list.scroll_to_end();
+            self.transcript_motion.reset(-f32::from(
+                self.transcript_list.max_offset_for_scrollbar().y,
+            ));
+            return;
+        }
         let handle = self.scroll_handle(region).clone();
         self.scroll_motion[region.index()].reset(f32::from(handle.offset().y));
         handle.scroll_to_bottom();
@@ -59,6 +85,13 @@ impl AlphaDesktop {
             return;
         }
 
+        if region == ScrollRegion::Transcript {
+            self.transcript_motion.push(&self.transcript_list, delta);
+            window.prevent_default();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let handle = self.scroll_handle(region).clone();
         self.scroll_motion[region.index()].push(&handle, delta);
         window.prevent_default();
@@ -93,5 +126,113 @@ impl AlphaDesktop {
         };
         state.scroll.set_offset(point(px(0.), px(0.)));
         state.scroll_motion.reset(0.);
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SmoothListScroll {
+    applied_y: Cell<f32>,
+    remaining_y: Cell<f32>,
+    last_frame: Cell<Option<Instant>>,
+}
+
+impl SmoothListScroll {
+    pub(crate) fn reset(&self, offset_y: f32) {
+        self.applied_y.set(offset_y);
+        self.remaining_y.set(0.);
+        self.last_frame.set(Some(Instant::now()));
+    }
+
+    pub(crate) fn push(&self, list: &ListState, delta_y: f32) {
+        let actual_y = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+        if (actual_y - self.applied_y.get()).abs() > SCROLL_EXTERNAL_DISTANCE {
+            self.reset(actual_y);
+        }
+        let maximum = f32::from(list.max_offset_for_scrollbar().y).max(0.);
+        let applied_y = self.applied_y.get();
+        let target_y = (applied_y + self.remaining_y.get() - delta_y).clamp(0., maximum);
+        self.remaining_y.set(target_y - applied_y);
+        self.last_frame.set(Some(Instant::now()));
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        list: &ListState,
+        window: &mut Window,
+        cx: &mut Context<AlphaDesktop>,
+    ) {
+        let now = Instant::now();
+        let actual_y = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+        if (actual_y - self.applied_y.get()).abs() > SCROLL_EXTERNAL_DISTANCE {
+            self.reset(actual_y);
+            return;
+        }
+        let remaining_y = self.remaining_y.get();
+        if remaining_y == 0. {
+            self.last_frame.set(Some(now));
+            return;
+        }
+        let maximum = f32::from(list.max_offset_for_scrollbar().y).max(0.);
+        let elapsed = self.last_frame.get().map_or(Duration::ZERO, |last_frame| {
+            now.saturating_duration_since(last_frame)
+                .min(SCROLL_MAX_FRAME_TIME)
+        });
+        let progress = 1. - (-(elapsed.as_secs_f32()) / SCROLL_TIME_CONSTANT.as_secs_f32()).exp();
+        let (consumed_y, next_remaining) =
+            smooth_list_scroll_step(actual_y, maximum, remaining_y, progress, cx.reduce_motion());
+        if consumed_y.abs() > 0.001 {
+            list.scroll_by(px(consumed_y));
+        }
+        let next_y = (actual_y + consumed_y).clamp(0., maximum);
+        self.remaining_y.set(if next_remaining.abs() <= 0.05 {
+            0.
+        } else {
+            next_remaining
+        });
+        self.applied_y.set(next_y);
+        self.last_frame.set(Some(now));
+        if self.remaining_y.get() != 0. {
+            window.request_animation_frame();
+        }
+    }
+}
+
+pub(crate) fn smooth_list_scroll_step(
+    actual_y: f32,
+    maximum_y: f32,
+    remaining_y: f32,
+    progress: f32,
+    reduce_motion: bool,
+) -> (f32, f32) {
+    let actual_y = actual_y.clamp(0., maximum_y.max(0.));
+    let maximum_y = maximum_y.max(0.);
+    let bounded_remaining = remaining_y.clamp(-actual_y, maximum_y - actual_y);
+    let consumed_y = if reduce_motion {
+        bounded_remaining
+    } else {
+        bounded_remaining * progress.clamp(0., 1.)
+    };
+    (consumed_y, remaining_y - consumed_y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::smooth_list_scroll_step;
+
+    #[test]
+    fn smooth_list_scroll_handles_both_directions_and_boundaries() {
+        let (down, down_remaining) = smooth_list_scroll_step(100., 1_000., 80., 0.25, false);
+        let (up, up_remaining) = smooth_list_scroll_step(100., 1_000., -80., 0.25, false);
+        let (top, remaining_at_top) = smooth_list_scroll_step(10., 1_000., -80., 1., false);
+        let (reduced, reduced_remaining) = smooth_list_scroll_step(100., 1_000., -80., 0.25, true);
+
+        assert_eq!(down, 20.);
+        assert_eq!(down_remaining, 60.);
+        assert_eq!(up, -20.);
+        assert_eq!(up_remaining, -60.);
+        assert_eq!(top, -10.);
+        assert_eq!(remaining_at_top, -70.);
+        assert_eq!(reduced, -80.);
+        assert_eq!(reduced_remaining, 0.);
     }
 }

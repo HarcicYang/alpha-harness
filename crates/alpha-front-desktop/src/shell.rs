@@ -237,7 +237,7 @@ impl Render for AlphaDesktop {
             )
         };
         let context = self.runtime.context();
-        let transcript_at_bottom = transcript_is_at_bottom(&self.transcript_scroll);
+        let transcript_at_bottom = transcript_is_at_bottom(&self.transcript_list);
         let jump_to_latest_hidden = self
             .jump_to_latest_hidden_until
             .is_some_and(|deadline| Instant::now() < deadline);
@@ -315,43 +315,25 @@ impl Render for AlphaDesktop {
                     .flex_1()
                     .min_h(px(0.))
                     .smooth_scroll_shell(ScrollRegion::Transcript, cx)
-                    .child(
-                        div()
-                            .id("transcript")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.transcript_scroll)
-                            .pr(px(SCROLLBAR_GUTTER))
-                            .child(
-                                div()
-                                    .w(px(CONTENT_WIDTH))
-                                    .max_w_full()
-                                    .mx_auto()
-                                    .px(px(24.))
-                                    .pt(px(14.))
-                                    .pb(px(28.))
-                                    .child(self.render_transcript(
-                                        viewport_height,
-                                        viewport_width,
-                                        cx,
-                                    ))
-                                    .when_some(interaction, |this, interaction| {
-                                        let animation_id =
-                                            format!("permission:{:?}", interaction.id);
-                                        this.child(enter_from_below(
-                                            div().child(
-                                                self.render_permission_card(interaction, cx),
-                                            ),
-                                            animation_id,
-                                        ))
-                                    }),
-                            ),
-                    )
-                    .child(scrollbar_rail(
+                    .child(self.render_transcript(viewport_height, viewport_width, cx))
+                    .child(list_scrollbar_rail(
                         "transcript".to_owned(),
-                        &self.transcript_scroll,
+                        &self.transcript_list,
                     )),
             )
+            .when_some(interaction, |this, interaction| {
+                let animation_id = format!("permission:{:?}", interaction.id);
+                this.child(enter_from_below(
+                    div()
+                        .w(px(CONTENT_WIDTH))
+                        .max_w_full()
+                        .mx_auto()
+                        .px(px(20.))
+                        .pb(px(8.))
+                        .child(self.render_permission_card(interaction, cx)),
+                    animation_id,
+                ))
+            })
             .when(!queued_steers.is_empty(), |this| {
                 this.child(self.render_queued_steer(&queued_steers, cx))
             })

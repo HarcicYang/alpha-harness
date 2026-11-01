@@ -134,10 +134,8 @@ pub(crate) fn compact_json(value: &serde_json::Value) -> String {
     }
 }
 
-pub(crate) fn transcript_is_at_bottom(scroll: &ScrollHandle) -> bool {
-    let offset = -scroll.offset().y;
-    let maximum = scroll.max_offset().y;
-    offset >= maximum - px(4.) && offset <= maximum + px(4.)
+pub(crate) fn transcript_is_at_bottom(list: &ListState) -> bool {
+    list.is_following_tail() || list.is_scrolled_to_end().unwrap_or(true)
 }
 
 pub(crate) fn tool_status_label(status: Option<ToolStatus>) -> &'static str {

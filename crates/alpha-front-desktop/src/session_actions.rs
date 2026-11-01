@@ -29,6 +29,7 @@ impl AlphaDesktop {
         match self.runtime.resume_session(session_id) {
             Ok(_) => {
                 self.transcript_epoch = self.transcript_epoch.wrapping_add(1).max(1);
+                self.transcript_animation_floor = 0;
                 self.transcript_dirty = true;
                 self.sessions_open = false;
                 self.session_delete_confirm = None;
@@ -50,6 +51,7 @@ impl AlphaDesktop {
 
     pub(crate) fn new_session(&mut self, cx: &mut Context<Self>) {
         self.transcript_epoch = self.transcript_epoch.wrapping_add(1).max(1);
+        self.transcript_animation_floor = 0;
         self.transcript_dirty = true;
         self.runtime.new_session();
         self.sessions_open = false;

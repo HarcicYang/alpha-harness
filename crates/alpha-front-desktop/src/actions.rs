@@ -1,6 +1,5 @@
 use super::*;
 use crate::helpers::*;
-use crate::model::*;
 
 impl AlphaDesktop {
     pub(crate) fn new(
@@ -132,6 +131,7 @@ impl AlphaDesktop {
             overlay_generation: 0,
             slash_palette_open: false,
             transcript_epoch: 0,
+            transcript_animation_floor: 0,
             context_tab_generation: 0,
             model_scroll: ScrollHandle::new(),
             session_scroll: ScrollHandle::new(),
@@ -146,7 +146,8 @@ impl AlphaDesktop {
             composer_menu_scroll: ScrollHandle::new(),
             workspace_list_scroll: ScrollHandle::new(),
             workspace_session_scroll: ScrollHandle::new(),
-            transcript_scroll: ScrollHandle::new(),
+            transcript_list: ListState::new(0, ListAlignment::Top, px(600.)),
+            transcript_motion: SmoothListScroll::default(),
             scroll_motion: std::array::from_fn(|_| SmoothScroll::default()),
             transcript_items: Arc::new(Vec::new()),
             transcript_dirty: true,
@@ -160,6 +161,7 @@ impl AlphaDesktop {
             _session_search_subscription: session_search_subscription,
             _capabilities_subscription: capabilities_subscription,
         };
+        this.transcript_list.set_follow_mode(FollowMode::Tail);
         let composer_focus = this.composer.read(cx).focus_handle(cx);
         window.focus(&composer_focus, cx);
         this._poll_task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -180,7 +182,6 @@ impl AlphaDesktop {
                             this.submit_requested = false;
                             this.submit_composer(window, cx);
                         }
-                        let follow_transcript = transcript_is_at_bottom(&this.transcript_scroll);
                         let mut changed = this.runtime.expire_interaction().unwrap_or(false);
                         let mut any_workspace_changed = changed;
                         match this.runtime.poll_workspaces() {
@@ -199,15 +200,7 @@ impl AlphaDesktop {
                             cx.notify();
                         }
                         this.transcript_dirty |= changed;
-                        if this.runtime.chat().interaction.is_some() {
-                            cx.notify();
-                        }
-                        if changed {
-                            if follow_transcript {
-                                this.scroll_to_bottom(ScrollRegion::Transcript);
-                            }
-                            cx.notify();
-                        } else if any_workspace_changed {
+                        if changed || any_workspace_changed {
                             cx.notify();
                         }
                     })

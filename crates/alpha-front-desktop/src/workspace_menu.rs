@@ -73,6 +73,7 @@ impl AlphaDesktop {
 
     fn after_workspace_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.transcript_epoch = self.transcript_epoch.wrapping_add(1).max(1);
+        self.transcript_animation_floor = 0;
         self.transcript_dirty = true;
         self.command_palette_open = false;
         self.context_open = false;

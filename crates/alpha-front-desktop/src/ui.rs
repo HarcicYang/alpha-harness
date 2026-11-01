@@ -3,9 +3,9 @@ use std::cell::Cell;
 
 pub(crate) const SCROLL_REGION_COUNT: usize = 13;
 pub(crate) const SCROLLBAR_GUTTER: f32 = 14.;
-const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(32);
-const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(16);
-const SCROLL_EXTERNAL_DISTANCE: f32 = 0.25;
+pub(crate) const SCROLL_TIME_CONSTANT: Duration = Duration::from_millis(32);
+pub(crate) const SCROLL_MAX_FRAME_TIME: Duration = Duration::from_millis(16);
+pub(crate) const SCROLL_EXTERNAL_DISTANCE: f32 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScrollRegion {
@@ -171,6 +171,52 @@ pub(crate) fn scrollbar_rail(id: String, handle: &ScrollHandle) -> AnyElement {
         .into_any_element()
 }
 
+pub(crate) fn list_scrollbar_rail(id: String, list: &ListState) -> AnyElement {
+    div()
+        .id(format!("scrollbar-rail:{id}"))
+        .absolute()
+        .top(px(6.))
+        .right(px(2.))
+        .bottom(px(6.))
+        .w(px(10.))
+        .child(
+            Scrollbar::vertical(list)
+                .id(format!("scrollbar:{id}"))
+                .viewport_from_layout()
+                .mode(ScrollbarMode::Always)
+                .max_fps(120)
+                .styles(|styles| {
+                    styles
+                        .track(|style| style.bg(transparent_black()).width(px(10.)))
+                        .track_hover(|style| style.bg(rgba(0xffffff05).into()).width(px(10.)))
+                        .track_active(|style| style.bg(rgba(0xffffff08).into()).width(px(10.)))
+                        .thumb(|style| {
+                            style
+                                .bg(rgba(0x7077808a))
+                                .width(px(4.))
+                                .inset(px(3.))
+                                .radius(px(999.))
+                                .min_length(px(28.))
+                        })
+                        .thumb_hover(|style| {
+                            style
+                                .bg(rgba(0xa7adb5c7))
+                                .width(px(5.))
+                                .inset(px(2.5))
+                                .radius(px(999.))
+                        })
+                        .thumb_active(|style| {
+                            style
+                                .bg(rgba(0x5cc8e6d9))
+                                .width(px(5.))
+                                .inset(px(2.5))
+                                .radius(px(999.))
+                        })
+                }),
+        )
+        .into_any_element()
+}
+
 pub(crate) fn pulse_dot() -> AnyElement {
     div()
         .relative()
@@ -185,17 +231,7 @@ pub(crate) fn pulse_dot() -> AnyElement {
                 .rounded_full()
                 .border_1()
                 .border_color(rgba(ACCENT_BORDER))
-                .with_animation(
-                    "connection-pulse",
-                    Animation::new(Duration::from_millis(3200)).repeat(),
-                    |ring, progress| {
-                        let spread = 3. * progress;
-                        ring.top(px(-spread))
-                            .left(px(-spread))
-                            .size(px(6. + spread * 2.))
-                            .opacity((1. - progress) * 0.65)
-                    },
-                ),
+                .opacity(0.45),
         )
         .into_any_element()
 }
@@ -210,31 +246,20 @@ pub(crate) fn streaming_dots() -> AnyElement {
                 .size(px(4.))
                 .rounded_full()
                 .bg(rgb(ACCENT))
-                .with_animation(
-                    format!("streaming-dot:{index}"),
-                    Animation::new(Duration::from_millis(1100)).repeat(),
-                    move |dot, progress| {
-                        let phase = (progress - index as f32 * 0.12).rem_euclid(1.);
-                        let wave = (phase * std::f32::consts::TAU).sin().max(0.);
-                        dot.top(px(-3. * wave)).opacity(0.35 + wave * 0.65)
-                    },
-                )
+                .opacity(0.45 + index as f32 * 0.2)
                 .into_any_element()
         }))
         .into_any_element()
 }
 
 pub(crate) fn stream_cursor(id: impl Into<ElementId>) -> AnyElement {
+    let _ = id.into();
     div()
         .h(px(2.))
         .w(px(12.))
         .rounded_full()
         .bg(rgb(ACCENT))
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |cursor, progress| cursor.opacity(if progress < 0.5 { 1. } else { 0.15 }),
-        )
+        .opacity(0.72)
         .into_any_element()
 }
 

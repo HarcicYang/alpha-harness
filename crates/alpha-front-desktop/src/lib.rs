@@ -74,6 +74,7 @@ struct AlphaDesktop {
     overlay_generation: u64,
     slash_palette_open: bool,
     transcript_epoch: u64,
+    transcript_animation_floor: usize,
     context_tab_generation: u64,
     model_scroll: ScrollHandle,
     session_scroll: ScrollHandle,
@@ -88,7 +89,8 @@ struct AlphaDesktop {
     composer_menu_scroll: ScrollHandle,
     workspace_list_scroll: ScrollHandle,
     workspace_session_scroll: ScrollHandle,
-    transcript_scroll: ScrollHandle,
+    transcript_list: ListState,
+    transcript_motion: SmoothListScroll,
     scroll_motion: [SmoothScroll; SCROLL_REGION_COUNT],
     transcript_items: Arc<Vec<DesktopTranscriptItem>>,
     transcript_dirty: bool,
@@ -173,6 +175,7 @@ mod workspace_menu;
 use desktop_commands::*;
 use helpers::*;
 use model::*;
+use scroll::*;
 use session_summary::*;
 use theme::*;
 use ui::*;
@@ -204,6 +207,17 @@ pub fn run_desktop(runtime: FrontRuntimeManager) -> Result<(), DesktopError> {
     Ok(())
 }
 
+/// Front entry for `alpha desktop`.
+pub fn __front_desktop(
+    request: alpha_host_api::FrontRequest,
+) -> Result<(), alpha_host_api::FrontError> {
+    let runtime = alpha_front_runtime::FrontRuntimeManager::start(
+        alpha_front_runtime::runtime_config(&request),
+    )
+    .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+    run_desktop(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use alpha_front_runtime::{ContextView, TranscriptItem};
@@ -233,6 +247,7 @@ mod tests {
                 name: "read".to_owned(),
                 status: ToolStatus::Completed,
                 content: "README".to_owned(),
+                images: Vec::new(),
             },
             TranscriptItem::ToolCall {
                 id: second,
@@ -244,6 +259,7 @@ mod tests {
                 name: "grep".to_owned(),
                 status: ToolStatus::Completed,
                 content: "4 matches".to_owned(),
+                images: Vec::new(),
             },
         ];
 
@@ -274,6 +290,7 @@ mod tests {
                 name: "grep".to_owned(),
                 status: ToolStatus::Completed,
                 content: "first result".to_owned(),
+                images: Vec::new(),
             },
             TranscriptItem::AssistantMessage {
                 blocks: vec![alpha_schema::AssistantContentBlock::LocalToolCall {
@@ -292,6 +309,7 @@ mod tests {
                 name: "shell".to_owned(),
                 status: ToolStatus::Completed,
                 content: "workspace".to_owned(),
+                images: Vec::new(),
             },
         ]);
 
@@ -433,15 +451,4 @@ mod tests {
         );
         assert!(command_suggestions("missing").is_empty());
     }
-}
-
-/// Front entry for `alpha desktop`.
-pub fn __front_desktop(
-    request: alpha_host_api::FrontRequest,
-) -> Result<(), alpha_host_api::FrontError> {
-    let runtime = alpha_front_runtime::FrontRuntimeManager::start(
-        alpha_front_runtime::runtime_config(&request),
-    )
-    .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
-    run_desktop(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
 }
