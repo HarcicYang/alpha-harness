@@ -438,6 +438,21 @@ fn wire_message(message: &ChatMessage) -> Value {
     match message {
         ChatMessage::System(text) => json!({ "role": "system", "content": text }),
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+        ChatMessage::UserContent { text, images } => {
+            let mut content = Vec::new();
+            if !text.is_empty() {
+                content.push(json!({ "type": "text", "text": text }));
+            }
+            content.extend(images.iter().map(|image| {
+                json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}", image.mime_type, image.data),
+                    },
+                })
+            }));
+            json!({ "role": "user", "content": content })
+        }
         ChatMessage::Assistant(text) => json!({ "role": "assistant", "content": text }),
         ChatMessage::AssistantToolCalls { text, calls } => json!({
             "role": "assistant",

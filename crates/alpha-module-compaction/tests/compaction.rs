@@ -8,8 +8,8 @@ use alpha_module_compaction::{
 use alpha_module_loop::{
     CompletionRequest, CompletionResponse, ContextPreparer, ModelProvider, ProviderError,
 };
-use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 use alpha_schema::{MessageId, PermissionMode, SessionId};
+use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 use futures::future::BoxFuture;
 
 struct SummaryProvider {
@@ -88,6 +88,7 @@ fn append_history(writer: &alpha_session_log::SessionWriter) -> SessionState {
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "a".repeat(200),
+                images: Vec::new(),
             })
             .expect("first user"),
         writer
@@ -101,6 +102,7 @@ fn append_history(writer: &alpha_session_log::SessionWriter) -> SessionState {
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "c".repeat(200),
+                images: Vec::new(),
             })
             .expect("second user"),
     ];

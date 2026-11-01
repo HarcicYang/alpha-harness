@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use alpha_protocol::Id;
 use alpha_schema::{
-    AssistantContentBlock, EventEnvelope, LiveAgentEvent, MessageId, PermissionMode,
-    ReasoningLevel, Seq, SessionEvent, SessionEventNotification, SessionId, Timestamp, ToolCallId,
-    ToolStatus, TurnEndReason, TurnId,
+    AssistantContentBlock, EventEnvelope, ImageAttachment, LiveAgentEvent, MessageId,
+    PermissionMode, ReasoningLevel, Seq, SessionEvent, SessionEventNotification, SessionId,
+    Timestamp, ToolCallId, ToolStatus, TurnEndReason, TurnId,
 };
 use serde_json::Value;
 
@@ -16,6 +16,8 @@ pub enum TranscriptItem {
     User {
         /// Message text.
         text: String,
+        /// Attached images.
+        images: Vec<ImageAttachment>,
     },
     /// A steer message waiting in the bounded queue.
     QueuedSteer {
@@ -328,7 +330,7 @@ impl ChatState {
     /// Visible text in a transcript item, when it has a textual body.
     pub fn item_text(item: &TranscriptItem) -> Option<&str> {
         match item {
-            TranscriptItem::User { text }
+            TranscriptItem::User { text, .. }
             | TranscriptItem::QueuedSteer { text, .. }
             | TranscriptItem::AssistantDelta { text }
             | TranscriptItem::ThinkingDelta { text } => Some(text),
@@ -357,9 +359,11 @@ impl ChatState {
         self.last_seq = Some(envelope.seq);
         self.project_context(envelope);
         let status = match &envelope.payload {
-            SessionEvent::UserMessage { text, .. } => {
-                self.transcript
-                    .push(TranscriptItem::User { text: text.clone() });
+            SessionEvent::UserMessage { text, images, .. } => {
+                self.transcript.push(TranscriptItem::User {
+                    text: text.clone(),
+                    images: images.clone(),
+                });
                 self.streaming_assistant = None;
                 self.streaming_thinking = None;
                 None
@@ -441,8 +445,10 @@ impl ChatState {
                         TranscriptItem::QueuedSteer { id, .. } if id == steer_id
                     )
                 });
-                self.transcript
-                    .push(TranscriptItem::User { text: text.clone() });
+                self.transcript.push(TranscriptItem::User {
+                    text: text.clone(),
+                    images: Vec::new(),
+                });
                 Some("steer injected".to_owned())
             }
             SessionEvent::SteerDiscarded { steer_id } => {
@@ -1080,6 +1086,7 @@ mod tests {
             state.transcript,
             vec![TranscriptItem::User {
                 text: "adjust direction".to_owned(),
+                images: Vec::new(),
             }]
         );
 
@@ -1229,6 +1236,7 @@ mod tests {
                     SessionEvent::UserMessage {
                         id: MessageId::new(),
                         text: text.to_owned(),
+                        images: Vec::new(),
                     },
                 ),
             });

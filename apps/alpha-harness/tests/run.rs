@@ -12,11 +12,11 @@ use alpha_module_loop::{
     CompletionResponse, LoopError, ModelProvider, ProviderError, ToolCall, TurnOutcome,
 };
 use alpha_module_permission::ApprovalChannel;
+use alpha_schema::{EventEnvelope, MessageId, PermissionMode};
 use alpha_session_log::{
     MessageRecord, SessionEvent, SessionState, SessionStore, SessionWriter, ToolStatus,
     TurnEndReason,
 };
-use alpha_schema::{EventEnvelope, MessageId, PermissionMode};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde_json::json;
@@ -429,6 +429,7 @@ impl AgentDriver for FixedDriver {
             writer.append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: prompt.to_owned(),
+                images: Vec::new(),
             })?;
             let assistant = MessageId::new();
             writer.append(SessionEvent::AssistantMessage {

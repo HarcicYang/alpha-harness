@@ -197,6 +197,19 @@ fn wire_message(message: &ChatMessage) -> Vec<Value> {
             "role": "user",
             "content": [{ "type": "input_text", "text": text }],
         })],
+        ChatMessage::UserContent { text, images } => {
+            let mut content = Vec::new();
+            if !text.is_empty() {
+                content.push(json!({ "type": "input_text", "text": text }));
+            }
+            content.extend(images.iter().map(|image| {
+                json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{};base64,{}", image.mime_type, image.data),
+                })
+            }));
+            vec![json!({ "role": "user", "content": content })]
+        }
         ChatMessage::Assistant(text) => vec![json!({
             "type": "message",
             "role": "assistant",

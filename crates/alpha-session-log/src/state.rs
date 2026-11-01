@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use alpha_schema::{
-    AssistantContentBlock, EventEnvelope, MessageId, PermissionMode, ReasoningLevel, Seq,
-    ToolCallId,
+    AssistantContentBlock, EventEnvelope, ImageAttachment, MessageId, PermissionMode,
+    ReasoningLevel, Seq, ToolCallId,
 };
 
 use crate::event::{SessionEvent, ToolStatus};
@@ -21,6 +21,8 @@ pub enum MessageRecord {
         id: MessageId,
         /// Message text.
         text: String,
+        /// Attached images.
+        images: Vec<ImageAttachment>,
     },
     /// Injected dynamic context.
     Context {
@@ -157,11 +159,14 @@ impl SessionState {
         match &envelope.payload {
             SessionEvent::TurnStarted => self.turn_open = true,
             SessionEvent::TurnEnded { .. } => self.turn_open = false,
-            SessionEvent::UserMessage { id, text } => self.messages.push(MessageRecord::User {
-                seq: envelope.seq,
-                id: *id,
-                text: text.clone(),
-            }),
+            SessionEvent::UserMessage { id, text, images } => {
+                self.messages.push(MessageRecord::User {
+                    seq: envelope.seq,
+                    id: *id,
+                    text: text.clone(),
+                    images: images.clone(),
+                })
+            }
             SessionEvent::ContextInjected { id, key, text } => {
                 self.messages.push(MessageRecord::Context {
                     seq: envelope.seq,
@@ -178,6 +183,7 @@ impl SessionState {
                 seq: envelope.seq,
                 id: *message_id,
                 text: text.clone(),
+                images: Vec::new(),
             }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
             SessionEvent::RequestHeader { .. } => {}

@@ -71,6 +71,7 @@ impl AlphaDesktop {
         let mode = display_value(chat.mode.to_string());
         let effort = display_value(chat.reasoning.to_string());
         let running = chat.running_turn.is_some();
+        let pending_images = self.runtime.pending_images().to_vec();
         let composer_value = self.composer.read(cx).value();
         let cancel_action = running && composer_value.trim().is_empty();
         let status = if running {
@@ -96,6 +97,49 @@ impl AlphaDesktop {
                     .border_color(rgba(BORDER))
                     .bg(rgb(SURFACE))
                     .p(px(8.))
+                    .when(!pending_images.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .px(px(4.))
+                                .pb(px(7.))
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(5.))
+                                .children(pending_images.into_iter().enumerate().map(
+                                    |(index, image)| {
+                                        Button::new(format!("pending-image:{index}"))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(5.))
+                                                    .child(
+                                                        Icon::new(IconName::Image)
+                                                            .size(px(11.))
+                                                            .text_color(rgb(ACCENT)),
+                                                    )
+                                                    .child(image.name)
+                                                    .child(
+                                                        Icon::new(IconName::X)
+                                                            .size(px(10.))
+                                                            .text_color(rgb(MUTED)),
+                                                    ),
+                                            )
+                                            .ghost()
+                                            .h(px(24.))
+                                            .rounded_full()
+                                            .border_1()
+                                            .border_color(rgba(BORDER_SUBTLE))
+                                            .bg(rgb(SURFACE_INSET))
+                                            .text_size(px(9.))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.runtime.remove_pending_image(index);
+                                                cx.notify();
+                                            }))
+                                    },
+                                )),
+                        )
+                    })
                     .child(
                         Textarea::new(&self.composer)
                             .appearance(false)
@@ -323,7 +367,7 @@ impl AlphaDesktop {
 
     pub(crate) fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.composer.read(cx).value().trim().to_owned();
-        if value.is_empty() {
+        if value.is_empty() && self.runtime.pending_images().is_empty() {
             if self.runtime.chat().running_turn.is_some()
                 && let Err(error) = self.runtime.cancel()
             {
@@ -382,11 +426,17 @@ impl AlphaDesktop {
                 let _ = this.update_in(cx, |this, window, cx| {
                     let mut value = this.composer.read(cx).value().trim_end().to_owned();
                     for path in paths {
-                        if !value.is_empty() {
-                            value.push(' ');
+                        if is_image_path(&path) {
+                            if let Err(error) = this.runtime.attach_image(&path) {
+                                this.local_status = Some(error.to_string());
+                            }
+                        } else {
+                            if !value.is_empty() {
+                                value.push(' ');
+                            }
+                            value.push('@');
+                            value.push_str(&path.display().to_string());
                         }
-                        value.push('@');
-                        value.push_str(&path.display().to_string());
                     }
                     this.composer.update(cx, |state, cx| {
                         state.set_value(&value, window, cx);
@@ -405,6 +455,16 @@ impl AlphaDesktop {
         })
         .detach();
     }
+}
+
+fn is_image_path(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp")
+    )
 }
 
 fn menu_option(

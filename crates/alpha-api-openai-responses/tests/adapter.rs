@@ -8,7 +8,7 @@ use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
 };
-use alpha_schema::AssistantContentBlock;
+use alpha_schema::{AssistantContentBlock, ImageAttachment};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -110,6 +110,52 @@ async fn streams_responses_text_and_tool_arguments() {
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["stream"], json!(true));
     assert_eq!(payload["max_output_tokens"], json!(128_000));
+}
+
+#[tokio::test]
+async fn sends_user_images_as_input_images() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![b"data: {\"type\":\"response.completed\"}\n\n".to_vec()],
+    });
+    alpha_api_openai_responses::OpenAiResponsesAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "vision-model".to_owned(),
+                reasoning: Default::default(),
+                messages: vec![ChatMessage::UserContent {
+                    text: "inspect".to_owned(),
+                    images: vec![ImageAttachment {
+                        name: "pixel.png".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                        data: "aGVsbG8=".to_owned(),
+                    }],
+                }],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                max_output_tokens: None,
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["input"][0]["content"][0]["text"], "inspect");
+    assert_eq!(
+        payload["input"][0]["content"][1]["image_url"],
+        "data:image/png;base64,aGVsbG8="
+    );
 }
 
 #[tokio::test]

@@ -11,7 +11,8 @@ use alpha_module_loop::{
 };
 use alpha_module_tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResponse};
 use alpha_schema::{
-    AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, Seq, SessionId,
+    AssistantContentBlock, ImageAttachment, MessageId, PermissionMode, ReasoningLevel, Seq,
+    SessionId,
 };
 use alpha_session_log::{
     SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
@@ -38,6 +39,7 @@ impl ModelProvider for EchoProvider {
             .rev()
             .find_map(|message| match message {
                 ChatMessage::User(text) => Some(text.clone()),
+                ChatMessage::UserContent { text, .. } => Some(text.clone()),
                 ChatMessage::System(_)
                 | ChatMessage::Assistant(_)
                 | ChatMessage::AssistantToolCalls { .. }
@@ -54,6 +56,47 @@ impl ModelProvider for EchoProvider {
             })
         })
     }
+}
+
+#[tokio::test]
+async fn image_content_reaches_the_provider_and_durable_history() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![CompletionResponse {
+        text: "seen".to_owned(),
+        tool_calls: Vec::new(),
+        blocks: Vec::new(),
+    }]));
+    let agent = AgentLoop::new(provider.clone(), "vision");
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+    let images = vec![ImageAttachment {
+        name: "pixel.png".to_owned(),
+        mime_type: "image/png".to_owned(),
+        data: "aGVsbG8=".to_owned(),
+    }];
+
+    agent
+        .run_turn_with_images(&Ctx::root(), &writer, &state, "inspect", &images)
+        .await
+        .expect("turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert!(matches!(
+        requests[0].messages.last(),
+        Some(ChatMessage::UserContent {
+            text,
+            images: sent,
+        }) if text == "inspect" && sent == &images
+    ));
+    let reader = store.open_read(header.id).expect("read");
+    assert!(reader.events().iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::UserMessage {
+            text,
+            images: sent,
+            ..
+        } if text == "inspect" && sent.as_slice() == images.as_slice()
+    )));
 }
 
 struct FailingProvider;
@@ -672,6 +715,7 @@ async fn context_preparer_updates_the_request_history() {
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "old user".to_owned(),
+                images: Vec::new(),
             })
             .expect("old user"),
         writer

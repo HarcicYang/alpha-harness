@@ -3,6 +3,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// One image attached to a user message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    /// Original file name used for display.
+    pub name: String,
+    /// Media type such as `image/png`.
+    pub mime_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+}
+
 /// One block in an assistant message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

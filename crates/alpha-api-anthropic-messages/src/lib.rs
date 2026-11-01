@@ -190,6 +190,24 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
                     "content": [{ "type": "text", "text": text }],
                 }));
             }
+            ChatMessage::UserContent { text, images } => {
+                flush_tool_results(&mut messages, &mut tool_results);
+                let mut content = Vec::new();
+                if !text.is_empty() {
+                    content.push(json!({ "type": "text", "text": text }));
+                }
+                content.extend(images.iter().map(|image| {
+                    json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image.mime_type,
+                            "data": image.data,
+                        },
+                    })
+                }));
+                messages.push(json!({ "role": "user", "content": content }));
+            }
             ChatMessage::Assistant(text) => {
                 flush_tool_results(&mut messages, &mut tool_results);
                 messages.push(json!({

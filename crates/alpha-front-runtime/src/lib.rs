@@ -4,8 +4,8 @@
 
 mod chat;
 mod command;
-mod run;
 mod provider;
+mod run;
 mod workspace;
 
 use std::io::IsTerminal;
@@ -15,10 +15,11 @@ use std::time::Duration;
 use alpha_front_client::{ConnectionEvent, CoreInfo};
 use alpha_front_supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};
 use alpha_schema::{
-    DiscardedSteers, InteractionRequest, PermissionMode, ReasoningLevel, SessionAttached,
-    SessionCreated, SessionEventNotification, SessionId, SessionListEntry, SessionResumed,
-    TurnStarted,
+    DiscardedSteers, ImageAttachment, InteractionRequest, PermissionMode, ReasoningLevel,
+    SessionAttached, SessionCreated, SessionEventNotification, SessionId, SessionListEntry,
+    SessionResumed, TurnStarted,
 };
+use base64::Engine as _;
 use serde_json::{Value, json};
 
 pub use chat::{
@@ -26,11 +27,11 @@ pub use chat::{
     InteractionDecision, InteractionPrompt, TranscriptItem,
 };
 pub use command::{COMMANDS, CommandSpec, FrontCommand, parse_command};
-pub use run::{__front_run, run_once, runtime_config};
 pub use provider::{
     ModelChoice, ProviderRemoved, ProviderState, resolve_model_selection,
     supported_reasoning_levels,
 };
+pub use run::{__front_run, run_once, runtime_config};
 pub use workspace::{FrontRuntimeManager, WorkspaceNotice, WorkspacePoll, WorkspaceStatus};
 
 const EVENT_BATCH_LIMIT: usize = 256;
@@ -158,6 +159,7 @@ pub struct FrontRuntime {
     chat: ChatState,
     providers: ProviderState,
     session_options: SessionOptions,
+    pending_images: Vec<ImageAttachment>,
 }
 
 impl FrontRuntime {
@@ -182,6 +184,7 @@ impl FrontRuntime {
             chat,
             providers,
             session_options: config.session,
+            pending_images: Vec::new(),
         })
     }
 
@@ -206,6 +209,7 @@ impl FrontRuntime {
             chat,
             providers,
             session_options: session,
+            pending_images: Vec::new(),
         })
     }
 
@@ -256,6 +260,39 @@ impl FrontRuntime {
     /// Mutable session defaults.
     pub fn session_options_mut(&mut self) -> &mut SessionOptions {
         &mut self.session_options
+    }
+
+    /// Images waiting to be sent with the next prompt.
+    pub fn pending_images(&self) -> &[ImageAttachment] {
+        &self.pending_images
+    }
+
+    /// Read and queue one image for the next prompt.
+    pub fn attach_image(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), FrontError> {
+        let path = path.as_ref();
+        let mime_type = image_mime_type(path).ok_or_else(|| {
+            FrontError::Protocol(format!("unsupported image type: {}", path.display()))
+        })?;
+        let bytes = std::fs::read(path)
+            .map_err(|error| FrontError::Protocol(format!("read {}: {error}", path.display())))?;
+        self.pending_images.push(ImageAttachment {
+            name: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("image")
+                .to_owned(),
+            mime_type: mime_type.to_owned(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        });
+        self.chat.status = Some(format!("attached {}", path.display()));
+        Ok(())
+    }
+
+    /// Remove one queued image.
+    pub fn remove_pending_image(&mut self, index: usize) {
+        if index < self.pending_images.len() {
+            self.pending_images.remove(index);
+        }
     }
 
     /// Core handshake information.
@@ -387,12 +424,27 @@ impl FrontRuntime {
     pub fn new_session(&mut self) {
         self.chat.new_session();
         self.chat.workspace = self.session_options.workspace.display().to_string();
+        self.pending_images.clear();
     }
 
     /// Submit text, creating the session on first use.
     pub fn submit_prompt(&mut self, prompt: &str) -> Result<(), FrontError> {
+        let images = std::mem::take(&mut self.pending_images);
+        if let Err(error) = self.submit_prompt_with_images(prompt, images.clone()) {
+            self.pending_images = images;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Submit text and images, creating the session on first use.
+    pub fn submit_prompt_with_images(
+        &mut self,
+        prompt: &str,
+        images: Vec<ImageAttachment>,
+    ) -> Result<(), FrontError> {
         let prompt = prompt.trim();
-        if prompt.is_empty() {
+        if prompt.is_empty() && images.is_empty() {
             return Ok(());
         }
         if self.chat.session_id.is_none() {
@@ -403,6 +455,11 @@ impl FrontRuntime {
             .session_id
             .ok_or_else(|| FrontError::Protocol("no active session".to_owned()))?;
         if self.chat.running_turn.is_some() {
+            if !images.is_empty() {
+                return Err(FrontError::Protocol(
+                    "images cannot be added to a running turn".to_owned(),
+                ));
+            }
             self.supervisor.request(
                 "session.steer",
                 Some(json!({ "sessionId": session_id, "text": prompt })),
@@ -411,7 +468,11 @@ impl FrontRuntime {
         } else {
             let response = self.supervisor.request(
                 "session.submit",
-                Some(json!({ "sessionId": session_id, "prompt": prompt })),
+                Some(json!({
+                    "sessionId": session_id,
+                    "prompt": prompt,
+                    "images": images,
+                })),
             )?;
             let started: TurnStarted = parse_response(response)?;
             self.chat.running_turn = Some(started.turn_id);
@@ -702,6 +763,10 @@ impl FrontRuntime {
                 self.set_capabilities(tools)?;
                 Ok(CommandOutcome::Completed)
             }
+            FrontCommand::AttachImage(path) => {
+                self.attach_image(path)?;
+                Ok(CommandOutcome::Completed)
+            }
             FrontCommand::NewSession => {
                 self.new_session();
                 Ok(CommandOutcome::Completed)
@@ -872,4 +937,14 @@ where
     T: serde::de::DeserializeOwned,
 {
     serde_json::from_value(value).map_err(|error| FrontError::Protocol(error.to_string()))
+}
+
+fn image_mime_type(path: &std::path::Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
 }

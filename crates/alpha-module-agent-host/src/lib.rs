@@ -199,6 +199,7 @@ enum SessionCommand {
     Submit {
         turn_id: TurnId,
         prompt: String,
+        images: Vec<alpha_schema::ImageAttachment>,
     },
     Cancel {
         turn_id: TurnId,
@@ -395,7 +396,17 @@ impl AgentHostService {
 
     /// Submit one prompt and return its turn id immediately.
     pub fn submit(&self, session_id: SessionId, prompt: String) -> Result<TurnId, AgentHostError> {
-        if prompt.trim().is_empty() {
+        self.submit_with_images(session_id, prompt, Vec::new())
+    }
+
+    /// Submit one prompt with attached images.
+    pub fn submit_with_images(
+        &self,
+        session_id: SessionId,
+        prompt: String,
+        images: Vec<alpha_schema::ImageAttachment>,
+    ) -> Result<TurnId, AgentHostError> {
+        if prompt.trim().is_empty() && images.is_empty() {
             return Err(AgentHostError::Invalid("prompt is empty".to_owned()));
         }
         let actor = self.ensure_actor(session_id)?;
@@ -406,7 +417,11 @@ impl AgentHostService {
         let turn_id = TurnId::new();
         actor
             .tx
-            .send(SessionCommand::Submit { turn_id, prompt })
+            .send(SessionCommand::Submit {
+                turn_id,
+                prompt,
+                images,
+            })
             .map_err(|_| {
                 actor.running.store(false, Ordering::SeqCst);
                 AgentHostError::ActorStopped(session_id)
@@ -1012,7 +1027,11 @@ async fn actor_loop(
                     break;
                 };
                 match command {
-                    SessionCommand::Submit { turn_id, prompt } => {
+                    SessionCommand::Submit {
+                        turn_id,
+                        prompt,
+                        images,
+                    } => {
                         start_turn(
                             &runtime,
                             &writer,
@@ -1021,6 +1040,7 @@ async fn actor_loop(
                             &completion_tx,
                             turn_id,
                             prompt,
+                            images,
                             &mut cancel,
                             &mut active_turn,
                         );
@@ -1128,6 +1148,7 @@ async fn actor_loop(
                             &completion_tx,
                             turn_id,
                             text,
+                            Vec::new(),
                             &mut cancel,
                             &mut active_turn,
                         );
@@ -1203,6 +1224,7 @@ async fn actor_loop(
                         &completion_tx,
                         turn_id,
                         text,
+                        Vec::new(),
                         &mut cancel,
                         &mut active_turn,
                     );
@@ -1241,6 +1263,7 @@ fn start_turn(
     completion_tx: &mpsc::UnboundedSender<TurnCompletion>,
     turn_id: TurnId,
     prompt: String,
+    images: Vec<alpha_schema::ImageAttachment>,
     cancel: &mut Option<CancellationToken>,
     active_turn: &mut Option<TurnId>,
 ) {
@@ -1256,7 +1279,13 @@ fn start_turn(
     let session_ctx = ctx.clone();
     let _ = session_ctx.scope().spawn(async move {
         let result = tokio::select! {
-            result = agent.run_turn(&ctx, &turn_writer, &state_snapshot, &prompt) => {
+            result = agent.run_turn_with_images(
+                &ctx,
+                &turn_writer,
+                &state_snapshot,
+                &prompt,
+                &images,
+            ) => {
                 result.map(|_| ())
             }
             _ = token.cancelled() => {

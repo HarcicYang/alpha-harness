@@ -8,7 +8,7 @@ use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
 };
-use alpha_schema::AssistantContentBlock;
+use alpha_schema::{AssistantContentBlock, ImageAttachment};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -141,6 +141,52 @@ async fn explicit_chat_options_override_the_catalog_output_limit() {
         .expect("request");
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["max_tokens"], json!(65_536));
+}
+
+#[tokio::test]
+async fn sends_user_images_as_data_urls() {
+    let http = Arc::new(StreamingHttp {
+        request: Mutex::new(None),
+        chunks: vec![b"data: [DONE]\n\n".to_vec()],
+    });
+    alpha_api_openai_chat::OpenAiChatAdapter
+        .stream(
+            http.clone(),
+            AdapterRequest {
+                base_url: "https://api.test/v1".to_owned(),
+                api_key: Some("secret".to_owned()),
+                headers: BTreeMap::new(),
+                model: "vision-model".to_owned(),
+                reasoning: Default::default(),
+                messages: vec![ChatMessage::UserContent {
+                    text: "inspect".to_owned(),
+                    images: vec![ImageAttachment {
+                        name: "pixel.png".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                        data: "aGVsbG8=".to_owned(),
+                    }],
+                }],
+                tools: Vec::new(),
+                provider_tools: Vec::new(),
+                max_output_tokens: None,
+                options: json!({}),
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+    let request = http
+        .request
+        .lock()
+        .expect("request lock")
+        .clone()
+        .expect("request");
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
+    assert_eq!(payload["messages"][0]["content"][0]["text"], "inspect");
+    assert_eq!(
+        payload["messages"][0]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
 }
 
 #[tokio::test]

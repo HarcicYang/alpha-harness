@@ -13,7 +13,7 @@ pub mod reasoning;
 pub mod session;
 pub mod time;
 
-pub use content::AssistantContentBlock;
+pub use content::{AssistantContentBlock, ImageAttachment};
 pub use event::EventEnvelope;
 pub use front::{
     DiscardedSteer, DiscardedSteers, InteractionRequest, LiveAgentEvent, ProviderInstanceResponse,

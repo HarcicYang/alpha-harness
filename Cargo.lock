@@ -321,6 +321,7 @@ dependencies = [
  "alpha-host-api",
  "alpha-protocol",
  "alpha-schema",
+ "base64",
  "serde",
  "serde_json",
  "tempfile",

@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, ToolCallId, TurnId};
+use crate::{
+    AssistantContentBlock, ImageAttachment, MessageId, PermissionMode, ReasoningLevel, ToolCallId,
+    TurnId,
+};
 
 /// Workspace binding of a session.
 ///
@@ -59,6 +62,9 @@ pub enum SessionEvent {
         id: MessageId,
         /// Message text.
         text: String,
+        /// Images attached to the message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
     },
     /// A steer message entered the bounded queue.
     SteerQueued {

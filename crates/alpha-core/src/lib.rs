@@ -1672,7 +1672,7 @@ fn add_agent_host_methods(router: Router, host: Arc<AgentHostService>) -> Router
                 let params: SubmitParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::invalid_params(error.to_string()))?;
                 let turn_id = host
-                    .submit(params.session_id, params.prompt)
+                    .submit_with_images(params.session_id, params.prompt, params.images)
                     .map_err(agent_host_rpc_error)?;
                 Ok(json!({ "turnId": turn_id }))
             }
@@ -1919,6 +1919,8 @@ struct InteractionResponseParams {
 struct SubmitParams {
     session_id: SessionId,
     prompt: String,
+    #[serde(default)]
+    images: Vec<alpha_schema::ImageAttachment>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,11 +1,9 @@
 use std::io::Cursor;
 
 use alpha_harness::serve_with;
-use alpha_session_log::{
-    SessionEvent, SessionHeader, SessionStore, TurnEndReason, WorkspaceRef,
-};
 use alpha_protocol::{Id, Message, Response, ResponsePayload, codes, read_message};
 use alpha_schema::{MessageId, PermissionMode, SessionId, SessionListEntry, ToolCallId};
+use alpha_session_log::{SessionEvent, SessionHeader, SessionStore, TurnEndReason, WorkspaceRef};
 use serde_json::{Value, json};
 
 fn result_of(message: Message) -> serde_json::Value {
@@ -179,6 +177,7 @@ fn session_list_includes_first_message_preview() {
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "fix the first failing test".to_owned(),
+                images: Vec::new(),
             })
             .expect("append user message");
     }

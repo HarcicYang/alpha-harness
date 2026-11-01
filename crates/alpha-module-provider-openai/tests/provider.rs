@@ -10,6 +10,7 @@ use alpha_module_loop::{
 use alpha_module_provider_openai::{
     OpenAiConfig, OpenAiProvider, OpenAiProviderModule, PROVIDER_NAME,
 };
+use alpha_schema::ImageAttachment;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -135,6 +136,39 @@ async fn sends_chat_completion_requests_and_parses_text() {
     assert_eq!(body["messages"][0]["role"], json!("user"));
     assert_eq!(body["messages"][0]["content"], json!("hi"));
     assert_eq!(body["max_tokens"], json!(100_000));
+}
+
+#[tokio::test]
+async fn sends_user_images_in_chat_completion_requests() {
+    let (fake, http) = client_raw(completion_response("seen"));
+    let provider = OpenAiProvider::new(http, "https://api.test/v1", "secret-key");
+    provider
+        .complete(CompletionRequest {
+            session_id: "test-session".to_owned(),
+            model: "vision-model".to_owned(),
+            reasoning: Default::default(),
+            messages: vec![ChatMessage::UserContent {
+                text: "inspect".to_owned(),
+                images: vec![ImageAttachment {
+                    name: "pixel.png".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                    data: "aGVsbG8=".to_owned(),
+                }],
+            }],
+            tools: Vec::new(),
+            provider_tools: Vec::new(),
+            max_output_tokens: None,
+        })
+        .await
+        .expect("complete");
+
+    let requests = fake.requests.lock().expect("request lock");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("body");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "inspect");
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
 }
 
 #[tokio::test]

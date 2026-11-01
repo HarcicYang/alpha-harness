@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use alpha_schema::{AssistantContentBlock, ReasoningLevel};
+use alpha_schema::{AssistantContentBlock, ImageAttachment, ReasoningLevel};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -17,6 +17,13 @@ pub enum ChatMessage {
     System(String),
     /// User message.
     User(String),
+    /// User message with text and images.
+    UserContent {
+        /// Message text, possibly empty.
+        text: String,
+        /// Attached images.
+        images: Vec<ImageAttachment>,
+    },
     /// Assistant message.
     Assistant(String),
     /// Assistant message that also requested tool calls.
@@ -42,7 +49,7 @@ impl ChatMessage {
     pub fn role(&self) -> &'static str {
         match self {
             Self::System(_) => "system",
-            Self::User(_) => "user",
+            Self::User(_) | Self::UserContent { .. } => "user",
             Self::Assistant(_) | Self::AssistantToolCalls { .. } | Self::AssistantContent(_) => {
                 "assistant"
             }
@@ -54,6 +61,7 @@ impl ChatMessage {
     pub fn text(&self) -> &str {
         match self {
             Self::System(text) | Self::User(text) | Self::Assistant(text) => text,
+            Self::UserContent { text, .. } => text,
             Self::AssistantToolCalls { text, .. } => text,
             Self::AssistantContent(blocks) => visible_block_text(blocks),
             Self::ToolResult { content, .. } => content,

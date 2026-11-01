@@ -1,6 +1,7 @@
 //! Agent driver contract.
 
 use alpha_kernel::Ctx;
+use alpha_schema::ImageAttachment;
 use alpha_session_log::{SessionState, SessionWriter};
 use futures::future::BoxFuture;
 
@@ -32,4 +33,17 @@ pub trait AgentDriver: Send + Sync + 'static {
         state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>>;
+
+    /// Run one turn with attached images.
+    fn run_turn_with_images<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        state: &'a SessionState,
+        prompt: &'a str,
+        images: &'a [ImageAttachment],
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        let _ = images;
+        self.run_turn(ctx, writer, state, prompt)
+    }
 }

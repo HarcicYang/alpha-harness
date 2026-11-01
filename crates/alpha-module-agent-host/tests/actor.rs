@@ -11,11 +11,9 @@ use alpha_module_loop::{
     AgentDriver, LoopError, ModelRoute, ModelRouteOverride, ProviderToolsOverride, TurnOutcome,
 };
 use alpha_module_permission::{PermissionConfig, PermissionModule, PermissionService};
-use alpha_session_log::{
-    SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason,
-};
 use alpha_protocol::{OutboundTransport, RpcError};
 use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel};
+use alpha_session_log::{SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -35,6 +33,7 @@ impl AgentDriver for EchoDriver {
             writer.append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: prompt.to_owned(),
+                images: Vec::new(),
             })?;
             let id = MessageId::new();
             let tools = match ctx
@@ -174,6 +173,7 @@ impl AgentDriver for BlockingDriver {
             writer.append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: prompt.to_owned(),
+                images: Vec::new(),
             })?;
             let id = MessageId::new();
             let text = format!("echo:{prompt}");

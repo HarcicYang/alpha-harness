@@ -6,7 +6,9 @@ use std::sync::Arc;
 use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
 use alpha_kernel::{Ctx, Event, ParallelEvent};
 use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
-use alpha_schema::{AssistantContentBlock, MessageId, ReasoningLevel, ToolCallId, TurnId};
+use alpha_schema::{
+    AssistantContentBlock, ImageAttachment, MessageId, ReasoningLevel, ToolCallId, TurnId,
+};
 use alpha_session_log::{
     MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
     TurnEndReason,
@@ -101,7 +103,19 @@ impl AgentLoop {
         state: &SessionState,
         prompt: &str,
     ) -> Result<TurnOutcome, LoopError> {
-        self.run_turn_impl(ctx, writer, state, prompt).await
+        self.run_turn_impl(ctx, writer, state, prompt, &[]).await
+    }
+
+    /// Run one turn with images attached to the user message.
+    pub async fn run_turn_with_images(
+        &self,
+        ctx: &Ctx,
+        writer: &SessionWriter,
+        state: &SessionState,
+        prompt: &str,
+        images: &[ImageAttachment],
+    ) -> Result<TurnOutcome, LoopError> {
+        self.run_turn_impl(ctx, writer, state, prompt, images).await
     }
 
     async fn run_turn_impl(
@@ -110,6 +124,7 @@ impl AgentLoop {
         writer: &SessionWriter,
         state: &SessionState,
         prompt: &str,
+        images: &[ImageAttachment],
     ) -> Result<TurnOutcome, LoopError> {
         let session_id = writer.header().id;
         let initial_route = self.route(ctx);
@@ -143,9 +158,17 @@ impl AgentLoop {
         writer.append(SessionEvent::UserMessage {
             id: user_id,
             text: prompt.to_owned(),
+            images: images.to_vec(),
         })?;
 
-        messages.push(ChatMessage::User(prompt.to_owned()));
+        if images.is_empty() {
+            messages.push(ChatMessage::User(prompt.to_owned()));
+        } else {
+            messages.push(ChatMessage::UserContent {
+                text: prompt.to_owned(),
+                images: images.to_vec(),
+            });
+        }
 
         let mut last_text = String::new();
         let mut last_message_id: Option<MessageId> = None;
@@ -658,7 +681,18 @@ impl AgentDriver for AgentLoop {
         state: &'a SessionState,
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
-        Box::pin(self.run_turn_impl(ctx, writer, state, prompt))
+        Box::pin(self.run_turn_impl(ctx, writer, state, prompt, &[]))
+    }
+
+    fn run_turn_with_images<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        state: &'a SessionState,
+        prompt: &'a str,
+        images: &'a [ImageAttachment],
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        Box::pin(self.run_turn_impl(ctx, writer, state, prompt, images))
     }
 }
 
@@ -724,9 +758,16 @@ impl HistoryBuilder {
 
     fn push(&mut self, record: &MessageRecord) {
         match record {
-            MessageRecord::User { text, .. } => {
+            MessageRecord::User { text, images, .. } => {
                 self.flush();
-                self.messages.push(ChatMessage::User(text.clone()));
+                if images.is_empty() {
+                    self.messages.push(ChatMessage::User(text.clone()));
+                } else {
+                    self.messages.push(ChatMessage::UserContent {
+                        text: text.clone(),
+                        images: images.clone(),
+                    });
+                }
             }
             MessageRecord::Context { text, .. } => {
                 self.flush();

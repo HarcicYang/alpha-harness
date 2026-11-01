@@ -1802,7 +1802,7 @@ fn submit_composer(app: &mut App, runtime: &mut FrontRuntime) -> Result<(), TuiE
         return Ok(());
     }
     let input = app.chat.composer.text().trim().to_owned();
-    if input.is_empty() {
+    if input.is_empty() && runtime.pending_images().is_empty() {
         return Ok(());
     }
     if input.starts_with('/') {
@@ -2717,9 +2717,18 @@ fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> usize {
 
 fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line<'static>> {
     match entry {
-        TranscriptEntry::User { text } | TranscriptEntry::QueuedSteer { text, .. } => {
-            user_transcript_lines(text, width)
+        TranscriptEntry::User { text, images } => {
+            let mut display = text.clone();
+            for image in images {
+                if !display.is_empty() {
+                    display.push_str("\n\n");
+                }
+                display.push_str("[Image] ");
+                display.push_str(&image.name);
+            }
+            user_transcript_lines(&display, width)
         }
+        TranscriptEntry::QueuedSteer { text, .. } => user_transcript_lines(text, width),
         TranscriptEntry::AssistantDelta { text } => assistant_transcript_lines(text),
         TranscriptEntry::ThinkingDelta { text } => thinking_transcript_lines(text),
         TranscriptEntry::AssistantMessage { blocks } => blocks
@@ -3147,6 +3156,7 @@ fn draw_help(frame: &mut ratatui::Frame<'_>) {
         Line::from("/effort LEVEL    set auto, off, minimal, low, medium, high, xhigh, or max"),
         Line::from("/thinking LEVEL  alias for /effort"),
         Line::from("/mode MODE       set read, auto, reviewed, or free"),
+        Line::from("/image PATH      attach an image to the next prompt"),
         Line::from("/confirm         run pending steers"),
         Line::from("/discard         discard pending steers"),
         Line::from("/capabilities T  set provider tools, for example web_search"),

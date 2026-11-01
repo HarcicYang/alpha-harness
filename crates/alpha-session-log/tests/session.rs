@@ -1,13 +1,13 @@
 use std::fs;
 use std::io::Write;
 
-use alpha_session_log::{
-    MessageRecord, SessionError, SessionEvent, SessionHeader, SessionStore, ToolStatus,
-    TurnEndReason, WorkspaceRef,
-};
 use alpha_schema::{
     AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, SessionId, Timestamp,
     ToolCallId,
+};
+use alpha_session_log::{
+    MessageRecord, SessionError, SessionEvent, SessionHeader, SessionStore, ToolStatus,
+    TurnEndReason, WorkspaceRef,
 };
 
 fn header() -> SessionHeader {
@@ -73,6 +73,7 @@ fn create_append_and_reopen() {
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "hello".to_owned(),
+                images: Vec::new(),
             })
             .expect("append user message");
         writer
@@ -351,12 +352,14 @@ fn list_entries_includes_the_first_user_message() {
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "inspect this repository".to_owned(),
+                images: Vec::new(),
             })
             .expect("append first user message");
         writer
             .append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: "second message".to_owned(),
+                images: Vec::new(),
             })
             .expect("append second user message");
     }

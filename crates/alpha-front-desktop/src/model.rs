@@ -40,12 +40,20 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                 }
             }
             other => match other {
-                TranscriptItem::User { text } => {
-                    if text.is_empty() {
+                TranscriptItem::User { text, images } => {
+                    let mut display = text.clone();
+                    for image in images {
+                        if !display.is_empty() {
+                            display.push_str("\n\n");
+                        }
+                        display.push_str("[Image] ");
+                        display.push_str(&image.name);
+                    }
+                    if display.is_empty() {
                         continue;
                     }
                     flush_tools(&mut rendered, &mut tools);
-                    rendered.push(DesktopTranscriptItem::User(text.clone().into()));
+                    rendered.push(DesktopTranscriptItem::User(display.into()));
                 }
                 TranscriptItem::QueuedSteer { .. } => continue,
                 TranscriptItem::AssistantDelta { text } => {

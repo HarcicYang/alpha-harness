@@ -129,7 +129,7 @@ Durable events are serializable session facts with monotonically increasing
 sequence numbers. Live events report in-process progress and may be dropped.
 Persistent state must remain reconstructible from durable events.
 
-The current durable event schema is version 7. The session header schema is
+The current durable event schema is version 8. The session header schema is
 version 1. Older supported events are migrated while reading. A session newer
 than the current schema is rejected.
 

@@ -64,6 +64,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         takes_argument: true,
     },
     CommandSpec {
+        name: "image",
+        usage: "/image PATH",
+        description: "Attach an image to the next prompt",
+        takes_argument: true,
+    },
+    CommandSpec {
         name: "new",
         usage: "/new",
         description: "Start a new session draft",
@@ -129,6 +135,8 @@ pub enum FrontCommand {
     DiscardSteers,
     /// Set provider-native tools.
     SetCapabilities(Vec<String>),
+    /// Attach an image to the next prompt.
+    AttachImage(String),
     /// Start a new draft.
     NewSession,
     /// Resume one session.
@@ -194,6 +202,8 @@ pub fn parse_command(command: &str) -> FrontCommand {
                 .map(str::to_owned)
                 .collect(),
         ),
+        "image" if !argument.is_empty() => FrontCommand::AttachImage(argument.to_owned()),
+        "image" => FrontCommand::Invalid("usage: /image <PATH>".to_owned()),
         "new" => FrontCommand::NewSession,
         "resume" if !argument.is_empty() => match argument.parse::<SessionId>() {
             Ok(session_id) => FrontCommand::Resume(session_id),
@@ -246,6 +256,10 @@ mod tests {
         assert_eq!(
             parse_command("/capabilities web_search,code"),
             FrontCommand::SetCapabilities(vec!["web_search".to_owned(), "code".to_owned()])
+        );
+        assert_eq!(
+            parse_command("/image /tmp/example.png"),
+            FrontCommand::AttachImage("/tmp/example.png".to_owned())
         );
     }
 }
