@@ -261,6 +261,13 @@ pub enum CompletionChunk {
         /// Source snippet.
         snippet: Option<String>,
     },
+    /// Provider-reported token usage for the request.
+    Usage {
+        /// Prompt tokens.
+        input_tokens: u64,
+        /// Completion tokens.
+        output_tokens: u64,
+    },
 }
 
 /// One tool-call delta.

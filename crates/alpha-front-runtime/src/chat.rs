@@ -208,6 +208,12 @@ pub struct ChatState {
     pub context_tokens: usize,
     /// Estimated assistant output tokens recorded in this session.
     pub output_tokens: usize,
+    /// Prompt tokens the provider reported for the latest request.
+    pub reported_input_tokens: Option<usize>,
+    /// Completion tokens the provider reported for this session.
+    pub reported_output_tokens: usize,
+    /// Context window the latest request was shaped against.
+    pub requested_context_window: Option<usize>,
     /// Local tools frozen by the latest request header.
     pub local_tools: Vec<String>,
     /// Provider-native tools active for the current route.
@@ -246,6 +252,9 @@ impl ChatState {
         self.pending_provider_tools = None;
         self.context_tokens = 0;
         self.output_tokens = 0;
+        self.reported_input_tokens = None;
+        self.reported_output_tokens = 0;
+        self.requested_context_window = None;
         self.local_tools.clear();
         self.provider_tools.clear();
         self.file_changes.clear();
@@ -569,13 +578,26 @@ impl ChatState {
                     self.record_file_change(change);
                 }
             }
+            SessionEvent::ContextUsage {
+                input_tokens,
+                output_tokens,
+            } => {
+                self.reported_input_tokens = Some(*input_tokens as usize);
+                self.reported_output_tokens = self
+                    .reported_output_tokens
+                    .saturating_add(*output_tokens as usize);
+            }
             SessionEvent::RequestHeader {
                 tools,
                 provider_tools,
+                context_window,
                 ..
             } => {
                 self.local_tools = tools.clone();
                 self.provider_tools = provider_tools.clone();
+                if context_window.is_some() {
+                    self.requested_context_window = *context_window;
+                }
                 if let Some(previous) = self.request_header_seq.replace(envelope.seq) {
                     self.remove_context_segment(previous);
                 }
@@ -1144,6 +1166,8 @@ mod tests {
                     reasoning: ReasoningLevel::Auto,
                     tools: vec!["read".to_owned(), "edit".to_owned()],
                     provider_tools: vec!["web_search".to_owned()],
+                    context_window: Some(1_000_000),
+                    max_output_tokens: Some(32_768),
                 },
             ),
         });

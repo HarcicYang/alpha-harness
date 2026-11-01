@@ -123,6 +123,10 @@ pub struct SessionState {
     pub turn_open: bool,
     /// Tool calls that have not settled.
     pub pending_tool_calls: BTreeSet<ToolCallId>,
+    /// Prompt tokens the provider reported for the latest request.
+    pub last_input_tokens: Option<u64>,
+    /// Context window the latest request was shaped against.
+    pub context_window: Option<usize>,
     /// Last applied sequence number.
     pub last_seq: Seq,
 }
@@ -142,6 +146,8 @@ impl SessionState {
             messages: Vec::new(),
             turn_open: false,
             pending_tool_calls: BTreeSet::new(),
+            last_input_tokens: None,
+            context_window: None,
             last_seq: Seq::new(0),
         }
     }
@@ -191,7 +197,12 @@ impl SessionState {
                 images: images.clone(),
             }),
             SessionEvent::SystemPromptSet { text } => self.system_prompt = Some(text.clone()),
-            SessionEvent::RequestHeader { .. } => {}
+            SessionEvent::RequestHeader { context_window, .. } => {
+                self.context_window = *context_window
+            }
+            SessionEvent::ContextUsage { input_tokens, .. } => {
+                self.last_input_tokens = Some(*input_tokens)
+            }
             SessionEvent::RouteChanged {
                 provider,
                 model,

@@ -235,11 +235,19 @@ impl FrontRuntime {
             provider_tools = choice.provider_tools.clone();
         }
         ContextView {
-            input_tokens: self.chat.context_tokens,
-            output_tokens: self.chat.output_tokens,
-            context_window: choice
-                .as_ref()
-                .map(|choice| choice.context_window)
+            input_tokens: self
+                .chat
+                .reported_input_tokens
+                .unwrap_or(self.chat.context_tokens),
+            output_tokens: if self.chat.reported_output_tokens > 0 {
+                self.chat.reported_output_tokens
+            } else {
+                self.chat.output_tokens
+            },
+            context_window: self
+                .chat
+                .requested_context_window
+                .or_else(|| choice.as_ref().map(|choice| choice.context_window))
                 .unwrap_or_default(),
             max_tokens: choice
                 .as_ref()

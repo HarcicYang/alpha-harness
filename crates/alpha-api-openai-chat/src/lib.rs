@@ -184,6 +184,9 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
             .or_insert_with(|| json!(max_output_tokens));
     }
     payload.insert("stream".to_owned(), json!(true));
+    payload
+        .entry("stream_options".to_owned())
+        .or_insert_with(|| json!({ "include_usage": true }));
     serde_json::to_vec(&Value::Object(payload))
         .map_err(|error| ProviderError::Request(error.to_string()))
 }
@@ -366,6 +369,14 @@ fn process_event_line(
     if let Some(error) = response.error {
         return Err(ProviderError::Request(format!("stream error: {error}")));
     }
+    if let Some(usage) = response.usage
+        && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)
+    {
+        pending.push_back(Ok(CompletionChunk::Usage {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+        }));
+    }
     for choice in response.choices {
         if let Some(text) = choice.delta.content
             && !text.is_empty()
@@ -419,7 +430,17 @@ struct StreamResponse {
     #[serde(default)]
     choices: Vec<StreamChoice>,
     #[serde(default)]
+    usage: Option<StreamUsage>,
+    #[serde(default)]
     error: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
 }
 
 #[derive(Default, Deserialize)]

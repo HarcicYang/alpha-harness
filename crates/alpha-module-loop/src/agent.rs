@@ -186,13 +186,20 @@ impl AgentLoop {
             }
             let route = self.route(ctx);
             let provider_tools = self.provider_tools(ctx);
-            let max_output_tokens = self.provider.output_limit(&route.model);
+            let context_window = self.provider.context_window(&route.model);
+            let max_output_tokens = output_budget(
+                context_window,
+                self.provider.output_limit(&route.model),
+                effective_state.last_input_tokens,
+            );
             writer.append(SessionEvent::RequestHeader {
                 provider: route.provider.clone(),
                 model: route.model.clone(),
                 reasoning: route.reasoning,
                 tools: tools.iter().map(|tool| tool.name.clone()).collect(),
                 provider_tools: provider_tools.clone(),
+                context_window,
+                max_output_tokens,
             })?;
             ctx.parallel(AgentStepStarted { step }).await;
             let request = CompletionRequest {
@@ -204,21 +211,28 @@ impl AgentLoop {
                 provider_tools,
                 max_output_tokens,
             };
-            let response = match self.stream_response(ctx, request).await {
-                Ok(response) => response,
-                Err(failure) => {
-                    let StreamFailure { error, blocks } = failure;
-                    record_partial_blocks(writer, blocks)?;
-                    ctx.parallel(AgentError {
-                        message: error.to_string(),
-                    })
-                    .await;
-                    writer.append(SessionEvent::TurnEnded {
-                        reason: TurnEndReason::Failed,
-                    })?;
-                    return Err(LoopError::Provider(error));
-                }
-            };
+            let StreamedResponse { response, usage } =
+                match self.stream_response(ctx, request).await {
+                    Ok(response) => response,
+                    Err(failure) => {
+                        let StreamFailure { error, blocks } = failure;
+                        record_partial_blocks(writer, blocks)?;
+                        ctx.parallel(AgentError {
+                            message: error.to_string(),
+                        })
+                        .await;
+                        writer.append(SessionEvent::TurnEnded {
+                            reason: TurnEndReason::Failed,
+                        })?;
+                        return Err(LoopError::Provider(error));
+                    }
+                };
+            if let Some(usage) = usage {
+                writer.append(SessionEvent::ContextUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                })?;
+            }
 
             let message_id = MessageId::new();
             let text = response.text;
@@ -299,11 +313,12 @@ impl AgentLoop {
         &self,
         ctx: &Ctx,
         request: CompletionRequest,
-    ) -> Result<CompletionResponse, StreamFailure> {
+    ) -> Result<StreamedResponse, StreamFailure> {
         let mut stream = self.provider.clone().stream(request);
         let mut text = String::new();
         let mut calls: BTreeMap<usize, ToolCallBuilder> = BTreeMap::new();
         let mut blocks: Vec<AssistantContentBlock> = Vec::new();
+        let mut usage: Option<TokenUsage> = None;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| StreamFailure {
@@ -374,6 +389,15 @@ impl AgentLoop {
                         snippet,
                     });
                 }
+                crate::provider::CompletionChunk::Usage {
+                    input_tokens,
+                    output_tokens,
+                } => {
+                    usage = Some(TokenUsage {
+                        input_tokens,
+                        output_tokens,
+                    })
+                }
             }
         }
 
@@ -407,10 +431,13 @@ impl AgentLoop {
             tool_calls.push(call);
         }
 
-        Ok(CompletionResponse {
-            text,
-            tool_calls,
-            blocks,
+        Ok(StreamedResponse {
+            response: CompletionResponse {
+                text,
+                tool_calls,
+                blocks,
+            },
+            usage,
         })
     }
 
@@ -581,6 +608,38 @@ struct ToolCallBuilder {
 struct StreamFailure {
     error: ProviderError,
     blocks: Vec<AssistantContentBlock>,
+}
+
+/// Provider-reported token counts for one request.
+#[derive(Clone, Copy, Debug)]
+struct TokenUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+/// One streamed response plus the usage the provider reported for it.
+struct StreamedResponse {
+    response: CompletionResponse,
+    usage: Option<TokenUsage>,
+}
+
+/// Output budget that still fits next to the context already in flight.
+///
+/// Reserving a model's full output budget on top of a nearly full window is
+/// rejected by providers before the model runs, so the reservation shrinks to
+/// the headroom the last reported prompt left behind.
+fn output_budget(
+    window: Option<usize>,
+    model_limit: Option<u64>,
+    used: Option<u64>,
+) -> Option<u64> {
+    let limit = model_limit?;
+    let Some(window) = window.filter(|window| *window > 0) else {
+        return Some(limit);
+    };
+    let used = usize::try_from(used.unwrap_or(0)).unwrap_or(usize::MAX);
+    let headroom = window.saturating_sub(used).saturating_sub(window / 20);
+    Some(u64::try_from(headroom).unwrap_or(u64::MAX).min(limit))
 }
 
 fn record_partial_blocks(

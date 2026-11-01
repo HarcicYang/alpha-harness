@@ -997,6 +997,7 @@ async fn collect_stream(
                     snippet,
                 });
             }
+            CompletionChunk::Usage { .. } => {}
         }
     }
     let mut tool_calls = Vec::with_capacity(calls.len());

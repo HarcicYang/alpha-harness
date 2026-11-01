@@ -128,6 +128,19 @@ pub enum SessionEvent {
         tools: Vec<String>,
         /// Provider-native tool names.
         provider_tools: Vec<String>,
+        /// Context window the request was shaped against, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<usize>,
+        /// Output budget reserved for the request, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_output_tokens: Option<u64>,
+    },
+    /// Token usage the provider reported for one request.
+    ContextUsage {
+        /// Prompt tokens reported by the provider.
+        input_tokens: u64,
+        /// Completion tokens reported by the provider.
+        output_tokens: u64,
     },
     /// Session provider route changed.
     RouteChanged {
