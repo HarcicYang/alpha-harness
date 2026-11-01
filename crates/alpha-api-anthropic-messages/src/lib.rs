@@ -238,7 +238,30 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
                     "content": wire_assistant_blocks(blocks),
                 }));
             }
-            ChatMessage::ToolResult { call_id, content } => {
+            ChatMessage::ToolResult {
+                call_id,
+                content,
+                images,
+            } => {
+                let content = if images.is_empty() {
+                    json!(content)
+                } else {
+                    let mut content_blocks = Vec::new();
+                    if !content.is_empty() {
+                        content_blocks.push(json!({ "type": "text", "text": content }));
+                    }
+                    content_blocks.extend(images.iter().map(|image| {
+                        json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image.mime_type,
+                                "data": image.data,
+                            },
+                        })
+                    }));
+                    Value::Array(content_blocks)
+                };
                 tool_results.push(json!({
                     "type": "tool_result",
                     "tool_use_id": call_id,

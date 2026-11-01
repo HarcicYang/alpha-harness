@@ -69,6 +69,8 @@ pub enum MessageRecord {
         status: ToolStatus,
         /// Model-visible content.
         content: String,
+        /// Images returned to the model.
+        images: Vec<ImageAttachment>,
     },
 }
 
@@ -250,6 +252,7 @@ impl SessionState {
                 id,
                 status,
                 content,
+                images,
             } => {
                 self.pending_tool_calls.remove(id);
                 self.messages.push(MessageRecord::ToolResult {
@@ -257,6 +260,7 @@ impl SessionState {
                     id: *id,
                     status: *status,
                     content: content.clone(),
+                    images: images.clone(),
                 });
             }
             SessionEvent::ModeChanged { mode } => self.mode = *mode,

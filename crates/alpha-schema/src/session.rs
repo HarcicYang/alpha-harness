@@ -177,6 +177,9 @@ pub enum SessionEvent {
         status: ToolStatus,
         /// Model-visible content.
         content: String,
+        /// Images returned to the model with the result.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
     },
     /// The permission mode changed.
     ModeChanged {

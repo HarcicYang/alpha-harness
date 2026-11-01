@@ -236,11 +236,32 @@ fn wire_message(message: &ChatMessage) -> Vec<Value> {
             items
         }
         ChatMessage::AssistantContent(blocks) => assistant_content_items(blocks),
-        ChatMessage::ToolResult { call_id, content } => vec![json!({
-            "type": "function_call_output",
-            "call_id": call_id,
-            "output": content,
-        })],
+        ChatMessage::ToolResult {
+            call_id,
+            content,
+            images,
+        } => {
+            let output = if images.is_empty() {
+                json!(content)
+            } else {
+                let mut parts = Vec::new();
+                if !content.is_empty() {
+                    parts.push(json!({ "type": "input_text", "text": content }));
+                }
+                parts.extend(images.iter().map(|image| {
+                    json!({
+                        "type": "input_image",
+                        "image_url": format!("data:{};base64,{}", image.mime_type, image.data),
+                    })
+                }));
+                Value::Array(parts)
+            };
+            vec![json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            })]
+        }
     }
 }
 

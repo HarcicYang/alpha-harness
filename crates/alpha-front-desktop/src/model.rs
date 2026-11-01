@@ -20,6 +20,7 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                 name,
                 status,
                 content,
+                ..
             } => {
                 if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.id == *id) {
                     tool.status = Some(*status);

@@ -6,6 +6,7 @@ pub mod contract;
 mod execution;
 pub mod file_tools;
 pub mod grep_tool;
+pub mod image_tool;
 pub mod registry;
 pub mod shell_tool;
 
@@ -23,6 +24,7 @@ pub const __ALPHA_MODULE__: &str = "tools";
 pub use contract::{Tool, ToolContext, ToolError, ToolResponse};
 pub use file_tools::{EditTool, ReadTool, WriteTool};
 pub use grep_tool::GrepTool;
+pub use image_tool::ViewImageTool;
 pub use registry::{RegistryError, ToolRegistry};
 pub use shell_tool::{ShellKind, ShellTool, discover_shells};
 
@@ -65,7 +67,8 @@ impl Module for ToolsModule {
             Arc::new(ReadTool::new(filesystem.clone(), permission.clone())),
             Arc::new(WriteTool::new(filesystem.clone(), permission.clone())),
             Arc::new(EditTool::new(filesystem.clone(), permission.clone())),
-            Arc::new(GrepTool::new(filesystem, permission.clone())),
+            Arc::new(GrepTool::new(filesystem.clone(), permission.clone())),
+            Arc::new(ViewImageTool::new(filesystem, permission.clone())),
             Arc::new(ShellTool::new(
                 processes,
                 permission,

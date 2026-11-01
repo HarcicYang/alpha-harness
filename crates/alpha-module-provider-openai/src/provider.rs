@@ -471,11 +471,34 @@ fn wire_message(message: &ChatMessage) -> Value {
                 .collect::<Vec<_>>(),
         }),
         ChatMessage::AssistantContent(blocks) => assistant_content_message(blocks),
-        ChatMessage::ToolResult { call_id, content } => json!({
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": content,
-        }),
+        ChatMessage::ToolResult {
+            call_id,
+            content,
+            images,
+        } => {
+            let content = if images.is_empty() {
+                json!(content)
+            } else {
+                let mut parts = Vec::new();
+                if !content.is_empty() {
+                    parts.push(json!({ "type": "text", "text": content }));
+                }
+                parts.extend(images.iter().map(|image| {
+                    json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", image.mime_type, image.data),
+                        },
+                    })
+                }));
+                Value::Array(parts)
+            };
+            json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": content,
+            })
+        }
     }
 }
 

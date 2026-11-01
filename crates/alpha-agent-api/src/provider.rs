@@ -41,6 +41,8 @@ pub enum ChatMessage {
         call_id: String,
         /// Result content.
         content: String,
+        /// Images returned with the tool result.
+        images: Vec<ImageAttachment>,
     },
 }
 

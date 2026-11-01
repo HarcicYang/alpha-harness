@@ -1,6 +1,6 @@
 //! Tool contract: results, errors, and execution context.
 
-use alpha_schema::{MessageId, SessionId, ToolCallId};
+use alpha_schema::{ImageAttachment, MessageId, SessionId, ToolCallId};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
@@ -55,6 +55,8 @@ pub struct ToolResponse {
     pub output: Option<Value>,
     /// Optional UI metadata.
     pub metadata: Option<Value>,
+    /// Images returned to the model alongside the text.
+    pub images: Vec<ImageAttachment>,
 }
 
 impl ToolResponse {
@@ -64,6 +66,7 @@ impl ToolResponse {
             content: content.into(),
             output: None,
             metadata: None,
+            images: Vec::new(),
         }
     }
 
@@ -76,6 +79,12 @@ impl ToolResponse {
     /// Attach UI metadata.
     pub fn with_metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
+        self
+    }
+
+    /// Attach images to the model-visible result.
+    pub fn with_images(mut self, images: Vec<ImageAttachment>) -> Self {
+        self.images = images;
         self
     }
 }

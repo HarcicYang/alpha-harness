@@ -174,6 +174,7 @@ pub(crate) fn plan_repairs(
             id: *id,
             status: ToolStatus::Interrupted,
             content: String::new(),
+            images: Vec::new(),
         });
     }
     if state.turn_open {

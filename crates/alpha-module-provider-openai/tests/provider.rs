@@ -253,6 +253,7 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
                 ChatMessage::ToolResult {
                     call_id: "call_0".to_owned(),
                     content: "previous".to_owned(),
+                    images: Vec::new(),
                 },
             ],
             tools: vec![ToolDefinition {

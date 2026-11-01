@@ -60,6 +60,8 @@ pub enum TranscriptItem {
         status: ToolStatus,
         /// Model-visible content.
         content: String,
+        /// Images returned with the result.
+        images: Vec<ImageAttachment>,
     },
     /// Incremental output from a running tool.
     ToolOutput {
@@ -393,6 +395,7 @@ impl ChatState {
                 id,
                 status,
                 content,
+                images,
             } => {
                 self.transcript.retain(
                     |item| !matches!(item, TranscriptItem::ToolOutput { id: output_id, .. } if output_id == id),
@@ -406,6 +409,7 @@ impl ChatState {
                     name,
                     status: *status,
                     content: content.clone(),
+                    images: images.clone(),
                 });
                 None
             }
@@ -536,6 +540,7 @@ impl ChatState {
                 id,
                 status,
                 content,
+                ..
             } => {
                 self.insert_context_segment(envelope.seq, estimate_tokens(content) + 4);
                 if let Some(index) = self.tool_activity.remove(id)
@@ -1019,6 +1024,7 @@ mod tests {
                     id: call_id,
                     status: ToolStatus::Completed,
                     content: "src".to_owned(),
+                    images: Vec::new(),
                 },
             ),
         });
@@ -1035,6 +1041,7 @@ mod tests {
                     name: "shell".to_owned(),
                     status: ToolStatus::Completed,
                     content: "src".to_owned(),
+                    images: Vec::new(),
                 },
             ]
         );
@@ -1158,6 +1165,7 @@ mod tests {
                     id: call_id,
                     status: ToolStatus::Completed,
                     content: "Replaced 1 occurrence(s) in src/lib.rs".to_owned(),
+                    images: Vec::new(),
                 },
             ),
         });
@@ -1206,6 +1214,7 @@ mod tests {
                     id: call_id,
                     status: ToolStatus::Failed,
                     content: "permission denied".to_owned(),
+                    images: Vec::new(),
                 },
             ),
         });

@@ -704,6 +704,7 @@ dependencies = [
  "alpha-module-permission",
  "alpha-module-process",
  "alpha-schema",
+ "base64",
  "futures",
  "regex",
  "serde",

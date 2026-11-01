@@ -99,6 +99,51 @@ async fn image_content_reaches_the_provider_and_durable_history() {
     )));
 }
 
+#[tokio::test]
+async fn image_tool_results_are_replayed_to_the_model() {
+    let (_dir, store, header) = store_and_header();
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        CompletionResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-1".to_owned(),
+                name: "view_image".to_owned(),
+                arguments: json!({}),
+            }],
+            blocks: Vec::new(),
+        },
+        CompletionResponse {
+            text: "done".to_owned(),
+            tool_calls: Vec::new(),
+            blocks: Vec::new(),
+        },
+    ]));
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .register(Arc::new(ImageResultTool))
+        .expect("register");
+    let agent = AgentLoop::new(provider.clone(), "vision").with_tools(registry);
+    let writer = store.create(header.clone()).expect("create");
+    let state = SessionState::new(&header);
+
+    agent
+        .run_turn(&Ctx::root(), &writer, &state, "inspect the image")
+        .await
+        .expect("turn");
+
+    let requests = provider.requests.lock().expect("request lock");
+    assert!(requests[1].messages.iter().any(|message| matches!(
+        message,
+        ChatMessage::ToolResult { images, .. }
+            if images.first().is_some_and(|image| image.name == "pixel.png")
+    )));
+    let reader = store.open_read(header.id).expect("read");
+    assert!(reader.events().iter().any(|event| matches!(
+        &event.payload,
+        SessionEvent::ToolResult { images, .. } if !images.is_empty()
+    )));
+}
+
 struct FailingProvider;
 
 impl ModelProvider for FailingProvider {
@@ -185,6 +230,8 @@ struct NoteTool {
     seen: Arc<Mutex<Vec<String>>>,
 }
 
+struct ImageResultTool;
+
 struct PreparedTool {
     prepared: Arc<AtomicBool>,
 }
@@ -245,6 +292,36 @@ impl Tool for NoteTool {
         Box::pin(async move {
             seen.lock().expect("seen lock").push(value.clone());
             Ok(ToolResponse::text(format!("note: {value}")))
+        })
+    }
+}
+
+impl Tool for ImageResultTool {
+    fn name(&self) -> &'static str {
+        "view_image"
+    }
+
+    fn description(&self) -> String {
+        "Load an image".to_owned()
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    fn execute(
+        &self,
+        _input: Value,
+        _context: ToolContext,
+    ) -> BoxFuture<'_, Result<ToolResponse, ToolError>> {
+        Box::pin(async {
+            Ok(
+                ToolResponse::text("loaded image").with_images(vec![ImageAttachment {
+                    name: "pixel.png".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                    data: "aGVsbG8=".to_owned(),
+                }]),
+            )
         })
     }
 }
@@ -863,7 +940,9 @@ async fn loop_executes_tool_calls_and_records_durable_events() {
         assert_eq!(requests[0].tools[0].name, "write_note");
         assert!(requests[1].messages.iter().any(|message| matches!(
             message,
-            ChatMessage::ToolResult { call_id, content }
+            ChatMessage::ToolResult {
+                call_id, content, ..
+            }
                 if call_id == "call-1" && content == "note: hi"
         )));
     }

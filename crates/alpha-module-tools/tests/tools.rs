@@ -241,6 +241,22 @@ fn registry_rejects_duplicates_and_exposes_metadata() {
     assert!(!read.description().is_empty());
     assert!(tools.get("grep").is_some());
     assert!(tools.get("shell").is_some());
+    assert!(tools.get("view_image").is_some());
+}
+
+#[tokio::test]
+async fn view_image_returns_model_visible_image_content() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("pixel.png"), b"\x89PNG\r\n\x1a\n").expect("image");
+    let (_ctx, registry) = setup(PermissionMode::Free, dir.path());
+
+    let response = run(&registry, "view_image", json!({ "path": "pixel.png" }))
+        .await
+        .expect("view image");
+    assert_eq!(response.images.len(), 1);
+    assert_eq!(response.images[0].name, "pixel.png");
+    assert_eq!(response.images[0].mime_type, "image/png");
+    assert!(!response.images[0].data.is_empty());
 }
 
 #[tokio::test]

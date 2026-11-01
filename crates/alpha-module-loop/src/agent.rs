@@ -504,9 +504,9 @@ impl AgentLoop {
             }
         }
 
-        let (status, content) = match outcome {
-            Ok(response) => (ToolStatus::Completed, response.content),
-            Err(ToolError::Failure(message)) => (ToolStatus::Failed, message),
+        let (status, content, images) = match outcome {
+            Ok(response) => (ToolStatus::Completed, response.content, response.images),
+            Err(ToolError::Failure(message)) => (ToolStatus::Failed, message, Vec::new()),
             Err(ToolError::Operational(message)) => {
                 ctx.parallel(AgentError {
                     message: message.clone(),
@@ -529,10 +529,12 @@ impl AgentLoop {
             id: call_id,
             status,
             content: content.clone(),
+            images: images.clone(),
         })?;
         messages.push(ChatMessage::ToolResult {
             call_id: call.id,
             content,
+            images,
         });
         Ok(())
     }
@@ -803,7 +805,12 @@ impl HistoryBuilder {
                     arguments: input.clone(),
                 });
             }
-            MessageRecord::ToolResult { id, content, .. } => {
+            MessageRecord::ToolResult {
+                id,
+                content,
+                images,
+                ..
+            } => {
                 self.flush();
                 let local_id = id.to_string();
                 let call_id = self
@@ -814,6 +821,7 @@ impl HistoryBuilder {
                 self.messages.push(ChatMessage::ToolResult {
                     call_id,
                     content: content.clone(),
+                    images: images.clone(),
                 });
             }
         }
