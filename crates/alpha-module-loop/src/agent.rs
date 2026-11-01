@@ -729,6 +729,8 @@ struct HistoryBuilder {
     pending_text: Option<(MessageId, String)>,
     pending_blocks: Option<(MessageId, Vec<AssistantContentBlock>)>,
     pending_calls: Vec<ToolCall>,
+    // Durable call and result events interleave, so keep the whole result group together.
+    pending_tool_results: Vec<(String, String, Vec<ImageAttachment>)>,
     calls_for: Option<MessageId>,
     tool_result_ids: BTreeMap<String, String>,
 }
@@ -811,25 +813,20 @@ impl HistoryBuilder {
                 images,
                 ..
             } => {
-                self.flush();
-                let local_id = id.to_string();
-                let call_id = self
-                    .tool_result_ids
-                    .get(&local_id)
-                    .cloned()
-                    .unwrap_or(local_id);
-                self.messages.push(ChatMessage::ToolResult {
-                    call_id,
-                    content: content.clone(),
-                    images: images.clone(),
-                });
+                self.pending_tool_results
+                    .push((id.to_string(), content.clone(), images.clone()));
             }
         }
     }
 
     fn flush(&mut self) {
-        if self.pending_calls.is_empty() {
-            match (self.pending_blocks.take(), self.pending_text.take()) {
+        let calls = std::mem::take(&mut self.pending_calls);
+        let caller = self.calls_for.take();
+        let pending_blocks = self.pending_blocks.take();
+        let pending_text = self.pending_text.take();
+
+        if calls.is_empty() {
+            match (pending_blocks, pending_text) {
                 (Some((_, blocks)), _) if !blocks.is_empty() => {
                     self.messages.push(ChatMessage::AssistantContent(blocks));
                 }
@@ -838,51 +835,59 @@ impl HistoryBuilder {
                 }
                 _ => {}
             }
-            return;
+        } else {
+            let (content_id, mut blocks) = match pending_blocks {
+                Some((id, blocks)) if !blocks.is_empty() => (Some(id), blocks),
+                _ => {
+                    let text = pending_text.map(|(_, text)| text).unwrap_or_default();
+                    (None, text_to_blocks(text))
+                }
+            };
+            if let (Some(content_id), Some(caller)) = (content_id, caller)
+                && content_id != caller
+            {
+                self.messages.push(ChatMessage::AssistantContent(blocks));
+                blocks = Vec::new();
+            }
+            let mut matched_blocks = vec![false; blocks.len()];
+            for call in calls {
+                let matched = blocks.iter().enumerate().find_map(|(index, block)| {
+                    let AssistantContentBlock::LocalToolCall { id, name, .. } = block else {
+                        return None;
+                    };
+                    (!matched_blocks[index] && name == &call.name).then(|| {
+                        matched_blocks[index] = true;
+                        id.clone()
+                    })
+                });
+                let call_id = if let Some(call_id) = matched {
+                    call_id
+                } else {
+                    blocks.push(AssistantContentBlock::LocalToolCall {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                    });
+                    matched_blocks.push(true);
+                    call.id.clone()
+                };
+                self.tool_result_ids.insert(call.id, call_id);
+            }
+            self.messages.push(ChatMessage::AssistantContent(blocks));
         }
 
-        let calls = std::mem::take(&mut self.pending_calls);
-        let caller = self.calls_for.take();
-        let pending_blocks = self.pending_blocks.take();
-        let pending_text = self.pending_text.take();
-        let (content_id, mut blocks) = match pending_blocks {
-            Some((id, blocks)) if !blocks.is_empty() => (Some(id), blocks),
-            _ => {
-                let text = pending_text.map(|(_, text)| text).unwrap_or_default();
-                (None, text_to_blocks(text))
-            }
-        };
-        if let (Some(content_id), Some(caller)) = (content_id, caller)
-            && content_id != caller
-        {
-            self.messages.push(ChatMessage::AssistantContent(blocks));
-            blocks = Vec::new();
-        }
-        let mut matched_blocks = vec![false; blocks.len()];
-        for call in calls {
-            let matched = blocks.iter().enumerate().find_map(|(index, block)| {
-                let AssistantContentBlock::LocalToolCall { id, name, .. } = block else {
-                    return None;
-                };
-                (!matched_blocks[index] && name == &call.name).then(|| {
-                    matched_blocks[index] = true;
-                    id.clone()
-                })
+        for (local_id, content, images) in std::mem::take(&mut self.pending_tool_results) {
+            let call_id = self
+                .tool_result_ids
+                .get(&local_id)
+                .cloned()
+                .unwrap_or(local_id);
+            self.messages.push(ChatMessage::ToolResult {
+                call_id,
+                content,
+                images,
             });
-            let call_id = if let Some(call_id) = matched {
-                call_id
-            } else {
-                blocks.push(AssistantContentBlock::LocalToolCall {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                });
-                matched_blocks.push(true);
-                call.id.clone()
-            };
-            self.tool_result_ids.insert(call.id, call_id);
         }
-        self.messages.push(ChatMessage::AssistantContent(blocks));
     }
 
     fn finish(mut self) -> Vec<ChatMessage> {
@@ -896,5 +901,115 @@ fn text_to_blocks(text: String) -> Vec<AssistantContentBlock> {
         Vec::new()
     } else {
         vec![AssistantContentBlock::Text { text }]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alpha_schema::{EventEnvelope, PermissionMode, Seq, SessionId, WorkspaceRef};
+    use alpha_session_log::SessionHeader;
+
+    #[test]
+    fn interleaved_tool_results_follow_the_complete_assistant_message() {
+        let header = SessionHeader::new(
+            SessionId::new(),
+            PermissionMode::Auto,
+            WorkspaceRef {
+                root: "/workspace".to_owned(),
+                cwd: "/workspace".to_owned(),
+            },
+        );
+        let message_id = MessageId::new();
+        let first_call = ToolCallId::new();
+        let second_call = ToolCallId::new();
+        let events = vec![
+            EventEnvelope::new(
+                Seq::new(1),
+                SessionEvent::UserMessage {
+                    id: MessageId::new(),
+                    text: "inspect the workspace".to_owned(),
+                    images: Vec::new(),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(2),
+                SessionEvent::AssistantMessage {
+                    id: message_id,
+                    blocks: vec![
+                        AssistantContentBlock::LocalToolCall {
+                            id: "provider-call-1".to_owned(),
+                            name: "shell".to_owned(),
+                            arguments: serde_json::json!({ "command": "pwd" }),
+                        },
+                        AssistantContentBlock::LocalToolCall {
+                            id: "provider-call-2".to_owned(),
+                            name: "shell".to_owned(),
+                            arguments: serde_json::json!({ "command": "ls" }),
+                        },
+                    ],
+                    text: String::new(),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(3),
+                SessionEvent::ToolCall {
+                    id: first_call,
+                    message_id,
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({ "command": "pwd" }),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(4),
+                SessionEvent::ToolResult {
+                    id: first_call,
+                    status: ToolStatus::Completed,
+                    content: "workspace".to_owned(),
+                    images: Vec::new(),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(5),
+                SessionEvent::ToolCall {
+                    id: second_call,
+                    message_id,
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({ "command": "ls" }),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(6),
+                SessionEvent::ToolResult {
+                    id: second_call,
+                    status: ToolStatus::Completed,
+                    content: "Cargo.toml".to_owned(),
+                    images: Vec::new(),
+                },
+            ),
+        ];
+        let state = SessionState::from_events(&header, &events);
+
+        let messages = HistoryBuilder::from_state(&state);
+
+        assert_eq!(messages.len(), 4);
+        let ChatMessage::AssistantContent(blocks) = &messages[1] else {
+            panic!("assistant message should retain structured tool calls");
+        };
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| matches!(block, AssistantContentBlock::LocalToolCall { .. }))
+                .count(),
+            2
+        );
+        assert!(matches!(
+            &messages[2],
+            ChatMessage::ToolResult { call_id, .. } if call_id == "provider-call-1"
+        ));
+        assert!(matches!(
+            &messages[3],
+            ChatMessage::ToolResult { call_id, .. } if call_id == "provider-call-2"
+        ));
     }
 }
