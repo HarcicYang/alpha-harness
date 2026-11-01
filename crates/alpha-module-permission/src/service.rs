@@ -8,22 +8,15 @@ use futures::future::BoxFuture;
 
 use crate::Policy;
 use crate::policy::RuleDecision;
-use alpha_permission_api::{
-    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, DecisionSource,
-    PermissionService,
+use alpha_permission_api::request::{
+    ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest,
 };
-use alpha_permission_api::request::{ApprovalDecision, GrantScope, PermissionOutcome, PermissionRequest};
-use alpha_permission_api::review::{ApprovalReviewer, IntentClassifier, IntentDecision, ReviewDecision};
-
-
-
-
-
-
-
-
-
-
+use alpha_permission_api::review::{
+    ApprovalReviewer, IntentClassifier, IntentDecision, ReviewDecision,
+};
+use alpha_permission_api::{
+    ApprovalChannel, ApprovalPrompt, AuditRecord, AuditSink, DecisionSource, PermissionService,
+};
 
 /// Local permission service implementing the M1 modes.
 pub struct LocalPermissionService {

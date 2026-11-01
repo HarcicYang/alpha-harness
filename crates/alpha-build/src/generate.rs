@@ -128,16 +128,14 @@ pub fn check_and_generate() -> Result<(), GenerateError> {
             continue;
         };
         match entry.kind {
-            PackageKind::Module | PackageKind::Contract => {
-                collect_package(
-                    package,
-                    &entry,
-                    dep.name.clone(),
-                    &mut modules,
-                    &mut contracts,
-                    &mut seen,
-                )?
-            }
+            PackageKind::Module | PackageKind::Contract => collect_package(
+                package,
+                &entry,
+                dep.name.clone(),
+                &mut modules,
+                &mut contracts,
+                &mut seen,
+            )?,
             PackageKind::Front => {
                 if seen.insert(package.id.clone()) {
                     collect_fronts(package, &entry, dep.name.clone(), &mut fronts)?;
@@ -201,7 +199,10 @@ pub fn check_and_generate() -> Result<(), GenerateError> {
     }
 
     let ordered = order_modules(modules);
-    fs::write(out_dir.join("alpha_composition.rs"), generate_code(&ordered, &fronts))?;
+    fs::write(
+        out_dir.join("alpha_composition.rs"),
+        generate_code(&ordered, &fronts),
+    )?;
     fs::write(
         out_dir.join("alpha_modules.rs"),
         generate_keys(&ordered, &contracts),
@@ -229,14 +230,20 @@ fn collect_package(
         package: package.name.to_string(),
         field: "scope",
     })?;
-    let module_type = entry.module.clone().ok_or_else(|| GenerateError::IncompleteModule {
-        package: package.name.to_string(),
-        field: "module",
-    })?;
-    let config_type = entry.config.clone().ok_or_else(|| GenerateError::IncompleteModule {
-        package: package.name.to_string(),
-        field: "config",
-    })?;
+    let module_type = entry
+        .module
+        .clone()
+        .ok_or_else(|| GenerateError::IncompleteModule {
+            package: package.name.to_string(),
+            field: "module",
+        })?;
+    let config_type = entry
+        .config
+        .clone()
+        .ok_or_else(|| GenerateError::IncompleteModule {
+            package: package.name.to_string(),
+            field: "config",
+        })?;
     modules.push(ModuleSpec {
         info,
         scope,
@@ -339,8 +346,7 @@ fn topological(group: Vec<ModuleSpec>) -> Vec<ModuleSpec> {
                 let Some(provider) = providers.get(required) else {
                     return true;
                 };
-                provider == &spec.info.key
-                    || ordered.iter().any(|done| &done.info.key == provider)
+                provider == &spec.info.key || ordered.iter().any(|done| &done.info.key == provider)
             })
         });
         match ready {
@@ -413,7 +419,10 @@ fn generate_keys(modules: &[ModuleSpec], contracts: &[ModuleInfo]) -> String {
 }
 
 fn generate_code(modules: &[ModuleSpec], fronts: &[FrontSpec]) -> String {
-    let mut keys: Vec<&str> = modules.iter().map(|module| module.info.key.as_str()).collect();
+    let mut keys: Vec<&str> = modules
+        .iter()
+        .map(|module| module.info.key.as_str())
+        .collect();
     keys.sort_unstable();
     keys.dedup();
 
@@ -450,11 +459,7 @@ fn generate_code(modules: &[ModuleSpec], fronts: &[FrontSpec]) -> String {
             );
         }
         if spec.config_type.ends_with("::()") {
-            let _ = writeln!(
-                code,
-                "    {}.activate(ctx, &())",
-                spec.module_type
-            );
+            let _ = writeln!(code, "    {}.activate(ctx, &())", spec.module_type);
         } else {
             let _ = writeln!(
                 code,

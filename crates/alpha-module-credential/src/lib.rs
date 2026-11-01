@@ -9,7 +9,9 @@ use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use keyring_core::{CredentialStore as KeyringCredentialStore, Entry, Error as KeyringError};
 use serde::Deserialize;
 
-pub use alpha_credential_api::{CredentialBackendStatus, CredentialError, CredentialStatus, CredentialStore};
+pub use alpha_credential_api::{
+    CredentialBackendStatus, CredentialError, CredentialStatus, CredentialStore,
+};
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "credential";

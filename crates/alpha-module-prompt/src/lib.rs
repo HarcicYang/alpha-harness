@@ -7,8 +7,8 @@ use std::sync::{Arc, RwLock};
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Disposer, Module};
 use alpha_module_loop::{ChatMessage, ContextError, ContextInjector};
-use alpha_session_log::{MessageRecord, SessionEvent, SessionState, SessionWriter};
 use alpha_schema::MessageId;
+use alpha_session_log::{MessageRecord, SessionEvent, SessionState, SessionWriter};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 
@@ -133,8 +133,6 @@ impl PromptRegistry {
         Ok(output)
     }
 }
-
-
 
 /// One dynamic context section rendered into durable user messages.
 pub trait ContextSectionProvider: Send + Sync + 'static {

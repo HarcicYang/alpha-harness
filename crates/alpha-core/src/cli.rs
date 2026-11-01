@@ -41,7 +41,11 @@ fn command(host: &'static Host) -> Command {
             Command::new("__core")
                 .about("Internal core process entry point")
                 .hide(true)
-                .arg(Arg::new("stdio").long("stdio").action(clap::ArgAction::SetTrue)),
+                .arg(
+                    Arg::new("stdio")
+                        .long("stdio")
+                        .action(clap::ArgAction::SetTrue),
+                ),
         )
 }
 
@@ -51,11 +55,7 @@ fn front_command(front: &'static FrontEntry) -> Command {
         return command;
     }
     command
-        .arg(
-            Arg::new("prompt")
-                .num_args(0..)
-                .help("Prompt text"),
-        )
+        .arg(Arg::new("prompt").num_args(0..).help("Prompt text"))
         .arg(
             Arg::new("mode")
                 .long("mode")

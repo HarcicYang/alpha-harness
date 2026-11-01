@@ -9,8 +9,10 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
-pub use alpha_http_api::{Cassette, CassetteEntry, HttpClient, HttpError, HttpRequest, HttpResponse,
-    HttpResponseStream, RecordingHttpClient, ReplayHttpClient};
+pub use alpha_http_api::{
+    Cassette, CassetteEntry, HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream,
+    RecordingHttpClient, ReplayHttpClient,
+};
 pub use local::LocalHttpClient;
 
 /// Stable module key used by the generated composition table.
