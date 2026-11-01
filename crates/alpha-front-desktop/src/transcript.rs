@@ -278,7 +278,7 @@ impl AlphaDesktop {
     ) -> AnyElement {
         let expanded = self.expanded_thoughts.contains(&index);
         let summary_width = (viewport_width.min(CONTENT_WIDTH) - 96.).max(120.);
-        let summary_chars = (summary_width / 10.).floor().max(18.) as usize;
+        let summary_chars = (summary_width / 7.).floor().max(24.) as usize;
         let summary = thought_summary(&text, summary_chars);
         div()
             .w_full()
@@ -289,8 +289,10 @@ impl AlphaDesktop {
                 Button::new(format!("toggle-thinking:{index}"))
                     .child(
                         div()
+                            .w_full()
                             .flex()
                             .items_center()
+                            .justify_start()
                             .gap(px(7.))
                             .child(icon_badge(IconName::Sparkles, ACCENT, ACCENT_SOFT, 18.))
                             .child(
@@ -309,6 +311,7 @@ impl AlphaDesktop {
                             )),
                     )
                     .ghost()
+                    .w_full()
                     .h(px(26.))
                     .px(px(7.))
                     .rounded_full()
