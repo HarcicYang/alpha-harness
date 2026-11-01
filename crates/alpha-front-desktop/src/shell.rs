@@ -123,7 +123,7 @@ impl AlphaDesktop {
                                         .text_size(px(9.5))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(rgb(TEXT_SECONDARY))
-                                        .child("Queued steer"),
+                                        .child("Queued steer · runs when this turn ends"),
                                 )
                                 .child(
                                     div()
@@ -143,22 +143,6 @@ impl AlphaDesktop {
                                     match this.runtime.confirm_steers(false) {
                                         Ok(()) => {
                                             this.local_status = Some("steer discarded".into())
-                                        }
-                                        Err(error) => this.local_status = Some(error.to_string()),
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("run-steers")
-                                .label("Run next")
-                                .secondary()
-                                .h(px(28.))
-                                .rounded_full()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    match this.runtime.confirm_steers(true) {
-                                        Ok(()) => {
-                                            this.local_status = Some("steer queued to run".into())
                                         }
                                         Err(error) => this.local_status = Some(error.to_string()),
                                     }
