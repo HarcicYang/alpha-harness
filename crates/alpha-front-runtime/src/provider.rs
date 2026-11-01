@@ -253,13 +253,13 @@ impl ProviderState {
     }
 
     /// Resolve the current provider/model metadata from the effective catalog.
+    ///
+    /// An id the catalog does not know stays unresolved: borrowing another
+    /// model's metadata would report limits that do not belong to the route.
     pub fn model_choice(&self, provider: &str, model: &str) -> Option<ModelChoice> {
-        let choices = self.model_choices();
-        choices
-            .iter()
+        self.model_choices()
+            .into_iter()
             .find(|choice| choice.provider == provider && choice.model == model)
-            .or_else(|| choices.iter().find(|choice| choice.provider == provider))
-            .cloned()
     }
 }
 
