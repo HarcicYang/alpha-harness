@@ -61,7 +61,7 @@ impl AlphaDesktop {
                 if choice.context_window == 0 {
                     "Unknown".to_owned()
                 } else {
-                    format!("{}k", choice.context_window / 1_000)
+                    format_token_count(choice.context_window)
                 },
                 choice
                     .reasoning_levels
