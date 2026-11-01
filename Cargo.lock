@@ -436,6 +436,30 @@ name = "alpha-macros"
 version = "0.1.0"
 
 [[package]]
+name = "alpha-min"
+version = "0.1.0"
+dependencies = [
+ "alpha-api-openai-chat",
+ "alpha-build",
+ "alpha-core",
+ "alpha-front-runtime",
+ "alpha-host-api",
+ "alpha-module-compaction",
+ "alpha-module-config",
+ "alpha-module-credential",
+ "alpha-module-fs",
+ "alpha-module-http",
+ "alpha-module-loop",
+ "alpha-module-permission",
+ "alpha-module-process",
+ "alpha-module-prompt",
+ "alpha-module-provider-config",
+ "alpha-module-provider-openai-chat-completions",
+ "alpha-module-tools",
+ "alpha-provider-api",
+]
+
+[[package]]
 name = "alpha-module-agent-host"
 version = "0.1.0"
 dependencies = [

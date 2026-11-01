@@ -67,7 +67,18 @@ Emitted from `crates/alpha-build/src/generate.rs`; the helper lives in
 `alpha-host-api` and returns an error naming the missing capability instead of
 failing later with a bare "service not found".
 
-### 3. `alpha-shell` — partially done
+### 3. `alpha-core` — done
+
+The core server (composition, session runtime, router) lives in
+`crates/alpha-core`. It depends on module crates but not on any frontend crate,
+so a composition root decides which fronts exist.
+
+`apps/alpha-min` is the working proof: it depends on `alpha-core` plus one
+provider kind and the headless `run` front. Its `--help` lists only
+`run` and `sessions`, and `cargo tree -p alpha-min` contains no `gpui`,
+`ratatui`, or `crossterm`. CI checks both.
+
+### 3a. `alpha-shell` — superseded
 
 `apps/alpha-harness/src/cli.rs` already holds the fixed shell: clap command
 builder over `Host::fronts`, dispatch, `sessions`, and `__core --stdio`. `main.rs`

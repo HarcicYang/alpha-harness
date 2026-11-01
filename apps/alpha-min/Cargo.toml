@@ -1,0 +1,34 @@
+[package]
+name = "alpha-min"
+description = "A trimmed alpha-harness composition: headless run only, no desktop and no terminal UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "alpha-min"
+path = "src/main.rs"
+
+[dependencies]
+alpha-core.workspace = true
+alpha-host-api.workspace = true
+alpha-api-openai-chat.workspace = true
+alpha-front-runtime.workspace = true
+alpha-module-compaction.workspace = true
+alpha-module-config.workspace = true
+alpha-module-credential.workspace = true
+alpha-module-fs.workspace = true
+alpha-module-http.workspace = true
+alpha-module-loop.workspace = true
+alpha-module-permission.workspace = true
+alpha-module-process.workspace = true
+alpha-module-prompt.workspace = true
+alpha-module-provider-openai-chat-completions.workspace = true
+alpha-module-provider-config.workspace = true
+alpha-module-tools.workspace = true
+alpha-provider-api.workspace = true
+
+[build-dependencies]
+alpha-build.workspace = true
