@@ -37,6 +37,10 @@ These instructions apply to the entire repository.
 - After completing each small, self-contained feature, create a commit.
 - Use an English Conventional Commit subject with no body.
 - Keep each commit scoped to one logical change.
+- Keep the test suite minimal. Prefer extending, merging, or deleting an
+  existing test over adding a new one, and add a test only when it protects
+  behavior that nothing else covers. A test that can pass without the code
+  working is worse than no test.
 - Before committing, run:
 
 ```sh
