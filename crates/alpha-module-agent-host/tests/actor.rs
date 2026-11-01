@@ -165,16 +165,16 @@ impl AgentDriver for BlockingDriver {
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
         Box::pin(async move {
-            if self.runs.fetch_add(1, Ordering::SeqCst) == 0 {
-                self.started.notify_one();
-                self.release.notified().await;
-            }
             writer.append(SessionEvent::TurnStarted)?;
             writer.append(SessionEvent::UserMessage {
                 id: MessageId::new(),
                 text: prompt.to_owned(),
                 images: Vec::new(),
             })?;
+            if self.runs.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
             let id = MessageId::new();
             let text = format!("echo:{prompt}");
             writer.append(SessionEvent::AssistantMessage {

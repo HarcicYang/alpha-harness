@@ -1282,6 +1282,7 @@ fn start_turn(
     active_turn: &mut Option<TurnId>,
 ) {
     let turn_writer = writer.clone();
+    let turn_state = state.clone();
     let state_snapshot = state.lock().expect("session state lock poisoned").clone();
     let ctx = runtime.ctx.clone();
     let agent = runtime.agent.clone();
@@ -1303,9 +1304,17 @@ fn start_turn(
                 result.map(|_| ())
             }
             _ = token.cancelled() => {
-                let _ = turn_writer.append(SessionEvent::TurnEnded {
-                    reason: TurnEndReason::Interrupted,
-                });
+                // Preparation runs inside an open turn, so a cancel before the
+                // driver opened it must not fabricate a turn end.
+                if turn_state
+                    .lock()
+                    .expect("session state lock poisoned")
+                    .turn_open
+                {
+                    let _ = turn_writer.append(SessionEvent::TurnEnded {
+                        reason: TurnEndReason::Interrupted,
+                    });
+                }
                 Err(LoopError::Tool("turn cancelled".to_owned()))
             }
         };

@@ -130,17 +130,25 @@ impl AgentLoop {
     ) -> Result<TurnOutcome, LoopError> {
         let session_id = writer.header().id;
         let initial_route = self.route(ctx);
+        // Open the turn before any preparation: the user message has to be
+        // visible and steerable even while context preparation runs, and a
+        // cancelled turn must never end without a start.
+        writer.append(SessionEvent::TurnStarted)?;
+        let user_id = MessageId::new();
+        writer.append(SessionEvent::UserMessage {
+            id: user_id,
+            text: prompt.to_owned(),
+            images: images.to_vec(),
+        })?;
         let mut effective_state = state.clone();
-        if let Some(preparer) = &self.context_preparer {
-            preparer
-                .prepare(
-                    writer,
-                    &mut effective_state,
-                    self.provider.as_ref(),
-                    &initial_route.model,
-                    prompt,
-                )
-                .await?;
+        let preparation = self
+            .prepare_turn(writer, &mut effective_state, &initial_route.model, prompt)
+            .await;
+        if let Err(error) = preparation {
+            writer.append(SessionEvent::TurnEnded {
+                reason: TurnEndReason::Failed,
+            })?;
+            return Err(error);
         }
         let mut messages = HistoryBuilder::from_state(&effective_state);
         if let Some(injector) = &self.context_injector {
@@ -155,13 +163,6 @@ impl AgentLoop {
                 .map_err(|error| LoopError::Tool(error.to_string()))?;
         }
         let tools = self.tool_definitions();
-        writer.append(SessionEvent::TurnStarted)?;
-        let user_id = MessageId::new();
-        writer.append(SessionEvent::UserMessage {
-            id: user_id,
-            text: prompt.to_owned(),
-            images: images.to_vec(),
-        })?;
 
         if images.is_empty() {
             messages.push(ChatMessage::User(prompt.to_owned()));
@@ -272,6 +273,26 @@ impl AgentLoop {
             }
             step = step.saturating_add(1);
         }
+    }
+
+    /// Run the context-preparation pipeline for one turn.
+    ///
+    /// Preparation can rewrite the projected state (compaction) and can talk to
+    /// the provider, so the turn is already open when it runs.
+    async fn prepare_turn(
+        &self,
+        writer: &SessionWriter,
+        state: &mut SessionState,
+        model: &str,
+        prompt: &str,
+    ) -> Result<(), LoopError> {
+        let Some(preparer) = &self.context_preparer else {
+            return Ok(());
+        };
+        preparer
+            .prepare(writer, state, self.provider.as_ref(), model, prompt)
+            .await?;
+        Ok(())
     }
 
     async fn stream_response(
