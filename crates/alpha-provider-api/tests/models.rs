@@ -92,7 +92,14 @@ impl HttpClient for CatalogHttp {
                 body: json!({
                     "data": [
                         { "id": "large", "display_name": "Large Dynamic" },
-                        { "id": "new-model", "name": "New Model" }
+                        {
+                            "id": "new-model",
+                            "name": "New Model",
+                            "context_window": 1_048_576,
+                            "max_output_tokens": 393_216,
+                            "reasoning": true,
+                            "reasoning_levels": ["low", "high", "max"]
+                        }
                     ]
                 })
                 .to_string()
@@ -215,7 +222,7 @@ fn dynamic_provider_reports_effective_model_context_windows() {
     let instances = Arc::new(ProviderInstanceRegistry::new());
     instances.upsert(instance);
     ctx.provide(kinds).expect("provide kinds");
-    ctx.provide(instances).expect("provide instances");
+    ctx.provide(instances.clone()).expect("provide instances");
     let route = Arc::new(ModelRouteOverride::new(ModelRoute::new(
         "test",
         "large",
@@ -226,6 +233,26 @@ fn dynamic_provider_reports_effective_model_context_windows() {
     assert_eq!(provider.context_window("large"), Some(999_999));
     assert_eq!(provider.context_window("small"), Some(1_000));
     assert_eq!(provider.context_window("missing"), None);
+
+    // A discovered catalog beats the static descriptor: a gateway that serves a
+    // one-million-token window must not fall back to a local default. An explicit
+    // user override still wins over the catalog.
+    instances.cache_catalog(
+        "test",
+        vec![ModelDescriptor {
+            id: "small".to_owned(),
+            name: "Small".to_owned(),
+            adapter: "test".to_owned(),
+            context_window: 1_048_576,
+            max_tokens: 393_216,
+            reasoning: true,
+            reasoning_levels: ReasoningLevel::ALL.to_vec(),
+            provider_tools: Vec::new(),
+        }],
+    );
+    assert_eq!(provider.context_window("small"), Some(1_048_576));
+    assert_eq!(provider.output_limit("small"), Some(393_216));
+    assert_eq!(provider.context_window("large"), Some(999_999));
 }
 
 #[test]
@@ -252,7 +279,21 @@ fn dynamic_catalog_prioritizes_provider_models() {
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].id, "large");
     assert_eq!(models[0].name, "Large Dynamic");
+    // No limits in the payload: the static descriptor keeps its own values.
+    assert_eq!(models[0].context_window, 2_000);
+    assert_eq!(models[0].max_tokens, 200);
     assert_eq!(models[1].id, "new-model");
+    assert_eq!(models[1].context_window, 1_048_576);
+    assert_eq!(models[1].max_tokens, 393_216);
+    assert!(models[1].reasoning);
+    assert_eq!(
+        models[1].reasoning_levels,
+        vec![
+            ReasoningLevel::Low,
+            ReasoningLevel::High,
+            ReasoningLevel::Max
+        ]
+    );
 
     let request = http
         .request

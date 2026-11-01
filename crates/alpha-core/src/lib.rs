@@ -1362,6 +1362,10 @@ fn add_provider_methods(router: Router, ctx: Ctx) -> Router {
                 let models = discover_models(&instance, kind.as_ref(), http, credential)
                     .await
                     .map_err(|error| RpcError::internal(error.to_string()))?;
+                // Remember the reported limits: compaction and request shaping read
+                // them from the registry, and the catalog is the only source that
+                // knows a gateway serves a much larger window than any default.
+                instances.cache_catalog(&params.id, models.clone());
                 serde_json::to_value(models).map_err(|error| RpcError::internal(error.to_string()))
             }
         }

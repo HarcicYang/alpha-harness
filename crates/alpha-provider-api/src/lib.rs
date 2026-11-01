@@ -116,6 +116,7 @@ pub struct ProviderKindRegistry {
 #[derive(Default)]
 pub struct ProviderInstanceRegistry {
     instances: RwLock<BTreeMap<String, ProviderInstance>>,
+    catalogs: RwLock<BTreeMap<String, Vec<ModelDescriptor>>>,
 }
 
 impl ProviderInstanceRegistry {
@@ -125,19 +126,51 @@ impl ProviderInstanceRegistry {
     }
 
     /// Insert or replace one instance.
+    ///
+    /// A replaced instance drops its discovered catalog: the metadata belongs to
+    /// the configuration that produced it.
     pub fn upsert(&self, instance: ProviderInstance) {
+        let id = instance.id.clone();
+        self.catalogs
+            .write()
+            .expect("provider catalog lock poisoned")
+            .remove(&id);
         self.instances
             .write()
             .expect("provider instance lock poisoned")
-            .insert(instance.id.clone(), instance);
+            .insert(id, instance);
     }
 
     /// Remove one instance.
     pub fn remove(&self, id: &str) -> Option<ProviderInstance> {
+        self.catalogs
+            .write()
+            .expect("provider catalog lock poisoned")
+            .remove(id);
         self.instances
             .write()
             .expect("provider instance lock poisoned")
             .remove(id)
+    }
+
+    /// Remember the models a provider catalog endpoint reported for one instance.
+    ///
+    /// The catalog is authoritative for per-model limits: it is the only place
+    /// that knows a gateway serves a one-million-token context.
+    pub fn cache_catalog(&self, id: &str, models: Vec<ModelDescriptor>) {
+        self.catalogs
+            .write()
+            .expect("provider catalog lock poisoned")
+            .insert(id.to_owned(), models);
+    }
+
+    /// Models reported by the catalog endpoint for one instance, when known.
+    pub fn catalog(&self, id: &str) -> Option<Vec<ModelDescriptor>> {
+        self.catalogs
+            .read()
+            .expect("provider catalog lock poisoned")
+            .get(id)
+            .cloned()
     }
 
     /// Look up one instance.
@@ -545,29 +578,34 @@ pub async fn discover_models(
                 .map(|adapter| adapter.key.clone())
         })
         .ok_or_else(|| ProviderError::Request("provider has no adapter".to_owned()))?;
-    let reasoning = static_models.iter().any(|model| model.reasoning);
+    let catalog_has_reasoning = static_models.iter().any(|model| model.reasoning);
     let mut seen = BTreeMap::new();
-    for (id, name) in discovered {
-        if seen.contains_key(&id) {
+    for entry in discovered {
+        if seen.contains_key(&entry.id) {
             continue;
         }
-        let inferred_reasoning = reasoning || model_id_is_reasoning(&id);
-        let model = static_models
+        let CatalogEntry {
+            id,
+            name,
+            context_window,
+            max_tokens,
+            reasoning,
+            reasoning_levels,
+        } = entry;
+        let inferred_reasoning =
+            reasoning.unwrap_or(catalog_has_reasoning || model_id_is_reasoning(&id));
+        let mut model = static_models
             .iter()
             .find(|model| model.id == id)
             .cloned()
-            .map(|mut model| {
-                if let Some(name) = name.clone() {
-                    model.name = name;
-                }
-                model
-            })
             .unwrap_or_else(|| ModelDescriptor {
                 id: id.clone(),
-                name: name.unwrap_or_else(|| id.clone()),
+                name: id.clone(),
                 adapter: fallback_adapter.clone(),
-                context_window: 128_000,
-                max_tokens: 8_192,
+                // The catalog is the only source of truth for limits; an unknown
+                // limit stays unknown instead of inventing a window.
+                context_window: 0,
+                max_tokens: 0,
                 reasoning: inferred_reasoning,
                 reasoning_levels: if inferred_reasoning {
                     ReasoningLevel::ALL.to_vec()
@@ -576,6 +614,21 @@ pub async fn discover_models(
                 },
                 provider_tools: Vec::new(),
             });
+        if let Some(name) = name {
+            model.name = name;
+        }
+        if let Some(window) = context_window {
+            model.context_window = window;
+        }
+        if let Some(tokens) = max_tokens {
+            model.max_tokens = tokens;
+        }
+        model.reasoning = inferred_reasoning;
+        if let Some(levels) = reasoning_levels {
+            model.reasoning_levels = levels;
+        } else if !inferred_reasoning {
+            model.reasoning_levels = vec![ReasoningLevel::Auto];
+        }
         seen.insert(id, model);
     }
     Ok(seen.into_values().collect())
@@ -605,7 +658,17 @@ fn deepseek_models_endpoint(base_url: &str) -> String {
     format!("{base}/models")
 }
 
-fn model_entries(value: &Value) -> Vec<(String, Option<String>)> {
+/// One model advertised by a provider's catalog endpoint.
+struct CatalogEntry {
+    id: String,
+    name: Option<String>,
+    context_window: Option<u64>,
+    max_tokens: Option<u64>,
+    reasoning: Option<bool>,
+    reasoning_levels: Option<Vec<ReasoningLevel>>,
+}
+
+fn model_entries(value: &Value) -> Vec<CatalogEntry> {
     let entries = value
         .get("data")
         .or_else(|| value.get("models"))
@@ -618,17 +681,103 @@ fn model_entries(value: &Value) -> Vec<(String, Option<String>)> {
         .iter()
         .filter_map(|entry| {
             if let Some(id) = entry.as_str() {
-                return Some((id.to_owned(), None));
+                return Some(CatalogEntry {
+                    id: id.to_owned(),
+                    name: None,
+                    context_window: None,
+                    max_tokens: None,
+                    reasoning: None,
+                    reasoning_levels: None,
+                });
             }
-            let id = entry.get("id").and_then(Value::as_str)?;
-            let name = entry
-                .get("display_name")
-                .or_else(|| entry.get("name"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            Some((id.to_owned(), name))
+            let id = entry.get("id").and_then(Value::as_str)?.to_owned();
+            Some(CatalogEntry {
+                id,
+                name: entry
+                    .get("display_name")
+                    .or_else(|| entry.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                context_window: number_field(
+                    entry,
+                    &[
+                        "context_window",
+                        "context_length",
+                        "max_input_tokens",
+                        "max_context_length",
+                    ],
+                ),
+                max_tokens: number_field(
+                    entry,
+                    &["max_output_tokens", "max_tokens", "max_completion_tokens"],
+                ),
+                reasoning: entry.get("reasoning").and_then(Value::as_bool),
+                reasoning_levels: level_field(entry),
+            })
         })
         .collect()
+}
+
+fn number_field(entry: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| entry.get(*key).and_then(Value::as_u64))
+        .filter(|value| *value > 0)
+}
+
+fn level_field(entry: &Value) -> Option<Vec<ReasoningLevel>> {
+    let names = entry
+        .get("reasoning_levels")
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| level.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            let levels = entry.get("supported_reasoning_levels")?.as_array()?;
+            Some(
+                levels
+                    .iter()
+                    .filter_map(|level| {
+                        level
+                            .get("effort")
+                            .or_else(|| level.get("level"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })?;
+    let parsed = names
+        .iter()
+        .filter_map(|name| {
+            ReasoningLevel::ALL
+                .into_iter()
+                .find(|level| level.as_str().eq_ignore_ascii_case(name))
+        })
+        .collect::<Vec<_>>();
+    (!parsed.is_empty()).then_some(parsed)
+}
+
+/// Models for one instance, preferring the catalog its endpoint reported.
+fn instance_models(
+    root: &Ctx,
+    instance: &ProviderInstance,
+    kind: &dyn ProviderKind,
+) -> Vec<ModelDescriptor> {
+    let mut models = root
+        .get::<ProviderInstanceRegistry>()
+        .and_then(|registry| registry.catalog(&instance.id))
+        .unwrap_or_default();
+    // A catalog endpoint can list a subset of what the kind ships; keep the
+    // static entries it did not mention.
+    for model in &kind.descriptor().models {
+        if !models.iter().any(|known| known.id == model.id) {
+            models.push(model.clone());
+        }
+    }
+    effective_models(instance, &models)
 }
 
 /// Apply user metadata overrides to a provider kind model catalog.
@@ -727,10 +876,11 @@ impl ModelProvider for DynamicProvider {
         } else {
             model.to_owned()
         };
-        effective_models(&instance, &kind.descriptor().models)
+        instance_models(&self.root, &instance, kind.as_ref())
             .into_iter()
             .find(|descriptor| descriptor.id == model)
             .and_then(|descriptor| usize::try_from(descriptor.context_window).ok())
+            .filter(|window| *window > 0)
     }
 
     fn output_limit(&self, model: &str) -> Option<u64> {
@@ -741,10 +891,11 @@ impl ModelProvider for DynamicProvider {
         } else {
             model.to_owned()
         };
-        effective_models(&instance, &kind.descriptor().models)
+        instance_models(&self.root, &instance, kind.as_ref())
             .into_iter()
             .find(|descriptor| descriptor.id == model)
             .map(|descriptor| descriptor.max_tokens)
+            .filter(|tokens| *tokens > 0)
     }
 
     fn complete(
