@@ -20,7 +20,10 @@ use serde::Deserialize;
 
 pub use local::LocalProcessRunner;
 pub use sandbox::{SandboxConfig, SandboxedProcessRunner, available_bwrap, bwrap_args, find_bwrap};
-pub use seam::{ProcessError, ProcessOutcome, ProcessRequest, ProcessRunner};
+pub use seam::{
+    ProcessError, ProcessOutcome, ProcessOutputCallback, ProcessRequest, ProcessRunner,
+    ProcessStream,
+};
 
 /// One process execution boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use alpha_api_anthropic_messages::{ADAPTER_KEY, AnthropicMessagesApiModule};
-use alpha_kernel::{Ctx, Module};
 use alpha_http_api::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
+use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
@@ -79,6 +79,7 @@ async fn streams_text_and_tool_input_deltas() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: vec!["web_search".to_owned()],
+                max_output_tokens: Some(128_000),
                 options: json!({}),
             },
         )
@@ -113,6 +114,7 @@ async fn streams_text_and_tool_input_deltas() {
     assert_eq!(request.url, "https://api.anthropic.test/v1/messages");
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["stream"], json!(true));
+    assert_eq!(payload["max_tokens"], json!(128_000));
     assert_eq!(payload["tools"][0]["type"], json!("web_search_20250305"));
 }
 
@@ -140,6 +142,7 @@ async fn streams_provider_native_web_search_blocks() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: vec!["web_search".to_owned()],
+                max_output_tokens: None,
                 options: json!({}),
             },
         )
@@ -212,6 +215,7 @@ async fn groups_consecutive_tool_results_into_one_user_message() {
                 ],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({}),
             },
         )
@@ -259,6 +263,7 @@ async fn maps_reasoning_level_into_thinking_budget() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({ "thinking": { "type": "disabled" } }),
             },
         )
@@ -299,6 +304,7 @@ async fn streams_and_replays_signed_thinking_blocks() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({}),
             },
         )
@@ -345,6 +351,7 @@ async fn streams_and_replays_signed_thinking_blocks() {
                 ])],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({}),
             },
         )

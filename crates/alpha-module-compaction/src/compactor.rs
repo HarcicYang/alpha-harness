@@ -174,6 +174,7 @@ impl DefaultContextCompactor {
                     ],
                     tools: Vec::new(),
                     provider_tools: Vec::new(),
+                    max_output_tokens: None,
                 })
                 .await
                 .map_err(|error| ContextError::message(error.to_string()))?;

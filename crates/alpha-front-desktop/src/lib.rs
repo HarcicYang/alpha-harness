@@ -131,6 +131,7 @@ enum DesktopTranscriptItem {
 struct ToolSummary {
     id: ToolCallId,
     name: String,
+    input: Option<serde_json::Value>,
     status: Option<ToolStatus>,
     content: Option<String>,
 }

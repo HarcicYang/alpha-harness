@@ -115,6 +115,10 @@ pub struct CompletionRequest {
     pub tools: Vec<ToolDefinition>,
     /// Provider-native tools for this request.
     pub provider_tools: Vec<String>,
+    /// Catalog maximum output budget for providers that require one.
+    ///
+    /// A `None` value leaves the provider/model default untouched.
+    pub max_output_tokens: Option<u64>,
 }
 
 /// Effective provider route for a session.
@@ -279,6 +283,11 @@ pub trait ModelProvider: Send + Sync + 'static {
 
     /// Context window reported for one model, when known.
     fn context_window(&self, _model: &str) -> Option<usize> {
+        None
+    }
+
+    /// Maximum output tokens declared for one model, when the catalog knows it.
+    fn output_limit(&self, _model: &str) -> Option<u64> {
         None
     }
 

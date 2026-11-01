@@ -4,8 +4,8 @@ use alpha_kernel::{Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
 use alpha_module_loop::{ChatMessage, ContextInjector};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule, PromptPriority};
-use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 use alpha_schema::{PermissionMode, SessionId};
+use alpha_session_log::{SessionEvent, SessionHeader, SessionState, SessionStore, WorkspaceRef};
 
 fn state() -> SessionState {
     let header = SessionHeader::new(
@@ -50,7 +50,9 @@ fn module_assembles_builtin_sections_in_stable_order() {
     assert!(stop < persona);
     assert!(!prompt.contains("Current permission mode"));
     assert!(!prompt.contains("`/workspace/project`"));
-    assert!(prompt.contains("Codex-compatible default"));
+    assert!(prompt.contains("standard workspace-write preset"));
+    assert!(prompt.contains("small step budget"));
+    assert!(!prompt.contains("Codex-compatible"));
     assert!(prompt.contains("reviewer denial is final"));
     assert!(prompt.contains("GFM tables"));
     assert!(prompt.contains("fenced code blocks"));

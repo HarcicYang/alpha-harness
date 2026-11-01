@@ -2745,6 +2745,13 @@ fn build_transcript_entry_lines(entry: &TranscriptEntry, width: u16) -> Vec<Line
                 Style::default().fg(COLOR_MUTED),
             ),
         ])],
+        TranscriptEntry::ToolOutput { text, .. } => vec![Line::from(vec![
+            Span::styled("... ", Style::default().fg(COLOR_WARNING)),
+            Span::styled(
+                tool_result_summary("tool", "running", text),
+                Style::default().fg(COLOR_MUTED),
+            ),
+        ])],
         TranscriptEntry::Error { message } => vec![Line::from(vec![
             Span::styled(
                 "error: ",
@@ -3970,15 +3977,21 @@ mod tests {
 }
 
 /// Front entry for `alpha chat`.
-pub fn __front_chat(request: alpha_host_api::FrontRequest) -> Result<(), alpha_host_api::FrontError> {
-    let runtime = alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
-        .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+pub fn __front_chat(
+    request: alpha_host_api::FrontRequest,
+) -> Result<(), alpha_host_api::FrontError> {
+    let runtime =
+        alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
+            .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
     run_chat(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
 }
 
 /// Front entry for `alpha tui`.
-pub fn __front_tui(request: alpha_host_api::FrontRequest) -> Result<(), alpha_host_api::FrontError> {
-    let runtime = alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
-        .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
+pub fn __front_tui(
+    request: alpha_host_api::FrontRequest,
+) -> Result<(), alpha_host_api::FrontError> {
+    let runtime =
+        alpha_front_runtime::FrontRuntime::start(alpha_front_runtime::runtime_config(&request))
+            .map_err(|error| alpha_host_api::FrontError::message(error.to_string()))?;
     run_tui(runtime).map_err(|error| alpha_host_api::FrontError::message(error.to_string()))
 }

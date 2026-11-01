@@ -4,6 +4,7 @@ impl AlphaDesktop {
     pub(crate) fn render_transcript(
         &mut self,
         viewport_height: f32,
+        viewport_width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.transcript_dirty {
@@ -22,7 +23,13 @@ impl AlphaDesktop {
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let rendered = self.render_desktop_transcript_item(&namespace, index, item, cx);
+                let rendered = self.render_desktop_transcript_item(
+                    &namespace,
+                    index,
+                    item,
+                    viewport_width,
+                    cx,
+                );
                 enter_from_below(
                     div().child(rendered),
                     format!("transcript:{namespace}:{index}"),
@@ -110,6 +117,7 @@ impl AlphaDesktop {
         namespace: &str,
         index: usize,
         item: &DesktopTranscriptItem,
+        viewport_width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match item {
@@ -134,6 +142,8 @@ impl AlphaDesktop {
                 )
                 .child(
                     div()
+                        .w_full()
+                        .min_w(px(0.))
                         .text_size(px(13.5))
                         .line_height(px(22.))
                         .text_color(rgb(TEXT))
@@ -147,10 +157,10 @@ impl AlphaDesktop {
                 self.render_assistant_text(namespace, index, text, true)
             }
             DesktopTranscriptItem::Thinking(text) => {
-                self.render_thinking(index, text.clone(), false, cx)
+                self.render_thinking(index, text.clone(), false, viewport_width, cx)
             }
             DesktopTranscriptItem::StreamingThinking(text) => {
-                self.render_thinking(index, text.clone(), true, cx)
+                self.render_thinking(index, text.clone(), true, viewport_width, cx)
             }
             DesktopTranscriptItem::Error(text) => div()
                 .w_full()
@@ -167,6 +177,7 @@ impl AlphaDesktop {
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
                         .text_size(px(11.5))
                         .line_height(px(19.))
                         .text_color(rgb(DANGER))
@@ -194,6 +205,8 @@ impl AlphaDesktop {
                     format!("assistant-markdown:{namespace}:{index}"),
                     text.clone(),
                 )
+                .w_full()
+                .min_w(px(0.))
                 .text_size(px(13.5))
                 .line_height(px(23.))
                 .text_color(rgb(TEXT)),
@@ -209,9 +222,13 @@ impl AlphaDesktop {
         index: usize,
         text: SharedString,
         streaming: bool,
+        viewport_width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let expanded = self.expanded_thoughts.contains(&index);
+        let summary_width = (viewport_width.min(CONTENT_WIDTH) - 96.).max(120.);
+        let summary_chars = (summary_width / 10.).floor().max(18.) as usize;
+        let summary = thought_summary(&text, summary_chars);
         div()
             .w_full()
             .flex()
@@ -227,9 +244,12 @@ impl AlphaDesktop {
                             .child(icon_badge(IconName::Sparkles, ACCENT, ACCENT_SOFT, 18.))
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
                                     .text_size(px(10.5))
                                     .text_color(rgb(MUTED))
-                                    .child("Thought"),
+                                    .child(format!("Thought  {summary}")),
                             )
                             .child(disclosure_chevron(
                                 format!("thought-chevron:{index}"),
@@ -445,16 +465,22 @@ impl AlphaDesktop {
                                             .text_color(rgb(TEXT_SECONDARY))
                                             .child(tool.name.clone()),
                                     )
-                                    .when_some(tool.content.as_deref(), |this, content| {
-                                        this.child(
-                                            div()
-                                                .mt(px(2.))
-                                                .truncate()
-                                                .text_size(px(9.5))
-                                                .text_color(rgb(MUTED))
-                                                .child(compact_tool_content(content)),
-                                        )
-                                    }),
+                                    .child(
+                                        div()
+                                            .mt(px(2.))
+                                            .truncate()
+                                            .text_size(px(9.5))
+                                            .text_color(rgb(MUTED))
+                                            .child(tool.content.as_deref().map_or_else(
+                                                || {
+                                                    tool.input
+                                                        .as_ref()
+                                                        .map(compact_json)
+                                                        .unwrap_or_default()
+                                                },
+                                                compact_tool_content,
+                                            )),
+                                    ),
                             )
                             .child(
                                 div()
@@ -488,59 +514,54 @@ impl AlphaDesktop {
                     })),
             )
             .when(expanded, |this| {
-                this.when_some(tool.content.as_deref(), |this, content| {
-                    this.child(popover_enter(
-                        div()
-                            .mx(px(expansion_x))
-                            .mb(px(expansion_bottom))
-                            .mt(px(expansion_top))
-                            .overflow_hidden()
-                            .rounded(px(20.))
-                            .border_1()
-                            .border_color(rgba(BORDER_SUBTLE))
-                            .bg(rgb(SURFACE_INSET))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .px(px(13.))
-                                    .pt(px(10.))
-                                    .flex()
-                                    .gap(px(5.))
-                                    .child(tool_meta_chip(tool_kind))
-                                    .child(tool_meta_chip(status)),
-                            )
-                            .child(
-                                div()
-                                    .id(format!("tool-scroll-shell:{tool_id}"))
-                                    .relative()
-                                    .mt(px(8.))
-                                    .max_h(px(160.))
-                                    .tool_scroll_shell(tool_id, cx)
-                                    .child(
-                                        div()
-                                            .id(format!("tool-scroll:{tool_id}"))
-                                            .w_full()
-                                            .max_h(px(160.))
-                                            .overflow_y_scroll()
-                                            .track_scroll(&state.scroll)
-                                            .px(px(13.))
-                                            .pb(px(12.))
-                                            .pr(px(SCROLLBAR_GUTTER))
-                                            .font_family("monospace")
-                                            .text_size(px(9.))
-                                            .line_height(px(15.75))
-                                            .text_color(rgb(TEXT_SECONDARY))
-                                            .child(tool_detail_content(content)),
-                                    )
-                                    .child(scrollbar_rail(
-                                        format!("tool:{tool_id}"),
-                                        &state.scroll,
-                                    )),
-                            ),
-                        format!("tool-detail:{tool_id}:{}", self.overlay_generation),
-                    ))
-                })
+                this.child(popover_enter(
+                    div()
+                        .mx(px(expansion_x))
+                        .mb(px(expansion_bottom))
+                        .mt(px(expansion_top))
+                        .overflow_hidden()
+                        .rounded(px(20.))
+                        .border_1()
+                        .border_color(rgba(BORDER_SUBTLE))
+                        .bg(rgb(SURFACE_INSET))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .px(px(13.))
+                                .pt(px(10.))
+                                .flex()
+                                .gap(px(5.))
+                                .child(tool_meta_chip(tool_kind))
+                                .child(tool_meta_chip(status)),
+                        )
+                        .child(
+                            div()
+                                .id(format!("tool-scroll-shell:{tool_id}"))
+                                .relative()
+                                .mt(px(8.))
+                                .max_h(px(160.))
+                                .tool_scroll_shell(tool_id, cx)
+                                .child(
+                                    div()
+                                        .id(format!("tool-scroll:{tool_id}"))
+                                        .w_full()
+                                        .max_h(px(160.))
+                                        .overflow_y_scroll()
+                                        .track_scroll(&state.scroll)
+                                        .px(px(13.))
+                                        .pb(px(12.))
+                                        .pr(px(SCROLLBAR_GUTTER))
+                                        .font_family("monospace")
+                                        .text_size(px(9.))
+                                        .line_height(px(15.75))
+                                        .text_color(rgb(TEXT_SECONDARY))
+                                        .child(tool_detail_content(tool)),
+                                )
+                                .child(scrollbar_rail(format!("tool:{tool_id}"), &state.scroll)),
+                        ),
+                    format!("tool-detail:{tool_id}:{}", self.overlay_generation),
+                ))
             })
             .into_any_element()
     }
@@ -590,6 +611,17 @@ fn tool_meta_chip(label: &str) -> Div {
         .text_size(px(8.))
         .text_color(rgb(MUTED))
         .child(label.to_owned())
+}
+
+fn thought_summary(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = compact.chars().count();
+    if count <= max_chars {
+        return compact;
+    }
+    let keep = max_chars.saturating_sub(3);
+    let tail = compact.chars().skip(count - keep).collect::<String>();
+    format!("...{tail}")
 }
 
 fn empty_alpha_layer(size: f32, color: u32) -> Div {

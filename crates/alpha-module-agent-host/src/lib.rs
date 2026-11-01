@@ -14,14 +14,14 @@ use alpha_module_loop::{
     SteerQueue,
 };
 use alpha_module_permission::PermissionService;
-use alpha_session_log::{
-    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
-    TurnEndReason, WorkspaceRef,
-};
 use alpha_protocol::{OutboundTransport, RpcError};
 use alpha_schema::{
     DiscardedSteer, LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel,
     SessionEventNotification, SessionId, TurnId,
+};
+use alpha_session_log::{
+    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
+    TurnEndReason, WorkspaceRef,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -398,9 +398,7 @@ impl AgentHostService {
         if prompt.trim().is_empty() {
             return Err(AgentHostError::Invalid("prompt is empty".to_owned()));
         }
-        let actor = self
-            .actor(session_id)
-            .ok_or(AgentHostError::SessionNotFound(session_id))?;
+        let actor = self.ensure_actor(session_id)?;
         actor
             .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -539,9 +537,7 @@ impl AgentHostService {
         session_id: SessionId,
         after_seq: u64,
     ) -> Result<SessionAttached, AgentHostError> {
-        if self.actor(session_id).is_none() {
-            return Err(AgentHostError::SessionNotFound(session_id));
-        }
+        self.ensure_actor(session_id)?;
         self.sink.begin_attach(session_id);
         let replay = (|| -> Result<(u64, usize), AgentHostError> {
             let reader = self.store.open_read(session_id)?;
@@ -617,6 +613,15 @@ impl AgentHostService {
             .expect("agent host lock poisoned")
             .get(&session_id)
             .cloned()
+    }
+
+    fn ensure_actor(&self, session_id: SessionId) -> Result<Arc<SessionActor>, AgentHostError> {
+        if let Some(actor) = self.actor(session_id) {
+            return Ok(actor);
+        }
+        self.resume_session(session_id)?;
+        self.actor(session_id)
+            .ok_or(AgentHostError::SessionNotFound(session_id))
     }
 
     fn spawn_actor_with_state(
@@ -892,8 +897,37 @@ fn install_live_observers(
                     stream_id: Some(format!("{turn_id}:tool")),
                     step_id: None,
                     event: LiveAgentEvent::ToolStarted {
+                        call_id: event.call_id,
                         name: event.name.clone(),
                         input: event.input.clone(),
+                    },
+                },
+            );
+        })
+    })
+    .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+
+    let output_sink = sink.clone();
+    let output_turn = current_turn.clone();
+    ctx.on_parallel::<alpha_module_loop::AgentToolOutput, _>(move |event| {
+        let sink = output_sink.clone();
+        let turn = output_turn.clone();
+        Box::pin(async move {
+            let turn_id = turn
+                .lock()
+                .expect("turn lock poisoned")
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            let _ = sink.publish(
+                session_id,
+                SessionEventNotification::Live {
+                    session_id,
+                    turn_id: Some(turn_id.clone()),
+                    stream_id: Some(format!("{turn_id}:tool:{}", event.call_id)),
+                    step_id: None,
+                    event: LiveAgentEvent::ToolOutput {
+                        call_id: event.call_id,
+                        text: event.text.clone(),
                     },
                 },
             );
@@ -920,6 +954,7 @@ fn install_live_observers(
                     stream_id: Some(format!("{turn_id}:tool")),
                     step_id: None,
                     event: LiveAgentEvent::ToolFinished {
+                        call_id: event.call_id,
                         name: event.name.clone(),
                         status: event.status,
                         content: event.content.clone(),

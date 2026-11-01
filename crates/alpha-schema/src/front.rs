@@ -69,13 +69,24 @@ pub enum LiveAgentEvent {
     },
     /// A completed tool call is about to execute.
     ToolStarted {
+        /// Durable call identity.
+        call_id: crate::ToolCallId,
         /// Tool name.
         name: String,
         /// Decoded tool input.
         input: Value,
     },
+    /// Incremental output from a running tool call.
+    ToolOutput {
+        /// Durable call identity.
+        call_id: crate::ToolCallId,
+        /// Output delta.
+        text: String,
+    },
     /// A tool call settled.
     ToolFinished {
+        /// Durable call identity.
+        call_id: crate::ToolCallId,
         /// Tool name.
         name: String,
         /// Tool outcome.

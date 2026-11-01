@@ -23,6 +23,9 @@ pub struct OpenAiConfig {
     pub base_url: String,
     /// Explicit API key supplied by the caller or credential seam.
     pub api_key: String,
+    /// Maximum output budget declared by the selected model catalog.
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
 }
 
 impl Default for OpenAiConfig {
@@ -30,6 +33,7 @@ impl Default for OpenAiConfig {
         Self {
             base_url: "https://api.openai.com/v1".to_owned(),
             api_key: String::new(),
+            max_output_tokens: None,
         }
     }
 }
@@ -59,11 +63,10 @@ impl Module for OpenAiProviderModule {
         }
         let api_key = config.api_key.clone();
 
-        let provider = Arc::new(OpenAiProvider::new(
-            client,
-            config.base_url.clone(),
-            api_key,
-        ));
+        let provider = Arc::new(
+            OpenAiProvider::new(client, config.base_url.clone(), api_key)
+                .with_max_output_tokens(config.max_output_tokens),
+        );
         registry
             .register(PROVIDER_NAME, provider)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;

@@ -330,7 +330,11 @@ impl Render for AlphaDesktop {
                                     .px(px(24.))
                                     .pt(px(14.))
                                     .pb(px(28.))
-                                    .child(self.render_transcript(viewport_height, cx))
+                                    .child(self.render_transcript(
+                                        viewport_height,
+                                        viewport_width,
+                                        cx,
+                                    ))
                                     .when_some(interaction, |this, interaction| {
                                         let animation_id =
                                             format!("permission:{:?}", interaction.id);

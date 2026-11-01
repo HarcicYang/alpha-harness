@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use alpha_api_openai_responses::{ADAPTER_KEY, OpenAiResponsesApiModule};
-use alpha_kernel::{Ctx, Module};
 use alpha_http_api::{HttpClient, HttpError, HttpRequest, HttpResponse, HttpResponseStream};
+use alpha_kernel::{Ctx, Module};
 use alpha_module_loop::{ChatMessage, CompletionChunk};
 use alpha_provider_api::{
     AdapterRequest, ApiAdapter, ApiAdapterRegistry, ProviderApiModule, ReasoningLevel,
@@ -77,6 +77,7 @@ async fn streams_responses_text_and_tool_arguments() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: Some(128_000),
                 options: json!({}),
             },
         )
@@ -108,6 +109,7 @@ async fn streams_responses_text_and_tool_arguments() {
     assert_eq!(request.url, "https://api.test/v1/responses");
     let payload: serde_json::Value = serde_json::from_slice(&request.body).expect("payload json");
     assert_eq!(payload["stream"], json!(true));
+    assert_eq!(payload["max_output_tokens"], json!(128_000));
 }
 
 #[tokio::test]
@@ -128,6 +130,7 @@ async fn maps_reasoning_effort_into_response_requests() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({ "reasoning": { "effort": "low" } }),
             },
         )
@@ -170,6 +173,7 @@ async fn streams_and_replays_reasoning_items() {
                 messages: vec![ChatMessage::User("hi".to_owned())],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({}),
             },
         )
@@ -217,6 +221,7 @@ async fn streams_and_replays_reasoning_items() {
                 ])],
                 tools: Vec::new(),
                 provider_tools: Vec::new(),
+                max_output_tokens: None,
                 options: json!({}),
             },
         )

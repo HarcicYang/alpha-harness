@@ -3,6 +3,7 @@
 use alpha_schema::{MessageId, SessionId, ToolCallId};
 use futures::future::BoxFuture;
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 /// Durable identity and cancellation for one tool call.
@@ -16,6 +17,7 @@ pub struct ToolContext {
     pub call_id: ToolCallId,
     /// Cancellation token for the call.
     pub cancellation: CancellationToken,
+    output: Option<UnboundedSender<String>>,
 }
 
 impl ToolContext {
@@ -26,6 +28,20 @@ impl ToolContext {
             message_id,
             call_id,
             cancellation: CancellationToken::new(),
+            output: None,
+        }
+    }
+
+    /// Attach the stream that receives user-visible tool output.
+    pub fn with_output_sink(mut self, output: UnboundedSender<String>) -> Self {
+        self.output = Some(output);
+        self
+    }
+
+    /// Emit an output delta for the running tool.
+    pub fn emit_output(&self, text: impl Into<String>) {
+        if let Some(output) = &self.output {
+            let _ = output.send(text.into());
         }
     }
 }

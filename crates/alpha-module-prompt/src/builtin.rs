@@ -104,7 +104,7 @@ impl PromptSectionProvider for PermissionModesSection {
             "# Permission Presets\n\n\
              The session runs in one of four modes. Modes are switched by the user, never by you.\n\
              - `read`: read-only workspace access with network disabled. Reads and searches work; mutations, shell execution, and protected operations are denied without prompting.\n\
-             - `auto`: the Codex-compatible default. It uses a workspace-write sandbox with network disabled and keeps protected paths such as `.git` read-only. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require user approval.\n\
+             - `auto`: the standard workspace-write preset. It uses a workspace-write sandbox with network disabled and keeps protected paths such as `.git` read-only. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require user approval.\n\
              - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final. Protected operations require user approval.\n\
              - `free`: full local filesystem and process access with network enabled and no approval prompts.\n\
              Approval prompts offer deny, allow once, and allow for this session; there is no always-allow option, and session grants expire with the session. Never auto-approved: critical-path deletions, credential files, policy and sandbox configuration, push and publish/deploy operations, and cross-session messaging.\n\
@@ -205,6 +205,8 @@ impl PromptSectionProvider for StopConditionsSection {
         Ok(Some(
             "# Stop Conditions\n\n\
              - Once the task is complete and verified, give the final answer immediately; do not go looking for extra work.\n\
+             - Do not assume a fixed chat-work-reply lifecycle, a small step budget, or a short tool-call budget. Continue long-running work across as many tool and model steps as the task requires.\n\
+             - Shell commands may continue in the background. Use their wait and output-query controls when a command needs more time.\n\
              - If the required information does not exist, is inaccessible, or is beyond your current capabilities, report the facts plainly and stop; do not fabricate.\n\
              - If you are genuinely blocked by external conditions you cannot resolve, ask exactly one most-critical question that can be answered directly.\n\
              - If tools or permissions fail repeatedly, stop retrying and explain the failure to the user."
@@ -289,9 +291,7 @@ impl PromptSectionProvider for ProjectInstructionsSection {
     }
 }
 
-fn candidate_paths(
-    state: &alpha_session_log::SessionState,
-) -> Result<Vec<PathBuf>, PromptError> {
+fn candidate_paths(state: &alpha_session_log::SessionState) -> Result<Vec<PathBuf>, PromptError> {
     let root = Path::new(&state.workspace.root);
     let cwd = Path::new(&state.workspace.cwd);
     let relative = cwd

@@ -44,10 +44,6 @@ use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_
 use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
 use alpha_module_provider_openai_responses::OpenAiResponsesProviderModule;
 use alpha_module_provider_opencode_go::OpenCodeGoProviderModule;
-use alpha_session_log::{
-    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
-    WorkspaceRef,
-};
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 use alpha_protocol::{
     FramingError, Id, Message, Notification, OutboundTransport, Request, Response, ResponsePayload,
@@ -60,6 +56,10 @@ use alpha_provider_api::{
 };
 use alpha_schema::{
     EventEnvelope, PermissionMode, SessionId, SessionListEntry as FrontSessionListEntry,
+};
+use alpha_session_log::{
+    SessionError, SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter,
+    WorkspaceRef,
 };
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -528,6 +528,7 @@ pub fn compose_openai_runtime(
         &OpenAiConfig {
             base_url: base_url.to_owned(),
             api_key: api_key.to_owned(),
+            max_output_tokens: None,
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;
@@ -555,6 +556,7 @@ pub fn compose_openai_runtime_with_http(
         &OpenAiConfig {
             base_url: base_url.to_owned(),
             api_key: api_key.to_owned(),
+            max_output_tokens: None,
         },
     )?;
     activate_core_modules(&ctx, workspace, mode, approval, audit.clone())?;

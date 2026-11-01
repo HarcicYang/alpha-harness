@@ -1,21 +1,22 @@
 //! Shell execution tool with per-location shell discovery.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alpha_module_permission::{PermissionOutcome, PermissionRequest, PermissionService};
 use alpha_module_process::{
-    ProcessAccess, ProcessError, ProcessRequest, ProcessRunner, ProcessRunnerSet,
+    ProcessAccess, ProcessError, ProcessOutputCallback, ProcessRequest, ProcessRunner,
+    ProcessRunnerSet,
 };
 use alpha_schema::PermissionMode;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 use crate::contract::{Tool, ToolContext, ToolError, ToolResponse, truncate_head_tail};
 
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const MAX_TIMEOUT_MS: u64 = 600_000;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,7 @@ pub struct ShellTool {
     permission: Arc<dyn PermissionService>,
     default_shell: Option<String>,
     available: Mutex<Option<Vec<ShellKind>>>,
+    jobs: Mutex<BTreeMap<String, Arc<ShellJob>>>,
 }
 
 impl ShellTool {
@@ -131,6 +133,7 @@ impl ShellTool {
             permission,
             default_shell,
             available: Mutex::new(None),
+            jobs: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -160,11 +163,48 @@ impl ShellTool {
 struct ShellInput {
     #[serde(default)]
     shell: Option<String>,
-    command: String,
     #[serde(default)]
-    timeout_ms: Option<u64>,
+    command: Option<String>,
+    #[serde(default)]
+    job_id: Option<String>,
+    #[serde(default)]
+    wait_ms: Option<u64>,
+    #[serde(default)]
+    since_bytes: Option<usize>,
     #[serde(default)]
     description: Option<String>,
+}
+
+#[derive(Default)]
+struct ShellJob {
+    output: Mutex<ShellJobOutput>,
+    notify: Notify,
+}
+
+#[derive(Default)]
+struct ShellJobOutput {
+    bytes: Vec<u8>,
+    status: ShellJobStatus,
+}
+
+#[derive(Default)]
+enum ShellJobStatus {
+    #[default]
+    Running,
+    Completed {
+        code: Option<i32>,
+        success: bool,
+    },
+    Failed(String),
+}
+
+impl ShellJob {
+    fn is_running(&self) -> bool {
+        matches!(
+            self.output.lock().expect("shell job lock poisoned").status,
+            ShellJobStatus::Running
+        )
+    }
 }
 
 impl Tool for ShellTool {
@@ -176,7 +216,9 @@ impl Tool for ShellTool {
         let available = self.available.lock().expect("shell lock poisoned").clone();
         match available {
             Some(shells) if !shells.is_empty() => format!(
-                "Run a command in a selected shell. Available shells: {}.",
+                "Run a command in a selected shell, or query a running job by `job_id`. \
+                 Available shells: {}. The `wait_ms` field controls only this call's wait; \
+                 it never kills the process and has no maximum.",
                 shells
                     .iter()
                     .map(|shell| shell.id)
@@ -186,7 +228,9 @@ impl Tool for ShellTool {
             Some(_) => {
                 "Run a command in a selected shell. No supported shells are available.".to_owned()
             }
-            _ => "Run a command in a selected shell. Shells are probed on first use.".to_owned(),
+            _ => "Run a command in a selected shell, or query a running job by `job_id`. \
+                  The `wait_ms` field controls only this call's wait. Shells are probed on first use."
+                .to_owned(),
         }
     }
 
@@ -195,11 +239,16 @@ impl Tool for ShellTool {
             "type": "object",
             "properties": {
                 "shell": { "type": "string" },
-                "command": { "type": "string" },
-                "timeout_ms": { "type": "integer" },
+                "command": { "type": "string", "description": "Command to start." },
+                "job_id": { "type": "string", "description": "Previously returned background job id." },
+                "wait_ms": { "type": "integer", "minimum": 0, "description": "How long this call waits for completion. Omit to wait until the process exits; 0 returns immediately." },
+                "since_bytes": { "type": "integer", "minimum": 0, "description": "Byte offset for incremental output when querying a job." },
                 "description": { "type": "string" }
             },
-            "required": ["command"]
+            "oneOf": [
+                { "required": ["command"] },
+                { "required": ["job_id"] }
+            ]
         })
     }
 
@@ -228,6 +277,14 @@ impl Tool for ShellTool {
         Box::pin(async move {
             let input: ShellInput = serde_json::from_value(input)
                 .map_err(|error| ToolError::failure(format!("invalid input: {error}")))?;
+            if let Some(job_id) = input.job_id.as_deref() {
+                return self.query_job(job_id, &input, &context).await;
+            }
+            let command = input
+                .command
+                .as_deref()
+                .filter(|command| !command.trim().is_empty())
+                .ok_or_else(|| ToolError::failure("command or job_id is required"))?;
             let runner = self.runner()?;
             let sandboxed = self.permission.mode() != PermissionMode::Free;
             let available = self.available_shells().await?;
@@ -255,7 +312,7 @@ impl Tool for ShellTool {
 
             let request = PermissionRequest {
                 action: "shell.exec".to_owned(),
-                resources: vec![input.command.clone()],
+                resources: vec![command.to_owned()],
                 reason: input
                     .description
                     .clone()
@@ -269,58 +326,193 @@ impl Tool for ShellTool {
                 }
             }
 
-            let timeout = Duration::from_millis(
-                input
-                    .timeout_ms
-                    .unwrap_or(DEFAULT_TIMEOUT_MS)
-                    .min(MAX_TIMEOUT_MS),
-            );
-            let process_request =
-                ProcessRequest::new(kind.program, kind.command_args(&input.command))
-                    .with_timeout(timeout);
+            let process_request = ProcessRequest::new(kind.program, kind.command_args(command));
             let started = Instant::now();
-            let outcome = tokio::select! {
-                _ = context.cancellation.cancelled() => {
-                    return Err(ToolError::operational("shell call cancelled"));
-                }
-                result = runner.run(process_request) => result,
-            };
+            let job_id = format!("shell-{}", uuid::Uuid::now_v7());
+            let job = Arc::new(ShellJob::default());
+            self.jobs
+                .lock()
+                .expect("shell jobs lock poisoned")
+                .insert(job_id.clone(), job.clone());
 
-            match outcome {
-                Ok(outcome) => {
-                    let mut combined = String::from_utf8_lossy(&outcome.stdout).into_owned();
-                    let stderr = String::from_utf8_lossy(&outcome.stderr);
-                    if !stderr.is_empty() {
-                        if !combined.is_empty() {
-                            combined.push('\n');
-                        }
-                        combined.push_str(&stderr);
+            let output_job = job.clone();
+            let output_context = context.clone();
+            let output: ProcessOutputCallback = Arc::new(move |_, bytes| {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                output_job
+                    .output
+                    .lock()
+                    .expect("shell job lock poisoned")
+                    .bytes
+                    .extend_from_slice(&bytes);
+                output_context.emit_output(text);
+            });
+            let background_job = job.clone();
+            tokio::spawn(async move {
+                let result = runner.run_streaming(process_request, output).await;
+                let mut output = background_job
+                    .output
+                    .lock()
+                    .expect("shell job lock poisoned");
+                output.status = match result {
+                    Ok(outcome) => ShellJobStatus::Completed {
+                        code: outcome.code,
+                        success: outcome.success,
+                    },
+                    Err(ProcessError::Timeout(timeout)) => {
+                        ShellJobStatus::Failed(format!("process timed out after {timeout:?}"))
                     }
-                    let (content, truncated) = truncate_head_tail(&combined, MAX_OUTPUT_BYTES);
-                    let exit_code = outcome.code.unwrap_or(-1);
-                    if !outcome.success {
-                        return Err(ToolError::failure(format!(
-                            "command exited with code {exit_code}\n{content}"
-                        )));
-                    }
-                    let content = if content.is_empty() {
-                        "(no output)".to_owned()
-                    } else {
-                        content
-                    };
-                    Ok(ToolResponse::text(content).with_output(json!({
-                        "shell": kind.id,
-                        "exit_code": exit_code,
-                        "duration_ms": started.elapsed().as_millis() as u64,
-                        "truncated": truncated,
-                    })))
-                }
-                Err(ProcessError::Timeout(_)) => Err(ToolError::failure(format!(
-                    "command timed out after {}ms",
-                    timeout.as_millis()
-                ))),
-                Err(error) => Err(ToolError::failure(format!("failed to run shell: {error}"))),
-            }
+                    Err(error) => ShellJobStatus::Failed(error.to_string()),
+                };
+                drop(output);
+                background_job.notify.notify_waiters();
+            });
+
+            wait_for_job(&job, input.wait_ms, &context).await?;
+            job_response(
+                &job_id,
+                &job,
+                input.since_bytes.unwrap_or(0),
+                started,
+                Some(kind.id),
+                true,
+            )
         })
     }
+}
+
+impl ShellTool {
+    async fn query_job(
+        &self,
+        job_id: &str,
+        input: &ShellInput,
+        context: &ToolContext,
+    ) -> Result<ToolResponse, ToolError> {
+        let job = self
+            .jobs
+            .lock()
+            .expect("shell jobs lock poisoned")
+            .get(job_id)
+            .cloned()
+            .ok_or_else(|| ToolError::failure(format!("unknown shell job `{job_id}`")))?;
+        let since = input.since_bytes.unwrap_or(0);
+        let before = job
+            .output
+            .lock()
+            .expect("shell job lock poisoned")
+            .bytes
+            .len();
+        wait_for_job(&job, input.wait_ms, context).await?;
+        let after = job
+            .output
+            .lock()
+            .expect("shell job lock poisoned")
+            .bytes
+            .len();
+        if after > before {
+            let output = job.output.lock().expect("shell job lock poisoned");
+            context.emit_output(String::from_utf8_lossy(&output.bytes[before..after]).into_owned());
+        }
+        job_response(
+            job_id,
+            &job,
+            since,
+            Instant::now(),
+            input.shell.as_deref(),
+            false,
+        )
+    }
+}
+
+async fn wait_for_job(
+    job: &Arc<ShellJob>,
+    wait_ms: Option<u64>,
+    context: &ToolContext,
+) -> Result<(), ToolError> {
+    if !job.is_running() {
+        return Ok(());
+    }
+    let wait = async {
+        let notified = job.notify.notified();
+        tokio::pin!(notified);
+        if !job.is_running() {
+            return;
+        }
+        tokio::select! {
+            _ = context.cancellation.cancelled() => {}
+            _ = &mut notified => {}
+        }
+    };
+    match wait_ms {
+        None => wait.await,
+        Some(0) => return Ok(()),
+        Some(wait_ms) => {
+            let _ = tokio::time::timeout(Duration::from_millis(wait_ms), wait).await;
+        }
+    }
+    if context.cancellation.is_cancelled() {
+        return Err(ToolError::operational("shell call cancelled"));
+    }
+    Ok(())
+}
+
+fn job_response(
+    job_id: &str,
+    job: &ShellJob,
+    since_bytes: usize,
+    started: Instant,
+    shell: Option<&str>,
+    initial: bool,
+) -> Result<ToolResponse, ToolError> {
+    let output = job.output.lock().expect("shell job lock poisoned");
+    let since = floor_char_boundary_bytes(&output.bytes, since_bytes.min(output.bytes.len()));
+    let next_offset = output.bytes.len();
+    let raw = String::from_utf8_lossy(&output.bytes[since..]).into_owned();
+    let (body, truncated) = truncate_head_tail(&raw, MAX_OUTPUT_BYTES);
+    let body = if body.is_empty() {
+        "(no output yet)".to_owned()
+    } else {
+        body
+    };
+    let (status, exit_code, failed) = match &output.status {
+        ShellJobStatus::Running => ("running", None, false),
+        ShellJobStatus::Completed { code, success } => (
+            if *success { "completed" } else { "failed" },
+            *code,
+            !success,
+        ),
+        ShellJobStatus::Failed(_) => ("failed", None, true),
+    };
+    let content = format!(
+        "status: {status}\nexit_code: {}\njob_id: {job_id}\nnext_offset: {next_offset}\n{body}",
+        exit_code.map_or_else(|| "none".to_owned(), |code| code.to_string())
+    );
+    let metadata = json!({
+        "job_id": job_id,
+        "status": status,
+        "exit_code": exit_code,
+        "next_offset": next_offset,
+        "truncated": truncated,
+        "initial": initial,
+        "shell": shell,
+        "duration_ms": started.elapsed().as_millis() as u64,
+    });
+    if failed {
+        return Err(ToolError::failure(content));
+    }
+    match &output.status {
+        ShellJobStatus::Failed(error) => Err(ToolError::failure(format!("{content}\n{error}"))),
+        _ => Ok(ToolResponse::text(content).with_output(metadata)),
+    }
+}
+
+fn floor_char_boundary_bytes(text: &[u8], mut index: usize) -> usize {
+    let Ok(text) = std::str::from_utf8(text) else {
+        return index;
+    };
+    let _ = text;
+    while index > 0 && (text.as_bytes()[index] & 0b1100_0000) == 0b1000_0000 {
+        index -= 1;
+    }
+    index
 }

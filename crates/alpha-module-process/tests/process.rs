@@ -1,12 +1,12 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_process::{
     LocalProcessRunner, ProcessAccess, ProcessConfig, ProcessError, ProcessLocalModule,
-    ProcessRequest, ProcessRunner, ProcessRunnerSet, SandboxConfig, SandboxedProcessRunner,
-    available_bwrap, bwrap_args,
+    ProcessOutputCallback, ProcessRequest, ProcessRunner, ProcessRunnerSet, ProcessStream,
+    SandboxConfig, SandboxedProcessRunner, available_bwrap, bwrap_args,
 };
 
 #[cfg(unix)]
@@ -42,6 +42,53 @@ async fn failing_exit_codes_are_reported() {
 
     assert!(!outcome.success);
     assert_eq!(outcome.code, Some(3));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn streams_output_before_the_process_finishes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runner = LocalProcessRunner::new(dir.path());
+    let chunks = Arc::new(Mutex::new(Vec::new()));
+    let collected = chunks.clone();
+    let output: ProcessOutputCallback = Arc::new(move |stream, bytes| {
+        collected
+            .lock()
+            .expect("chunks lock poisoned")
+            .push((stream, String::from_utf8_lossy(&bytes).into_owned()));
+    });
+    let outcome = runner
+        .run_streaming(
+            ProcessRequest::new(
+                "sh",
+                [
+                    "-c".to_owned(),
+                    "printf first; sleep 0.05; printf second >&2".to_owned(),
+                ],
+            ),
+            output,
+        )
+        .await
+        .expect("streaming run");
+
+    assert!(outcome.success);
+    let chunks = chunks.lock().expect("chunks lock poisoned");
+    assert_eq!(
+        chunks
+            .iter()
+            .filter(|(stream, _)| *stream == ProcessStream::Stdout)
+            .map(|(_, text)| text.as_str())
+            .collect::<String>(),
+        "first"
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .filter(|(stream, _)| *stream == ProcessStream::Stderr)
+            .map(|(_, text)| text.as_str())
+            .collect::<String>(),
+        "second"
+    );
 }
 
 #[cfg(unix)]

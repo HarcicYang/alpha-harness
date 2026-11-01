@@ -116,6 +116,7 @@ async fn sends_chat_completion_requests_and_parses_text() {
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: Some(100_000),
         })
         .await
         .expect("complete");
@@ -133,6 +134,7 @@ async fn sends_chat_completion_requests_and_parses_text() {
     assert_eq!(body["stream"], json!(false));
     assert_eq!(body["messages"][0]["role"], json!("user"));
     assert_eq!(body["messages"][0]["content"], json!("hi"));
+    assert_eq!(body["max_tokens"], json!(100_000));
 }
 
 #[tokio::test]
@@ -147,6 +149,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .await
         .expect_err("status");
@@ -166,6 +169,7 @@ async fn rejects_error_statuses_and_malformed_bodies() {
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .await
         .expect_err("malformed");
@@ -223,6 +227,7 @@ async fn maps_tool_definitions_and_parses_tool_calls() {
                 input_schema: json!({ "type": "object" }),
             }],
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .await
         .expect("complete");
@@ -270,6 +275,7 @@ async fn streams_text_deltas_and_requests_streaming_mode() {
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .collect()
         .await;
@@ -310,6 +316,7 @@ async fn accumulates_tool_call_deltas_split_across_network_chunks() {
             messages: vec![ChatMessage::User("read".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .collect::<Vec<_>>()
         .await
@@ -353,6 +360,7 @@ async fn rejects_malformed_stream_events() {
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .next()
         .await
@@ -376,6 +384,7 @@ fn module_registers_and_unregisters_the_provider() {
             &OpenAiConfig {
                 base_url: "https://api.test/v1".to_owned(),
                 api_key: "test-key".to_owned(),
+                max_output_tokens: None,
             },
         )
         .expect("activate");
@@ -399,6 +408,7 @@ fn module_rejects_missing_api_keys() {
             &OpenAiConfig {
                 base_url: "https://api.test/v1".to_owned(),
                 api_key: String::new(),
+                max_output_tokens: None,
             },
         )
         .expect_err("missing key");

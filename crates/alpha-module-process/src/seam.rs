@@ -1,6 +1,7 @@
 //! Process execution seam types.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -58,6 +59,18 @@ pub struct ProcessOutcome {
     pub stderr: Vec<u8>,
 }
 
+/// One stream emitted while a process is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+/// Receives process output chunks as soon as they are read.
+pub type ProcessOutputCallback = Arc<dyn Fn(ProcessStream, Vec<u8>) + Send + Sync>;
+
 /// Process errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessError {
@@ -79,4 +92,22 @@ pub enum ProcessError {
 pub trait ProcessRunner: Send + Sync + 'static {
     /// Run one process to completion.
     fn run(&self, request: ProcessRequest) -> BoxFuture<'_, Result<ProcessOutcome, ProcessError>>;
+
+    /// Run one process and report output incrementally.
+    fn run_streaming(
+        &self,
+        request: ProcessRequest,
+        output: ProcessOutputCallback,
+    ) -> BoxFuture<'_, Result<ProcessOutcome, ProcessError>> {
+        Box::pin(async move {
+            let outcome = self.run(request).await?;
+            if !outcome.stdout.is_empty() {
+                output(ProcessStream::Stdout, outcome.stdout.clone());
+            }
+            if !outcome.stderr.is_empty() {
+                output(ProcessStream::Stderr, outcome.stderr.clone());
+            }
+            Ok(outcome)
+        })
+    }
 }

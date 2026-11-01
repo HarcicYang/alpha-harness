@@ -12,43 +12,27 @@ use std::sync::Arc;
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use serde::Deserialize;
 
-pub use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
 pub use agent::{
-    ContextPreparer, SteerMessage, SteerQueue, AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta, AgentToolFinished,
-    AgentToolStarted, AgentTurnFinished,
+    AgentError, AgentLoop, AgentStepStarted, AgentTextDelta, AgentThinkingDelta, AgentToolFinished,
+    AgentToolOutput, AgentToolStarted, AgentTurnFinished, ContextPreparer, SteerMessage,
+    SteerQueue,
 };
+pub use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
 
 pub use alpha_agent_api::provider::{
-    self as provider,
-    ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
-    ModelRouteOverride, ProviderCapabilities, ProviderError, ProviderRegistry,
-    ProviderToolsOverride, RegistryError, ToolCall, ToolCallDelta, ToolDefinition,
+    self as provider, ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse,
+    ModelProvider, ModelRoute, ModelRouteOverride, ProviderCapabilities, ProviderError,
+    ProviderRegistry, ProviderToolsOverride, RegistryError, ToolCall, ToolCallDelta,
+    ToolDefinition,
 };
 
 /// Configuration for the default loop module.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct LoopConfig {
     /// Provider name resolved from the registry.
     pub provider: String,
     /// Model identifier.
     pub model: String,
-    /// Maximum model steps in one turn.
-    #[serde(default = "default_max_steps")]
-    pub max_steps: usize,
-}
-
-fn default_max_steps() -> usize {
-    114514
-}
-
-impl Default for LoopConfig {
-    fn default() -> Self {
-        Self {
-            provider: String::new(),
-            model: String::new(),
-            max_steps: default_max_steps(),
-        }
-    }
 }
 
 /// Registers the provider registry and the default agent loop.
@@ -80,8 +64,7 @@ impl Module for LoopModule {
                 format!("provider `{}` is not registered", config.provider),
             )
         })?;
-        let mut agent =
-            AgentLoop::new(provider, config.model.clone()).with_max_steps(config.max_steps);
+        let mut agent = AgentLoop::new(provider, config.model.clone());
         if let Some(tools) = ctx.get::<alpha_module_tools::ToolRegistry>() {
             agent = agent.with_tools(tools);
         }

@@ -9,13 +9,13 @@ use alpha_module_loop::{
     ContextPreparer, LoopConfig, LoopModule, ModelProvider, ModelRoute, ModelRouteOverride,
     ProviderError, ProviderRegistry, ProviderToolsOverride, ToolCall, ToolCallDelta, TurnOutcome,
 };
-use alpha_session_log::{
-    SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
-    TurnEndReason, WorkspaceRef,
-};
 use alpha_module_tools::{Tool, ToolContext, ToolError, ToolRegistry, ToolResponse};
 use alpha_schema::{
     AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, Seq, SessionId,
+};
+use alpha_session_log::{
+    SessionEvent, SessionHeader, SessionState, SessionStore, SessionWriter, ToolStatus,
+    TurnEndReason, WorkspaceRef,
 };
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -567,6 +567,7 @@ async fn complete_only_providers_fall_back_to_a_single_chunk_stream() {
             messages: vec![ChatMessage::User("hi".to_owned())],
             tools: Vec::new(),
             provider_tools: Vec::new(),
+            max_output_tokens: None,
         })
         .collect::<Vec<_>>()
         .await
@@ -882,47 +883,6 @@ async fn tools_are_prepared_before_schema_generation() {
 }
 
 #[tokio::test]
-async fn step_limit_wraps_up_without_tools() {
-    let (_dir, store, header) = store_and_header();
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        CompletionResponse {
-            text: String::new(),
-            tool_calls: vec![ToolCall {
-                id: "call-1".to_owned(),
-                name: "write_note".to_owned(),
-                arguments: json!({ "value": "x" }),
-            }],
-            blocks: Vec::new(),
-        },
-        CompletionResponse {
-            text: "wrapped up".to_owned(),
-            tool_calls: Vec::new(),
-            blocks: Vec::new(),
-        },
-    ]));
-    let registry = Arc::new(ToolRegistry::new());
-    registry
-        .register(Arc::new(NoteTool {
-            seen: Arc::new(Mutex::new(Vec::new())),
-        }))
-        .expect("register");
-    let agent = AgentLoop::new(provider.clone(), "scripted")
-        .with_tools(registry)
-        .with_max_steps(1);
-
-    let writer = store.create(header.clone()).expect("create");
-    let state = SessionState::new(&header);
-    let outcome = run_turn(&agent, &writer, &state, "do it")
-        .await
-        .expect("wrap up");
-    assert_eq!(outcome.assistant_text, "wrapped up");
-
-    let requests = provider.requests.lock().expect("request lock");
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].tools.is_empty());
-}
-
-#[tokio::test]
 async fn live_events_report_steps_and_tools() {
     let (_dir, store, header) = store_and_header();
     let provider = Arc::new(ScriptedProvider::new(vec![
@@ -1012,7 +972,6 @@ fn loop_module_registers_the_agent_loop() {
             &LoopConfig {
                 provider: "echo".to_owned(),
                 model: "echo-model".to_owned(),
-                ..LoopConfig::default()
             },
         )
         .expect("activate");
@@ -1031,7 +990,6 @@ fn loop_module_rejects_missing_providers() {
             &LoopConfig {
                 provider: "missing".to_owned(),
                 model: "echo-model".to_owned(),
-                ..LoopConfig::default()
             },
         )
         .expect_err("missing provider");

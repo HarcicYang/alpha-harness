@@ -316,7 +316,8 @@ async fn shell_runs_commands_and_reports_failures() {
     )
     .await
     .expect("shell");
-    assert_eq!(ok.content, "hello");
+    assert!(ok.content.contains("status: completed"));
+    assert!(ok.content.contains("hello"));
     assert_eq!(ok.output.expect("output")["exit_code"], json!(0));
 
     let error = run(
@@ -326,7 +327,8 @@ async fn shell_runs_commands_and_reports_failures() {
     )
     .await
     .expect_err("exit code");
-    assert!(error.to_string().contains("code 3"));
+    assert!(error.to_string().contains("status: failed"));
+    assert!(error.to_string().contains("exit_code: 3"));
 
     let error = run(
         &registry,
@@ -336,6 +338,38 @@ async fn shell_runs_commands_and_reports_failures() {
     .await
     .expect_err("unknown shell");
     assert!(error.to_string().contains("not available"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_jobs_continue_after_the_initial_wait_and_can_be_queried() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_ctx, registry) = setup(PermissionMode::Free, dir.path());
+
+    let started = run(
+        &registry,
+        "shell",
+        json!({
+            "shell": "sh",
+            "command": "printf first; sleep 0.05; printf second",
+            "wait_ms": 0,
+        }),
+    )
+    .await
+    .expect("start background shell");
+    let output = started.output.expect("start metadata");
+    assert_eq!(output["status"], json!("running"));
+    let job_id = output["job_id"].as_str().expect("job id");
+
+    let finished = run(
+        &registry,
+        "shell",
+        json!({ "job_id": job_id, "since_bytes": 0 }),
+    )
+    .await
+    .expect("query shell");
+    assert!(finished.content.contains("status: completed"));
+    assert!(finished.content.contains("firstsecond"));
 }
 
 #[tokio::test]

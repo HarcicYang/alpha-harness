@@ -3,14 +3,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use alpha_kernel::{Ctx, Event, ParallelEvent};
 use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
+use alpha_kernel::{Ctx, Event, ParallelEvent};
+use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
+use alpha_schema::{AssistantContentBlock, MessageId, ReasoningLevel, ToolCallId, TurnId};
 use alpha_session_log::{
     MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
     TurnEndReason,
 };
-use alpha_module_tools::{ToolContext, ToolError, ToolRegistry};
-use alpha_schema::{AssistantContentBlock, MessageId, ReasoningLevel, ToolCallId, TurnId};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -19,8 +19,6 @@ use crate::provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
     ModelRouteOverride, ProviderError, ToolCall, ToolDefinition,
 };
-
-const DEFAULT_MAX_STEPS: usize = 114514;
 
 /// One steer message waiting for a safe injection boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,8 +37,6 @@ pub trait SteerQueue: Send + Sync + 'static {
     fn drain(&self) -> Vec<SteerMessage>;
 }
 
-
-
 /// Default driver: one model request over the recorded history.
 #[derive(Clone)]
 pub struct AgentLoop {
@@ -50,7 +46,6 @@ pub struct AgentLoop {
     context_preparer: Option<Arc<dyn ContextPreparer>>,
     context_injector: Option<Arc<dyn ContextInjector>>,
     steer_queue: Option<Arc<dyn SteerQueue>>,
-    max_steps: usize,
 }
 
 impl AgentLoop {
@@ -63,14 +58,7 @@ impl AgentLoop {
             context_preparer: None,
             context_injector: None,
             steer_queue: None,
-            max_steps: DEFAULT_MAX_STEPS,
         }
-    }
-
-    /// Override the maximum number of model steps in one turn.
-    pub fn with_max_steps(mut self, max_steps: usize) -> Self {
-        self.max_steps = max_steps.max(1);
-        self
     }
 
     /// Attach a tool registry.
@@ -104,8 +92,8 @@ impl AgentLoop {
 
     /// Run one turn and record it in the session log.
     ///
-    /// The turn runs model steps until the model stops requesting tools or the
-    /// step limit is reached. `state` is the projection before this turn.
+    /// The turn runs model steps until the model stops requesting tools.
+    /// `state` is the projection before this turn.
     pub async fn run_turn(
         &self,
         ctx: &Ctx,
@@ -162,7 +150,8 @@ impl AgentLoop {
         let mut last_text = String::new();
         let mut last_message_id: Option<MessageId> = None;
 
-        for step in 0..self.max_steps {
+        let mut step = 1usize;
+        loop {
             self.inject_steers(writer, &mut messages)?;
             if let Some(injector) = &self.context_injector {
                 injector
@@ -171,6 +160,7 @@ impl AgentLoop {
             }
             let route = self.route(ctx);
             let provider_tools = self.provider_tools(ctx);
+            let max_output_tokens = self.provider.output_limit(&route.model);
             writer.append(SessionEvent::RequestHeader {
                 provider: route.provider.clone(),
                 model: route.model.clone(),
@@ -178,7 +168,7 @@ impl AgentLoop {
                 tools: tools.iter().map(|tool| tool.name.clone()).collect(),
                 provider_tools: provider_tools.clone(),
             })?;
-            ctx.parallel(AgentStepStarted { step: step + 1 }).await;
+            ctx.parallel(AgentStepStarted { step }).await;
             let request = CompletionRequest {
                 session_id: session_id.to_string(),
                 model: route.model,
@@ -186,6 +176,7 @@ impl AgentLoop {
                 messages: messages.clone(),
                 tools: tools.clone(),
                 provider_tools,
+                max_output_tokens,
             };
             let response = match self.stream_response(ctx, request).await {
                 Ok(response) => response,
@@ -254,70 +245,7 @@ impl AgentLoop {
                 self.execute_tool(ctx, writer, session_id, message_id, &mut messages, call)
                     .await?;
             }
-        }
-
-        // Wrap up without tools so the user still gets a summary.
-        let route = self.route(ctx);
-        let provider_tools = self.provider_tools(ctx);
-        writer.append(SessionEvent::RequestHeader {
-            provider: route.provider.clone(),
-            model: route.model.clone(),
-            reasoning: route.reasoning,
-            tools: Vec::new(),
-            provider_tools: provider_tools.clone(),
-        })?;
-        let request = CompletionRequest {
-            session_id: session_id.to_string(),
-            model: route.model,
-            reasoning: route.reasoning,
-            messages: messages.clone(),
-            tools: Vec::new(),
-            provider_tools,
-        };
-        match self.stream_response(ctx, request).await {
-            Ok(response) if !response.text.is_empty() => {
-                let assistant_id = MessageId::new();
-                let blocks =
-                    normalized_blocks(response.blocks, &response.text, &response.tool_calls);
-                writer.append(SessionEvent::AssistantMessage {
-                    id: assistant_id,
-                    blocks,
-                    text: String::new(),
-                })?;
-                writer.append(SessionEvent::TurnEnded {
-                    reason: TurnEndReason::Completed,
-                })?;
-                ctx.parallel(AgentTurnFinished {
-                    assistant_message: assistant_id,
-                })
-                .await;
-                Ok(TurnOutcome {
-                    assistant_message: assistant_id,
-                    assistant_text: response.text,
-                })
-            }
-            Err(failure) => {
-                let StreamFailure { error, blocks } = failure;
-                record_partial_blocks(writer, blocks)?;
-                ctx.parallel(AgentError {
-                    message: error.to_string(),
-                })
-                .await;
-                writer.append(SessionEvent::TurnEnded {
-                    reason: TurnEndReason::Failed,
-                })?;
-                Err(LoopError::Provider(error))
-            }
-            Ok(_) => {
-                ctx.parallel(AgentError {
-                    message: format!("turn exceeded {} model steps", self.max_steps),
-                })
-                .await;
-                writer.append(SessionEvent::TurnEnded {
-                    reason: TurnEndReason::Failed,
-                })?;
-                Err(LoopError::StepLimit(self.max_steps))
-            }
+            step = step.saturating_add(1);
         }
     }
 
@@ -512,21 +440,46 @@ impl AgentLoop {
         })?;
 
         ctx.parallel(AgentToolStarted {
+            call_id,
             name: call.name.clone(),
             input: call.arguments.clone(),
         })
         .await;
 
-        let outcome = match &self.tools {
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+        let execution = match &self.tools {
             Some(registry) => match registry.get(&call.name) {
                 Some(tool) => {
-                    let context = ToolContext::new(session_id, message_id, call_id);
-                    tool.execute(call.arguments, context).await
+                    let context = ToolContext::new(session_id, message_id, call_id)
+                        .with_output_sink(output_tx);
+                    futures::future::Either::Left(async move {
+                        tool.execute(call.arguments, context).await
+                    })
                 }
-                None => Err(ToolError::failure(format!("unknown tool `{}`", call.name))),
+                None => futures::future::Either::Right(std::future::ready(Err(
+                    ToolError::failure(format!("unknown tool `{}`", call.name)),
+                ))),
             },
-            None => Err(ToolError::failure("no tools are registered")),
+            None => futures::future::Either::Right(std::future::ready(Err(ToolError::failure(
+                "no tools are registered",
+            )))),
         };
+        futures::pin_mut!(execution);
+        let outcome = loop {
+            tokio::select! {
+                Some(text) = output_rx.recv() => {
+                    if !text.is_empty() {
+                        ctx.parallel(AgentToolOutput { call_id, text }).await;
+                    }
+                }
+                outcome = &mut execution => break outcome,
+            }
+        };
+        while let Ok(text) = output_rx.try_recv() {
+            if !text.is_empty() {
+                ctx.parallel(AgentToolOutput { call_id, text }).await;
+            }
+        }
 
         let (status, content) = match outcome {
             Ok(response) => (ToolStatus::Completed, response.content),
@@ -543,6 +496,7 @@ impl AgentLoop {
             }
         };
         ctx.parallel(AgentToolFinished {
+            call_id,
             name: call.name.clone(),
             status,
             content: content.clone(),
@@ -621,6 +575,8 @@ impl Event for AgentThinkingDelta {}
 /// A completed tool call is about to execute.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentToolStarted {
+    /// Durable call identity.
+    pub call_id: ToolCallId,
     /// Tool name.
     pub name: String,
     /// Decoded tool input.
@@ -630,9 +586,23 @@ pub struct AgentToolStarted {
 impl ParallelEvent for AgentToolStarted {}
 impl Event for AgentToolStarted {}
 
+/// Incremental output from a running tool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentToolOutput {
+    /// Durable call identity.
+    pub call_id: ToolCallId,
+    /// Output delta.
+    pub text: String,
+}
+
+impl ParallelEvent for AgentToolOutput {}
+impl Event for AgentToolOutput {}
+
 /// A tool call settled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentToolFinished {
+    /// Durable call identity.
+    pub call_id: ToolCallId,
     /// Tool name.
     pub name: String,
     /// Tool status.
@@ -664,7 +634,6 @@ pub struct AgentError {
 impl ParallelEvent for AgentError {}
 impl Event for AgentError {}
 
-
 /// Optional pre-turn context transformation.
 ///
 /// Implementations may append durable context events and update the supplied
@@ -680,8 +649,6 @@ pub trait ContextPreparer: Send + Sync + 'static {
         prompt: &'a str,
     ) -> BoxFuture<'a, Result<(), ContextError>>;
 }
-
-
 
 impl AgentDriver for AgentLoop {
     fn run_turn<'a>(

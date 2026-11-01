@@ -71,7 +71,10 @@ impl AlphaDesktop {
                                     .child(if model.context_window == 0 {
                                         "unknown".to_owned()
                                     } else {
-                                        format!("{}k tokens", model.context_window / 1_000)
+                                        format!(
+                                            "{} tokens",
+                                            format_token_count(model.context_window)
+                                        )
                                     }),
                             )
                             .child(

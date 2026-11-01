@@ -293,6 +293,7 @@ fn session_header_is_added_to_provider_requests() {
         messages: vec![ChatMessage::User("hello".to_owned())],
         tools: Vec::new(),
         provider_tools: Vec::new(),
+        max_output_tokens: None,
     });
 
     let request = adapter
@@ -348,6 +349,7 @@ fn model_specific_adapter_receives_route_history_and_provider_tools() {
         ],
         tools: Vec::new(),
         provider_tools: vec!["web_search".to_owned()],
+        max_output_tokens: None,
     });
 
     assert!(
@@ -415,6 +417,7 @@ fn complete_preserves_streamed_content_order() {
         messages: vec![ChatMessage::User("hello".to_owned())],
         tools: Vec::new(),
         provider_tools: Vec::new(),
+        max_output_tokens: None,
     }))
     .expect("completion");
 

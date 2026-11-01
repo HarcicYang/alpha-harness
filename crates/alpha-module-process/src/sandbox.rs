@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
-use crate::seam::{ProcessError, ProcessOutcome, ProcessRequest, ProcessRunner};
+use crate::seam::{
+    ProcessError, ProcessOutcome, ProcessOutputCallback, ProcessRequest, ProcessRunner,
+};
 
 /// Sandbox configuration.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -105,6 +107,14 @@ impl SandboxedProcessRunner {
 
 impl ProcessRunner for SandboxedProcessRunner {
     fn run(&self, request: ProcessRequest) -> BoxFuture<'_, Result<ProcessOutcome, ProcessError>> {
+        self.run_streaming(request, Arc::new(|_, _| {}))
+    }
+
+    fn run_streaming(
+        &self,
+        request: ProcessRequest,
+        output: ProcessOutputCallback,
+    ) -> BoxFuture<'_, Result<ProcessOutcome, ProcessError>> {
         Box::pin(async move {
             let args = bwrap_args(&self.workspace, &self.config, &request);
             let sandboxed = ProcessRequest {
@@ -113,7 +123,7 @@ impl ProcessRunner for SandboxedProcessRunner {
                 env: request.env,
                 timeout: request.timeout,
             };
-            self.inner.run(sandboxed).await
+            self.inner.run_streaming(sandboxed, output).await
         })
     }
 }

@@ -5,8 +5,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_http_api::{HttpClient, HttpRequest, HttpResponseStream};
+use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, ProviderError, ToolCallDelta, ToolDefinition,
 };
@@ -177,6 +177,11 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     }
     if let Some(effort) = request.reasoning.api_effort() {
         payload.insert("reasoning".to_owned(), json!({ "effort": effort }));
+    }
+    if let Some(max_output_tokens) = request.max_output_tokens {
+        payload
+            .entry("max_output_tokens".to_owned())
+            .or_insert_with(|| json!(max_output_tokens));
     }
     serde_json::to_vec(&Value::Object(payload))
         .map_err(|error| ProviderError::Request(error.to_string()))

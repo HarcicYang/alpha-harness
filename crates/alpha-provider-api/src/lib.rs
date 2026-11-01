@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_credential_api::CredentialStore;
+use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_module_http::{HttpClient, HttpRequest};
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, CompletionRequest, CompletionResponse, ModelProvider, ModelRoute,
@@ -15,9 +15,9 @@ use alpha_module_loop::{
 };
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 pub use alpha_schema::{
     AdapterRequirement, AuthMethodDescriptor, ModelDescriptor, ProviderDescriptor,
@@ -232,6 +232,8 @@ pub struct AdapterRequest {
     pub tools: Vec<ToolDefinition>,
     /// Provider-native tools.
     pub provider_tools: Vec<String>,
+    /// Catalog maximum output budget when the provider requires one.
+    pub max_output_tokens: Option<u64>,
     /// Adapter-specific options.
     pub options: Value,
 }
@@ -316,6 +318,7 @@ impl AdapterProvider {
             messages: request.messages,
             tools: request.tools,
             provider_tools,
+            max_output_tokens: request.max_output_tokens,
             options: self.options.clone(),
         }
     }
@@ -728,6 +731,20 @@ impl ModelProvider for DynamicProvider {
             .into_iter()
             .find(|descriptor| descriptor.id == model)
             .and_then(|descriptor| usize::try_from(descriptor.context_window).ok())
+    }
+
+    fn output_limit(&self, model: &str) -> Option<u64> {
+        let route = self.current_route();
+        let (instance, kind) = resolve_provider_choice(&self.root, &route.provider).ok()?;
+        let model = if model.trim().is_empty() {
+            default_model_id(&instance, kind.as_ref())?
+        } else {
+            model.to_owned()
+        };
+        effective_models(&instance, &kind.descriptor().models)
+            .into_iter()
+            .find(|descriptor| descriptor.id == model)
+            .map(|descriptor| descriptor.max_tokens)
     }
 
     fn complete(

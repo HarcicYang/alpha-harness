@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_http_api::{HttpClient, HttpRequest, HttpResponseStream};
+use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_loop::{
     ChatMessage, CompletionChunk, ProviderError, ToolCallDelta, ToolDefinition,
 };
@@ -256,9 +256,11 @@ fn request_body(request: &AdapterRequest) -> Result<Vec<u8>, ProviderError> {
     payload.insert("model".to_owned(), json!(request.model));
     payload.insert("messages".to_owned(), Value::Array(messages));
     payload.insert("stream".to_owned(), json!(true));
-    payload
-        .entry("max_tokens".to_owned())
-        .or_insert_with(|| json!(4096));
+    if let Some(max_output_tokens) = request.max_output_tokens {
+        payload
+            .entry("max_tokens".to_owned())
+            .or_insert_with(|| json!(max_output_tokens));
+    }
     match request.reasoning {
         ReasoningLevel::Auto => {}
         ReasoningLevel::Off => {

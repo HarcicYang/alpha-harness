@@ -10,11 +10,8 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                 id, name, input, ..
             } => tools.push(ToolSummary {
                 id: *id,
-                name: if input.is_null() {
-                    name.clone()
-                } else {
-                    format!("{name} {}", compact_json(input))
-                },
+                name: name.clone(),
+                input: (!input.is_null()).then(|| input.clone()),
                 status: None,
                 content: None,
             }),
@@ -25,16 +22,21 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                 content,
             } => {
                 if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.id == *id) {
-                    tool.name = name.clone();
                     tool.status = Some(*status);
                     tool.content = Some(content.clone());
                 } else {
                     tools.push(ToolSummary {
                         id: *id,
                         name: name.clone(),
+                        input: None,
                         status: Some(*status),
                         content: Some(content.clone()),
                     });
+                }
+            }
+            TranscriptItem::ToolOutput { id, text } => {
+                if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.id == *id) {
+                    tool.content = Some(text.clone());
                 }
             }
             other => match other {
@@ -95,6 +97,7 @@ pub(crate) fn desktop_transcript_items(items: &[TranscriptItem]) -> Vec<DesktopT
                     rendered.push(DesktopTranscriptItem::Error(message.clone().into()));
                 }
                 TranscriptItem::ToolCall { .. } | TranscriptItem::ToolResult { .. } => {}
+                TranscriptItem::ToolOutput { .. } => {}
             },
         }
     }
@@ -162,11 +165,17 @@ pub(crate) fn compact_tool_content(content: &str) -> String {
     }
 }
 
-pub(crate) fn tool_detail_content(content: &str) -> String {
-    let content = content.trim();
-    if content.chars().count() <= 1_200 {
-        content.to_owned()
-    } else {
-        format!("{}...", content.chars().take(1_197).collect::<String>())
+pub(crate) fn tool_detail_content(tool: &ToolSummary) -> String {
+    let mut sections = Vec::new();
+    if let Some(input) = &tool.input {
+        let input = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
+        sections.push(format!("Input\n{input}"));
     }
+    if let Some(content) = tool.content.as_deref() {
+        let content = content.trim();
+        if !content.is_empty() {
+            sections.push(format!("Output\n{content}"));
+        }
+    }
+    sections.join("\n\n")
 }

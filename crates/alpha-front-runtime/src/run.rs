@@ -37,14 +37,16 @@ pub fn run_once(request: FrontRequest) -> Result<(), FrontError> {
             );
             session_id
         }
-        None => runtime
-            .create_session()
-            .map_err(|error| {
-                FrontError::message(format!(
-                    "{error}. Configure a provider with `alpha tui` first."
-                ))
-            })?
-            .session_id,
+        None => {
+            runtime
+                .create_session()
+                .map_err(|error| {
+                    FrontError::message(format!(
+                        "{error}. Configure a provider with `alpha tui` first."
+                    ))
+                })?
+                .session_id
+        }
     };
 
     if prompt.trim().is_empty() {
@@ -73,6 +75,10 @@ pub fn run_once(request: FrontRequest) -> Result<(), FrontError> {
                     }
                     LiveAgentEvent::ToolStarted { name, .. } => {
                         eprintln!("alpha run: -> {name}");
+                    }
+                    LiveAgentEvent::ToolOutput { text, .. } => {
+                        eprint!("{text}");
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
                     }
                     LiveAgentEvent::ToolFinished { name, status, .. } => {
                         eprintln!("alpha run: <- {name} {}", tool_status_label(status));

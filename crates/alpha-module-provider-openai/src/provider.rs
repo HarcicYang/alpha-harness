@@ -23,6 +23,7 @@ pub struct OpenAiProvider {
     client: Arc<dyn HttpClient>,
     base_url: String,
     api_key: String,
+    max_output_tokens: Option<u64>,
 }
 
 impl OpenAiProvider {
@@ -36,7 +37,14 @@ impl OpenAiProvider {
             client,
             base_url: base_url.into(),
             api_key: api_key.into(),
+            max_output_tokens: None,
         }
+    }
+
+    /// Declare the model catalog's maximum output budget.
+    pub fn with_max_output_tokens(mut self, max_output_tokens: Option<u64>) -> Self {
+        self.max_output_tokens = max_output_tokens;
+        self
     }
 
     fn endpoint(&self) -> String {
@@ -56,6 +64,11 @@ impl OpenAiProvider {
         if !tools.is_empty() {
             payload.insert("tools".to_owned(), Value::Array(tools));
         }
+        if let Some(max_output_tokens) = request.max_output_tokens.or(self.max_output_tokens) {
+            payload
+                .entry("max_tokens".to_owned())
+                .or_insert_with(|| json!(max_output_tokens));
+        }
         payload.insert("stream".to_owned(), json!(stream));
         serde_json::to_vec(&Value::Object(payload))
             .map_err(|error| ProviderError::Request(error.to_string()))
@@ -63,6 +76,10 @@ impl OpenAiProvider {
 }
 
 impl ModelProvider for OpenAiProvider {
+    fn output_limit(&self, _model: &str) -> Option<u64> {
+        self.max_output_tokens
+    }
+
     fn complete(
         &self,
         request: CompletionRequest,

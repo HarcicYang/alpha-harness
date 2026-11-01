@@ -59,6 +59,13 @@ pub enum TranscriptItem {
         /// Model-visible content.
         content: String,
     },
+    /// Incremental output from a running tool.
+    ToolOutput {
+        /// Call identity.
+        id: ToolCallId,
+        /// Accumulated live output.
+        text: String,
+    },
     /// A visible runtime error.
     Error {
         /// Error text.
@@ -330,6 +337,7 @@ impl ChatState {
             }
             TranscriptItem::ToolCall { .. }
             | TranscriptItem::ToolResult { .. }
+            | TranscriptItem::ToolOutput { .. }
             | TranscriptItem::Error { .. } => None,
         }
     }
@@ -382,6 +390,9 @@ impl ChatState {
                 status,
                 content,
             } => {
+                self.transcript.retain(
+                    |item| !matches!(item, TranscriptItem::ToolOutput { id: output_id, .. } if output_id == id),
+                );
                 let name = self
                     .tool_names
                     .remove(id)
@@ -728,6 +739,20 @@ impl ChatState {
             }
             LiveAgentEvent::ToolStarted { name, .. } => {
                 self.status = Some(format!("running {name}"));
+            }
+            LiveAgentEvent::ToolOutput { call_id, text } => {
+                if let Some(TranscriptItem::ToolOutput {
+                    text: current, ..
+                }) = self.transcript.iter_mut().rev().find(
+                    |item| matches!(item, TranscriptItem::ToolOutput { id, .. } if id == call_id),
+                ) {
+                    current.push_str(text);
+                } else {
+                    self.transcript.push(TranscriptItem::ToolOutput {
+                        id: *call_id,
+                        text: text.clone(),
+                    });
+                }
             }
             LiveAgentEvent::ToolFinished { name, status, .. } => {
                 self.status = Some(format!("{name}: {status:?}"));
