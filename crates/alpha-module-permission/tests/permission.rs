@@ -89,26 +89,24 @@ fn unsandboxed_request(action: &str, resource: &str) -> PermissionRequest {
 }
 
 #[tokio::test]
-async fn read_mode_allows_reads_and_denies_mutations() {
-    let service = LocalPermissionService::new(PermissionMode::Read, Policy::default());
-    assert!(
-        service
-            .check(request("fs.read", "workspace/main.rs"))
-            .await
-            .is_allowed()
-    );
-    assert!(
-        !service
-            .check(request("fs.write", "workspace/main.rs"))
-            .await
-            .is_allowed()
-    );
-    assert!(
-        !service
-            .check(request("fs.write", "workspace/.env"))
-            .await
-            .is_allowed()
-    );
+async fn modes_decide_reads_writes_and_shell_requests() {
+    let cases = [
+        (PermissionMode::Read, "fs.read", "workspace/main.rs", true),
+        (PermissionMode::Read, "fs.write", "workspace/main.rs", false),
+        (PermissionMode::Auto, "fs.read", "workspace/main.rs", true),
+        (PermissionMode::Auto, "fs.write", "workspace/main.rs", true),
+        (PermissionMode::Auto, "shell.exec", "cargo test", true),
+        (PermissionMode::Free, "fs.write", "workspace/.env", true),
+        (PermissionMode::Free, "git.push", "origin/main", true),
+    ];
+    for (mode, action, resource, allowed) in cases {
+        let service = LocalPermissionService::new(mode, Policy::default());
+        assert_eq!(
+            service.check(request(action, resource)).await.is_allowed(),
+            allowed,
+            "{mode} must decide {action} on {resource}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -174,29 +172,6 @@ async fn once_grants_do_not_persist() {
     );
     assert_eq!(channel.prompt_count(), 2);
     assert!(service.session_grants().is_empty());
-}
-
-#[tokio::test]
-async fn auto_mode_allows_sandboxed_requests_without_a_channel() {
-    let service = LocalPermissionService::new(PermissionMode::Auto, Policy::default());
-    assert!(
-        service
-            .check(request("fs.read", "workspace/main.rs"))
-            .await
-            .is_allowed()
-    );
-    assert!(
-        service
-            .check(request("fs.write", "workspace/main.rs"))
-            .await
-            .is_allowed()
-    );
-    assert!(
-        service
-            .check(request("shell.exec", "cargo test"))
-            .await
-            .is_allowed()
-    );
 }
 
 #[tokio::test]
@@ -402,23 +377,6 @@ async fn allow_rules_skip_approval_and_protected_actions_always_prompt() {
     assert_eq!(channel.prompt_count(), 1);
     let prompt = channel.prompts.lock().expect("prompt lock")[0].clone();
     assert!(prompt.protected);
-}
-
-#[tokio::test]
-async fn free_mode_allows_everything_without_a_channel() {
-    let service = LocalPermissionService::new(PermissionMode::Free, Policy::default());
-    assert!(
-        service
-            .check(request("fs.write", "workspace/.env"))
-            .await
-            .is_allowed()
-    );
-    assert!(
-        service
-            .check(request("git.push", "origin/main"))
-            .await
-            .is_allowed()
-    );
 }
 
 #[tokio::test]

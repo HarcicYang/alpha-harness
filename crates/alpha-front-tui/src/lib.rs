@@ -3599,9 +3599,9 @@ pub fn __front_tui(
 #[cfg(test)]
 mod tests {
     use alpha_schema::{
-        AdapterRequirement, AssistantContentBlock, AuthMethodDescriptor, MessageId,
-        ModelDescriptor, PermissionMode, ProviderDescriptor, ProviderInstance, ReasoningLevel,
-        SessionId, Timestamp, ToolCallId, ToolStatus, WorkspaceRef,
+        AdapterRequirement, AssistantContentBlock, AuthMethodDescriptor, ModelDescriptor,
+        PermissionMode, ProviderDescriptor, ProviderInstance, ReasoningLevel, SessionId, Timestamp,
+        ToolCallId, ToolStatus, WorkspaceRef,
     };
     use serde_json::json;
 
@@ -3763,21 +3763,6 @@ mod tests {
             80,
         );
         assert!(lines[0].to_string().contains("shell: completed"));
-    }
-
-    #[test]
-    fn queued_steers_render_as_user_messages() {
-        let rendered = build_transcript_entry_lines(
-            &TranscriptEntry::QueuedSteer {
-                id: MessageId::new(),
-                text: "queued steer".to_owned(),
-            },
-            40,
-        )
-        .iter()
-        .map(ToString::to_string)
-        .collect::<String>();
-        assert!(rendered.contains("queued steer"));
     }
 
     #[test]

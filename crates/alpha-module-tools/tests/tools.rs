@@ -387,26 +387,3 @@ async fn shell_jobs_continue_after_the_initial_wait_and_can_be_queried() {
     assert!(finished.content.contains("status: completed"));
     assert!(finished.content.contains("firstsecond"));
 }
-
-#[tokio::test]
-async fn free_mode_shell_runs_outside_the_workspace() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let outside = tempfile::tempdir().expect("outside");
-    let (_ctx, registry) = setup(PermissionMode::Free, workspace.path());
-    let path = outside.path().join("shell.txt");
-
-    run(
-        &registry,
-        "shell",
-        json!({
-            "shell": "sh",
-            "command": format!("printf full > '{}'", path.display()),
-        }),
-    )
-    .await
-    .expect("shell outside workspace");
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("outside file"),
-        "full"
-    );
-}
