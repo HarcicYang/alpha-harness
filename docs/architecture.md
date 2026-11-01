@@ -138,15 +138,22 @@ directories from opening a new chat and walking away.
 the model returns no tool calls, the user cancels it, or an operational error
 ends it. There is no model-step or tool-call count limit.
 
+A turn opens before any preparation work: the loop appends `turn_started` and
+the user message first, then prepares context. Submitting a prompt is therefore
+visible and steerable while preparation runs, and a cancelled turn never ends
+without a start.
+
 For each model step, the loop:
 
 1. Injects queued steers at a safe boundary.
-2. Runs context preparation and compaction hooks.
-3. Appends a durable `request_header`.
+2. Runs the dynamic context hooks.
+3. Appends a durable `request_header` with the context window and output budget
+   the request was shaped against.
 4. Streams text, thinking blocks, provider tool results, and local tool calls.
-5. Appends the canonical assistant message.
-6. Executes local tool calls in response order.
-7. Continues with the updated durable history.
+5. Appends the provider-reported usage as a `context_usage` event.
+6. Appends the canonical assistant message.
+7. Executes local tool calls in response order.
+8. Continues with the updated durable history.
 
 Expected tool failures are returned to the model. Operational tool failures end
 the turn. Cancellation unwinds spawned tasks and listeners through their owning
@@ -268,11 +275,23 @@ before the first request. Resume uses that stored prompt. Dynamic context is
 stored in `context_injected` events and replaced when its rendered content
 changes.
 
-The compaction module runs before model steps. It uses the active model's
-context window and a replaceable token estimator. Compaction summarizes a
-complete older turn prefix and writes a durable `context_compacted` event with
-the replaced sequence range. If summarization fails, it stores a bounded
-deterministic excerpt.
+The compaction module runs while the turn is open, before the first model step.
+It sizes the context from the active model's context window and the prompt
+tokens the provider reported for the previous request, and falls back to a
+replaceable token estimator for content the provider has not seen yet. Provider
+catalogs are discovered once at startup so the window never depends on a
+frontend opening a model picker.
+
+Compaction summarizes a complete older turn prefix, reports per-chunk progress
+as live events, and writes a durable `context_compacted` event with the replaced
+sequence range. The summary keeps a pointer to the session directory, so the
+replaced history stays addressable.
+
+When summarization fails the history cannot be compacted in place. The host then
+continues the work in a fresh session: the new log opens with a `context_injected`
+note that names the previous session directory and the same prompt runs there.
+A session that is itself an unusable handoff does not hand off again; the
+failure surfaces as an error instead of rotating without end.
 
 ## Front runtime
 
