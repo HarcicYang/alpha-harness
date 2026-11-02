@@ -141,6 +141,9 @@ pub enum SessionEvent {
         input_tokens: u64,
         /// Completion tokens reported by the provider.
         output_tokens: u64,
+        /// Prompt tokens the provider served from its cache.
+        #[serde(default)]
+        cached_input_tokens: u64,
     },
     /// Session provider route changed.
     RouteChanged {

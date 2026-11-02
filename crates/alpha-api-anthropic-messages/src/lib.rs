@@ -464,6 +464,7 @@ fn process_event_line(
                 pending.push_back(Ok(CompletionChunk::Usage {
                     input_tokens: reported.input_tokens,
                     output_tokens: reported.output_tokens,
+                    cached_input_tokens: reported.cache_read_input_tokens,
                 }));
             }
         }
@@ -478,6 +479,7 @@ fn process_event_line(
                 pending.push_back(Ok(CompletionChunk::Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: reported.output_tokens,
+                    cached_input_tokens: reported.cache_read_input_tokens,
                 }));
             }
         }
@@ -645,6 +647,8 @@ struct StreamUsage {
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
 }
 
 #[derive(Default, Deserialize)]

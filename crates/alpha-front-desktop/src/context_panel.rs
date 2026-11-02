@@ -1,5 +1,14 @@
 use super::*;
 
+/// Cache hit rate of the latest request, when the provider reported one.
+fn cache_hit_label(context: &ContextView) -> String {
+    if context.input_tokens == 0 {
+        return String::new();
+    }
+    let percent = context.cached_input_tokens as f64 / context.input_tokens as f64 * 100.0;
+    format!("{percent:.0}% hit")
+}
+
 impl AlphaDesktop {
     pub(crate) fn render_context_panel(
         &self,
@@ -417,7 +426,21 @@ impl AlphaDesktop {
                             } else {
                                 format!("{} limit", format_token_count(context.context_window))
                             }),
-                    ),
+                    )
+                    .when(context.cached_input_tokens > 0, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .text_size(px(8.))
+                                .text_color(rgb(FAINT))
+                                .child(format!(
+                                    "{} cached",
+                                    format_token_count(context.cached_input_tokens)
+                                ))
+                                .child(cache_hit_label(context)),
+                        )
+                    }),
             )
             .child(
                 div()

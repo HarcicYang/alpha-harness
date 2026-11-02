@@ -375,6 +375,7 @@ fn process_event_line(
         pending.push_back(Ok(CompletionChunk::Usage {
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
+            cached_input_tokens: usage.prompt_tokens_details.cached_tokens,
         }));
     }
     for choice in response.choices {
@@ -441,6 +442,14 @@ struct StreamUsage {
     prompt_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: StreamUsageDetails,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamUsageDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 #[derive(Default, Deserialize)]

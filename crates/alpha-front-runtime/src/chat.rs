@@ -212,6 +212,8 @@ pub struct ChatState {
     pub reported_input_tokens: Option<usize>,
     /// Completion tokens the provider reported for the latest request.
     pub reported_output_tokens: Option<usize>,
+    /// Prompt tokens the provider served from cache for the latest request.
+    pub reported_cached_input_tokens: Option<usize>,
     /// Context window the latest request was shaped against.
     pub requested_context_window: Option<usize>,
     /// Output budget the latest request reserved.
@@ -260,6 +262,7 @@ impl ChatState {
         self.output_tokens = 0;
         self.reported_input_tokens = None;
         self.reported_output_tokens = None;
+        self.reported_cached_input_tokens = None;
         self.requested_context_window = None;
         self.reserved_output_tokens = None;
         self.last_assistant_tokens = 0;
@@ -592,11 +595,13 @@ impl ChatState {
             SessionEvent::ContextUsage {
                 input_tokens,
                 output_tokens,
+                cached_input_tokens,
             } => {
                 // The provider reports the request that just finished, so these
                 // replace the previous numbers instead of accumulating.
                 self.reported_input_tokens = Some(*input_tokens as usize);
                 self.reported_output_tokens = Some(*output_tokens as usize);
+                self.reported_cached_input_tokens = Some(*cached_input_tokens as usize);
             }
             SessionEvent::RequestHeader {
                 tools,
@@ -1253,6 +1258,7 @@ mod tests {
                 SessionEvent::ContextUsage {
                     input_tokens: 640,
                     output_tokens: 12,
+                    cached_input_tokens: 512,
                 },
             ),
         });
@@ -1260,6 +1266,7 @@ mod tests {
         assert_eq!(state.reserved_output_tokens, Some(32_768));
         assert_eq!(state.reported_input_tokens, Some(640));
         assert_eq!(state.reported_output_tokens, Some(12));
+        assert_eq!(state.reported_cached_input_tokens, Some(512));
 
         assert_eq!(state.local_tools, ["read", "edit"]);
         assert_eq!(state.provider_tools, ["web_search"]);

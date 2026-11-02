@@ -412,6 +412,7 @@ fn process_event_line(
                 pending.push_back(Ok(CompletionChunk::Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    cached_input_tokens: usage.input_tokens_details.cached_tokens,
                 }));
             }
             *done = true;
@@ -468,6 +469,14 @@ struct StreamUsage {
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    #[serde(default)]
+    input_tokens_details: StreamUsageDetails,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamUsageDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 #[derive(Default, Deserialize)]

@@ -237,6 +237,7 @@ impl AgentLoop {
                 writer.append(SessionEvent::ContextUsage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
                 })?;
             }
 
@@ -399,10 +400,12 @@ impl AgentLoop {
                 crate::provider::CompletionChunk::Usage {
                     input_tokens,
                     output_tokens,
+                    cached_input_tokens,
                 } => {
                     usage = Some(TokenUsage {
                         input_tokens,
                         output_tokens,
+                        cached_input_tokens,
                     })
                 }
             }
@@ -622,6 +625,7 @@ struct StreamFailure {
 struct TokenUsage {
     input_tokens: u64,
     output_tokens: u64,
+    cached_input_tokens: u64,
 }
 
 /// One streamed response plus the usage the provider reported for it.

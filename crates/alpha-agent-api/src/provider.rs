@@ -267,6 +267,8 @@ pub enum CompletionChunk {
         input_tokens: u64,
         /// Completion tokens.
         output_tokens: u64,
+        /// Prompt tokens the provider served from its cache.
+        cached_input_tokens: u64,
     },
 }
 

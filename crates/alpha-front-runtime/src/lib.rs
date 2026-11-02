@@ -148,6 +148,8 @@ pub struct ContextView {
     pub context_window: usize,
     /// Output tokens the current request reserved.
     pub max_tokens: usize,
+    /// Prompt tokens the provider served from cache.
+    pub cached_input_tokens: usize,
     /// Whether the token counts came from the provider instead of an estimate.
     pub reported: bool,
     /// Local tools frozen by the latest request.
@@ -256,6 +258,7 @@ impl FrontRuntime {
                 .or_else(|| choice.as_ref().map(|choice| choice.context_window))
                 .unwrap_or_default(),
             max_tokens: self.chat.reserved_output_tokens.unwrap_or_default(),
+            cached_input_tokens: self.chat.reported_cached_input_tokens.unwrap_or_default(),
             reported: self.chat.reported_input_tokens.is_some(),
             local_tools: self.chat.local_tools.clone(),
             provider_tools,
