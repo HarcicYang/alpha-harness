@@ -129,6 +129,20 @@ impl AlphaDesktop {
     }
 }
 
+/// Whether content is hidden above and below a virtualized list.
+pub(crate) fn list_scroll_edges(list: &ListState) -> (bool, bool) {
+    let offset = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+    let maximum = f32::from(list.max_offset_for_scrollbar().y).max(0.);
+    (offset > 0.5, offset < maximum - 0.5)
+}
+
+/// Whether content is hidden above and below a scroll handle.
+pub(crate) fn panel_scroll_edges(handle: &ScrollHandle) -> (bool, bool) {
+    let offset = -f32::from(handle.offset().y);
+    let maximum = f32::from(handle.max_offset().y).max(0.);
+    (offset > 0.5, offset < maximum - 0.5)
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct SmoothListScroll {
     applied_y: Cell<f32>,

@@ -240,6 +240,7 @@ impl Render for AlphaDesktop {
         };
         let context = self.runtime.context();
         let transcript_at_bottom = transcript_is_at_bottom(&self.transcript_list);
+        let transcript_fades = list_scroll_edges(&self.transcript_list);
         let jump_to_latest_hidden = self
             .jump_to_latest_hidden_until
             .is_some_and(|deadline| Instant::now() < deadline);
@@ -321,7 +322,13 @@ impl Render for AlphaDesktop {
                     .child(list_scrollbar_rail(
                         "transcript".to_owned(),
                         &self.transcript_list,
-                    )),
+                    ))
+                    .when(transcript_fades.0, |this| {
+                        this.child(scroll_fade("transcript-fade-top", rgb(CANVAS), true))
+                    })
+                    .when(transcript_fades.1, |this| {
+                        this.child(scroll_fade("transcript-fade-bottom", rgb(CANVAS), false))
+                    }),
             )
             .when_some(interaction, |this, interaction| {
                 let animation_id = format!("permission:{:?}", interaction.id);

@@ -442,6 +442,11 @@ impl AlphaDesktop {
                                     .child(scrollbar_rail(
                                         "sessions".to_owned(),
                                         &self.session_scroll,
+                                    ))
+                                    .children(scroll_fades(
+                                        "sessions",
+                                        rgb(SURFACE),
+                                        panel_scroll_edges(&self.session_scroll),
                                     )),
                             ),
                     )

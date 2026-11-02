@@ -171,6 +171,46 @@ pub(crate) fn scrollbar_rail(id: String, handle: &ScrollHandle) -> AnyElement {
         .into_any_element()
 }
 
+/// Height of the fade that marks a scroll boundary.
+pub(crate) const SCROLL_FADE_HEIGHT: f32 = 26.;
+
+/// A vertical fade from `color` into transparency at one scroll boundary.
+///
+/// It sits on top of the scrolled content and only softens the edge: the layer
+/// behind stays scrollable because the fade itself ignores pointer input.
+pub(crate) fn scroll_fade(id: impl Into<String>, color: Rgba, top: bool) -> AnyElement {
+    let base: Hsla = color.into();
+    let filled = linear_color_stop(base, 0.);
+    let empty = linear_color_stop(base.opacity(0.), 1.);
+    let (angle, from, to) = if top {
+        (180., filled, empty)
+    } else {
+        (0., empty, filled)
+    };
+    div()
+        .id(id.into())
+        .absolute()
+        .left(px(0.))
+        .right(px(0.))
+        .h(px(SCROLL_FADE_HEIGHT))
+        .when(top, |this| this.top(px(0.)))
+        .when(!top, |this| this.bottom(px(0.)))
+        .bg(linear_gradient(angle, from, to))
+        .into_any_element()
+}
+
+/// Fade overlays for one scroll shell, only where content is hidden.
+pub(crate) fn scroll_fades(id: &str, color: Rgba, edges: (bool, bool)) -> Vec<AnyElement> {
+    let mut fades = Vec::new();
+    if edges.0 {
+        fades.push(scroll_fade(format!("{id}-fade-top"), color, true));
+    }
+    if edges.1 {
+        fades.push(scroll_fade(format!("{id}-fade-bottom"), color, false));
+    }
+    fades
+}
+
 pub(crate) fn list_scrollbar_rail(id: String, list: &ListState) -> AnyElement {
     div()
         .id(format!("scrollbar-rail:{id}"))

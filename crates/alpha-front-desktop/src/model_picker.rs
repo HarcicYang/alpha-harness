@@ -265,6 +265,11 @@ impl AlphaDesktop {
                     .child(scrollbar_rail(
                         "model-picker".to_owned(),
                         &self.model_scroll,
+                    ))
+                    .children(scroll_fades(
+                        "model-picker",
+                        rgb(SURFACE_RAISED),
+                        panel_scroll_edges(&self.model_scroll),
                     )),
             )
             .child(

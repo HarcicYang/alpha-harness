@@ -504,7 +504,12 @@ impl AlphaDesktop {
                                 ),
                             )),
                     )
-                    .child(scrollbar_rail("context".to_owned(), &self.context_scroll)),
+                    .child(scrollbar_rail("context".to_owned(), &self.context_scroll))
+                    .children(scroll_fades(
+                        "context",
+                        rgb(SURFACE_RAISED),
+                        panel_scroll_edges(&self.context_scroll),
+                    )),
             )
             .child(
                 div()
