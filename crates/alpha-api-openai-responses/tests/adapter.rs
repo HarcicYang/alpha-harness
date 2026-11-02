@@ -57,7 +57,7 @@ async fn streams_responses_text_and_tool_arguments() {
             b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n".to_vec(),
             b"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\"}}\n\n".to_vec(),
             b"data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}\n\n".to_vec(),
-            b"data: {\"type\":\"response.completed\"}\n\n".to_vec(),
+            b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2048,\"output_tokens\":64}}}\n\n".to_vec(),
         ],
     });
     let adapter = alpha_api_openai_responses::OpenAiResponsesAdapter;
@@ -95,6 +95,13 @@ async fn streams_responses_text_and_tool_arguments() {
         CompletionChunk::ToolCall(delta)
             if delta.arguments == "{\"path\":\"a.txt\"}"
     ));
+    assert_eq!(
+        chunks[4],
+        CompletionChunk::Usage {
+            input_tokens: 2048,
+            output_tokens: 64
+        }
+    );
 
     let request = http
         .request
