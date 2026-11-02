@@ -53,12 +53,14 @@ async fn streams_text_and_tool_input_deltas() {
     let http = Arc::new(StreamingHttp {
         request: Mutex::new(None),
         chunks: vec![
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4321,\"output_tokens\":1}}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read\",\"input\":{}}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"a.txt\\\"}\"}}\n\n".to_vec(),
+            b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":27}}\n\n".to_vec(),
             b"data: {\"type\":\"message_stop\"}\n\n".to_vec(),
         ],
     });
@@ -85,21 +87,37 @@ async fn streams_text_and_tool_input_deltas() {
         .map(Result::unwrap)
         .collect();
 
-    assert_eq!(chunks[0], CompletionChunk::Text("hel".to_owned()));
-    assert_eq!(chunks[1], CompletionChunk::Text("lo".to_owned()));
+    assert_eq!(
+        chunks[0],
+        CompletionChunk::Usage {
+            input_tokens: 4321,
+            output_tokens: 1
+        }
+    );
+    assert_eq!(chunks[1], CompletionChunk::Text("hel".to_owned()));
+    assert_eq!(chunks[2], CompletionChunk::Text("lo".to_owned()));
     assert!(matches!(
-        &chunks[2],
+        &chunks[3],
         CompletionChunk::ToolCall(delta)
             if delta.id.as_deref() == Some("tool_1") && delta.name.as_deref() == Some("read")
     ));
     assert!(matches!(
-        &chunks[3],
+        &chunks[4],
         CompletionChunk::ToolCall(delta) if delta.arguments == "{\"path\":"
     ));
     assert!(matches!(
-        &chunks[4],
+        &chunks[5],
         CompletionChunk::ToolCall(delta) if delta.arguments == "\"a.txt\"}"
     ));
+    // The final delta carries the cumulative completion count next to the
+    // prompt size the stream opened with.
+    assert_eq!(
+        chunks[6],
+        CompletionChunk::Usage {
+            input_tokens: 4321,
+            output_tokens: 27
+        }
+    );
 
     let request = http
         .request

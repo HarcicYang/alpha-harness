@@ -408,6 +408,12 @@ fn process_event_line(
             }
         }
         "response.completed" => {
+            if let Some(usage) = event.response.and_then(|response| response.usage) {
+                pending.push_back(Ok(CompletionChunk::Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                }));
+            }
             *done = true;
         }
         "error" => {
@@ -444,7 +450,24 @@ struct StreamEvent {
     #[serde(default)]
     item: Option<StreamItem>,
     #[serde(default)]
+    response: Option<StreamResponse>,
+    #[serde(default)]
     error: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamResponse {
+    #[serde(default)]
+    usage: Option<StreamUsage>,
+}
+
+/// Token counts reported by the Responses API.
+#[derive(Default, Deserialize)]
+struct StreamUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
 }
 
 #[derive(Default, Deserialize)]

@@ -95,7 +95,14 @@ struct StreamState {
     buffer: Vec<u8>,
     pending: VecDeque<Result<CompletionChunk, ProviderError>>,
     block_kinds: BTreeMap<usize, String>,
+    usage: UsageState,
     done: bool,
+}
+
+/// Token counts reported across the Anthropic event stream.
+#[derive(Clone, Copy, Debug, Default)]
+struct UsageState {
+    input_tokens: u64,
 }
 
 impl StreamState {
@@ -105,6 +112,7 @@ impl StreamState {
             buffer: Vec::new(),
             pending: VecDeque::new(),
             block_kinds: BTreeMap::new(),
+            usage: UsageState::default(),
             done: false,
         }
     }
@@ -127,6 +135,7 @@ async fn next_stream_chunk(
                     &mut state.buffer,
                     &mut state.pending,
                     &mut state.block_kinds,
+                    &mut state.usage,
                     &mut state.done,
                     false,
                 ) {
@@ -146,6 +155,7 @@ async fn next_stream_chunk(
                     &mut state.buffer,
                     &mut state.pending,
                     &mut state.block_kinds,
+                    &mut state.usage,
                     &mut state.done,
                     true,
                 ) {
@@ -401,13 +411,14 @@ fn drain_events(
     buffer: &mut Vec<u8>,
     pending: &mut VecDeque<Result<CompletionChunk, ProviderError>>,
     block_kinds: &mut BTreeMap<usize, String>,
+    usage: &mut UsageState,
     done: &mut bool,
     finish: bool,
 ) -> Result<(), ProviderError> {
     while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
         let mut line: Vec<u8> = buffer.drain(..=index).collect();
         line.pop();
-        process_event_line(&line, pending, block_kinds, done)?;
+        process_event_line(&line, pending, block_kinds, usage, done)?;
         if *done {
             buffer.clear();
             return Ok(());
@@ -415,7 +426,7 @@ fn drain_events(
     }
     if finish && !buffer.is_empty() {
         let line = std::mem::take(buffer);
-        process_event_line(&line, pending, block_kinds, done)?;
+        process_event_line(&line, pending, block_kinds, usage, done)?;
     }
     Ok(())
 }
@@ -424,6 +435,7 @@ fn process_event_line(
     line: &[u8],
     pending: &mut VecDeque<Result<CompletionChunk, ProviderError>>,
     block_kinds: &mut BTreeMap<usize, String>,
+    usage: &mut UsageState,
     done: &mut bool,
 ) -> Result<(), ProviderError> {
     let line = trim_ascii(line);
@@ -445,6 +457,25 @@ fn process_event_line(
         ))
     })?;
     match event.kind.as_str() {
+        // Prompt tokens arrive once, at the start of the message.
+        "message_start" => {
+            if let Some(reported) = event.message.and_then(|message| message.usage) {
+                usage.input_tokens = reported.input_tokens;
+                pending.push_back(Ok(CompletionChunk::Usage {
+                    input_tokens: reported.input_tokens,
+                    output_tokens: reported.output_tokens,
+                }));
+            }
+        }
+        // Completion tokens are cumulative, so every delta supersedes the last.
+        "message_delta" => {
+            if let Some(reported) = event.usage {
+                pending.push_back(Ok(CompletionChunk::Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: reported.output_tokens,
+                }));
+            }
+        }
         "content_block_start" => {
             if let Some(block) = event.content_block {
                 let index = event.index.unwrap_or_default();
@@ -585,11 +616,30 @@ struct StreamEvent {
     #[serde(default)]
     index: Option<usize>,
     #[serde(default)]
+    message: Option<StreamMessage>,
+    #[serde(default)]
+    usage: Option<StreamUsage>,
+    #[serde(default)]
     content_block: Option<StreamContentBlock>,
     #[serde(default)]
     delta: Option<StreamDelta>,
     #[serde(default)]
     error: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamMessage {
+    #[serde(default)]
+    usage: Option<StreamUsage>,
+}
+
+/// Token counts reported by the Messages API.
+#[derive(Default, Deserialize)]
+struct StreamUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
 }
 
 #[derive(Default, Deserialize)]
