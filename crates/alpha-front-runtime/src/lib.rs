@@ -146,8 +146,10 @@ pub struct ContextView {
     pub output_tokens: usize,
     /// Current model context window.
     pub context_window: usize,
-    /// Maximum output tokens for the current model.
+    /// Output tokens the current request reserved.
     pub max_tokens: usize,
+    /// Whether the token counts came from the provider instead of an estimate.
+    pub reported: bool,
     /// Local tools frozen by the latest request.
     pub local_tools: Vec<String>,
     /// Provider-native tools active for the current route.
@@ -244,20 +246,17 @@ impl FrontRuntime {
                 .chat
                 .reported_input_tokens
                 .unwrap_or(self.chat.context_tokens),
-            output_tokens: if self.chat.reported_output_tokens > 0 {
-                self.chat.reported_output_tokens
-            } else {
-                self.chat.output_tokens
-            },
+            output_tokens: self
+                .chat
+                .reported_output_tokens
+                .unwrap_or(self.chat.last_assistant_tokens),
             context_window: self
                 .chat
                 .requested_context_window
                 .or_else(|| choice.as_ref().map(|choice| choice.context_window))
                 .unwrap_or_default(),
-            max_tokens: choice
-                .as_ref()
-                .map(|choice| choice.max_tokens)
-                .unwrap_or_default(),
+            max_tokens: self.chat.reserved_output_tokens.unwrap_or_default(),
+            reported: self.chat.reported_input_tokens.is_some(),
             local_tools: self.chat.local_tools.clone(),
             provider_tools,
             changes: self.chat.file_changes.clone(),

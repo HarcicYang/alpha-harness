@@ -10,16 +10,24 @@ impl AlphaDesktop {
             return div().into_any_element();
         }
 
+        // The provider reports the prompt it just answered; its completion joins
+        // that prompt in the next request, so both count against the window.
+        let used_tokens = context.input_tokens.saturating_add(context.output_tokens);
         let percent_value = if context.context_window == 0 {
             0.0
         } else {
-            (context.input_tokens as f64 / context.context_window as f64 * 100.0).min(100.0)
+            (used_tokens as f64 / context.context_window as f64 * 100.0).min(100.0)
         };
         let percent_label = if percent_value > 0.0 && percent_value < 1.0 {
             "<1%".to_owned()
         } else {
             format!("{percent_value:.0}%")
         };
+        // Estimated counts are not measurements: mark them instead of implying
+        // a precision the provider never reported.
+        let approx = if context.reported { "" } else { "≈ " };
+        let reserved = (context.max_tokens > 0)
+            .then(|| format!("{} reserved", format_token_count(context.max_tokens)));
         let meter_width = if percent_value == 0.0 {
             0.0
         } else {
@@ -357,10 +365,22 @@ impl AlphaDesktop {
                             )
                             .child(
                                 div()
-                                    .text_size(px(10.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(ACCENT))
-                                    .child(percent_label),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(8.))
+                                            .text_color(rgb(MUTED))
+                                            .children(reserved.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(ACCENT))
+                                            .child(percent_label),
+                                    ),
                             ),
                     )
                     .child(
@@ -385,11 +405,11 @@ impl AlphaDesktop {
                             .text_size(px(8.))
                             .text_color(rgb(MUTED))
                             .child(format!(
-                                "{} input",
+                                "{approx}{} input",
                                 format_token_count(context.input_tokens)
                             ))
                             .child(format!(
-                                "{} output",
+                                "{approx}{} output",
                                 format_token_count(context.output_tokens)
                             ))
                             .child(if context.context_window == 0 {

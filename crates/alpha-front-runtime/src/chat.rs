@@ -210,10 +210,14 @@ pub struct ChatState {
     pub output_tokens: usize,
     /// Prompt tokens the provider reported for the latest request.
     pub reported_input_tokens: Option<usize>,
-    /// Completion tokens the provider reported for this session.
-    pub reported_output_tokens: usize,
+    /// Completion tokens the provider reported for the latest request.
+    pub reported_output_tokens: Option<usize>,
     /// Context window the latest request was shaped against.
     pub requested_context_window: Option<usize>,
+    /// Output budget the latest request reserved.
+    pub reserved_output_tokens: Option<usize>,
+    /// Estimated tokens of the latest assistant message.
+    pub last_assistant_tokens: usize,
     /// Compaction progress while the history is being summarized.
     pub compaction: Option<CompactionProgress>,
     /// Local tools frozen by the latest request header.
@@ -255,8 +259,10 @@ impl ChatState {
         self.context_tokens = 0;
         self.output_tokens = 0;
         self.reported_input_tokens = None;
-        self.reported_output_tokens = 0;
+        self.reported_output_tokens = None;
         self.requested_context_window = None;
+        self.reserved_output_tokens = None;
+        self.last_assistant_tokens = 0;
         self.compaction = None;
         self.local_tools.clear();
         self.provider_tools.clear();
@@ -536,6 +542,7 @@ impl ChatState {
                 let tokens = assistant_block_tokens(blocks, text);
                 self.insert_context_segment(envelope.seq, tokens);
                 self.output_tokens = self.output_tokens.saturating_add(tokens);
+                self.last_assistant_tokens = tokens;
             }
             SessionEvent::ToolCall {
                 id, name, input, ..
@@ -586,15 +593,16 @@ impl ChatState {
                 input_tokens,
                 output_tokens,
             } => {
+                // The provider reports the request that just finished, so these
+                // replace the previous numbers instead of accumulating.
                 self.reported_input_tokens = Some(*input_tokens as usize);
-                self.reported_output_tokens = self
-                    .reported_output_tokens
-                    .saturating_add(*output_tokens as usize);
+                self.reported_output_tokens = Some(*output_tokens as usize);
             }
             SessionEvent::RequestHeader {
                 tools,
                 provider_tools,
                 context_window,
+                max_output_tokens,
                 ..
             } => {
                 self.local_tools = tools.clone();
@@ -602,6 +610,8 @@ impl ChatState {
                 if context_window.is_some() {
                     self.requested_context_window = *context_window;
                 }
+                self.reserved_output_tokens =
+                    max_output_tokens.and_then(|tokens| usize::try_from(tokens).ok());
                 if let Some(previous) = self.request_header_seq.replace(envelope.seq) {
                     self.remove_context_segment(previous);
                 }
@@ -1232,6 +1242,24 @@ mod tests {
                 },
             ),
         });
+
+        // Reported usage replaces the local estimate, and the request records the
+        // window and the budget it reserved.
+        state.apply(SessionEventNotification::Durable {
+            session_id,
+            event: EventEnvelope::at(
+                Seq::new(4),
+                Timestamp::from_millis(4),
+                SessionEvent::ContextUsage {
+                    input_tokens: 640,
+                    output_tokens: 12,
+                },
+            ),
+        });
+        assert_eq!(state.requested_context_window, Some(1_000_000));
+        assert_eq!(state.reserved_output_tokens, Some(32_768));
+        assert_eq!(state.reported_input_tokens, Some(640));
+        assert_eq!(state.reported_output_tokens, Some(12));
 
         assert_eq!(state.local_tools, ["read", "edit"]);
         assert_eq!(state.provider_tools, ["web_search"]);
