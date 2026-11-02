@@ -881,3 +881,36 @@ fn context_overflow_continues_in_a_new_session() {
         );
     });
 }
+
+#[test]
+fn the_host_tells_the_model_where_session_memory_lives() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path().join("sessions"));
+    let ctx = Ctx::root();
+    ctx.provide(std::sync::Arc::new(store.clone()))
+        .expect("session store");
+    alpha_module_agent_host::AgentHostModule
+        .activate(&ctx, &())
+        .expect("activate");
+    let header = alpha_session_log::SessionHeader::new(
+        alpha_schema::SessionId::new(),
+        PermissionMode::Auto,
+        alpha_session_log::WorkspaceRef {
+            root: "/workspace".to_owned(),
+            cwd: "/workspace".to_owned(),
+        },
+    );
+    let state = SessionState::new(&header);
+    let sections = alpha_prompt_api::section_registry(&ctx).expect("sections");
+    let rendered = sections
+        .render(&alpha_prompt_api::PromptRequest {
+            ctx: &ctx,
+            state: &state,
+        })
+        .expect("render")
+        .join("\n");
+
+    assert!(rendered.contains("# Session Memory"));
+    assert!(rendered.contains(&store.root().display().to_string()));
+    assert!(rendered.contains("/workspace"));
+}

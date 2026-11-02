@@ -14,6 +14,7 @@ pub mod service;
 use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
+use alpha_prompt_api::{PromptError, PromptPriority, PromptRequest, PromptSectionProvider};
 use alpha_schema::PermissionMode;
 use serde::Deserialize;
 
@@ -75,6 +76,39 @@ impl Module for PermissionModule {
         let service: Arc<dyn PermissionService> = Arc::new(service);
         ctx.provide::<dyn PermissionService>(service)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        // The modes are this module's facts, so it also owns how the model is
+        // told about them.
+        alpha_prompt_api::section_registry(ctx)
+            .and_then(|registry| registry.register(ctx, Arc::new(PermissionModesSection)))
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())
+    }
+}
+
+/// Permission preset and approval-flow reference.
+pub struct PermissionModesSection;
+
+impl PromptSectionProvider for PermissionModesSection {
+    fn key(&self) -> &'static str {
+        "permission-modes"
+    }
+
+    fn priority(&self) -> PromptPriority {
+        PromptPriority::Policy
+    }
+
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
+        let _ = request;
+        Ok(Some(
+            "# Permission Presets\n\n\
+             The session runs in one of four modes. Modes are switched by the user, never by you.\n\
+             - `read`: read-only workspace access with network disabled. Reads and searches work; mutations, shell execution, and protected operations are denied without prompting.\n\
+             - `auto`: the standard workspace-write preset. It uses a workspace-write sandbox with network disabled and keeps protected paths such as `.git` read-only. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require user approval.\n\
+             - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final. Protected operations require user approval.\n\
+             - `free`: full local filesystem and process access with network enabled and no approval prompts.\n\
+             Approval prompts offer deny, allow once, and allow for this session; there is no always-allow option, and session grants expire with the session. Never auto-approved: critical-path deletions, credential files, policy and sandbox configuration, push and publish/deploy operations, and cross-session messaging.\n\
+             Do not attempt to bypass the active mode, the sandbox, or an approval decision."
+                .to_owned(),
+        ))
     }
 }

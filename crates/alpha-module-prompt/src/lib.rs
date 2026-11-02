@@ -1,11 +1,18 @@
 //! Composable system-prompt assembly.
+//!
+//! The assembly plumbing lives here; the sections themselves belong to the crates
+//! that own the facts they describe. Any crate contributes through
+//! [`alpha_prompt_api::section_registry`] or [`alpha_prompt_api::context_registry`].
 
-pub use alpha_prompt_api::{PromptAssembler, PromptError};
+pub use alpha_prompt_api::{
+    ContextRegistry, ContextSectionProvider, PromptAssembler, PromptError, PromptPriority,
+    PromptRegistry, PromptRequest, PromptSectionProvider,
+};
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Disposer, Module};
+use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_module_loop::{ChatMessage, ContextError, ContextInjector};
 use alpha_schema::MessageId;
 use alpha_session_log::{MessageRecord, SessionEvent, SessionState, SessionWriter};
@@ -15,209 +22,11 @@ use serde::Deserialize;
 mod builtin;
 
 pub use builtin::{
-    MandatoryRulesSection, OutputRulesSection, PermissionModesSection, PersonaSection,
-    StopConditionsSection, ToolRulesSection,
+    MandatoryRulesSection, OutputRulesSection, PersonaSection, StopConditionsSection,
 };
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "prompt";
-
-/// Ordering tier for one prompt section.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PromptPriority {
-    /// Runtime facts and environment.
-    Runtime = 10,
-    /// Mandatory framework rules.
-    Policy = 20,
-    /// Output contract.
-    Output = 30,
-    /// Tool-use policy.
-    Tools = 40,
-    /// Project-provided instructions.
-    Project = 50,
-    /// Optional capability notes.
-    Capability = 60,
-    /// Role and persona, rendered last.
-    Persona = 70,
-}
-
-/// One request to render a prompt section.
-pub struct PromptRequest<'a> {
-    /// Active context.
-    pub ctx: &'a Ctx,
-    /// Session state before the turn starts.
-    pub state: &'a SessionState,
-}
-
-/// One composable system-prompt section.
-pub trait PromptSectionProvider: Send + Sync + 'static {
-    /// Stable section key.
-    fn key(&self) -> &'static str;
-
-    /// Ordering tier.
-    fn priority(&self) -> PromptPriority;
-
-    /// Render the section. Returning `None` omits it.
-    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError>;
-}
-
-/// Registry of prompt-section providers.
-#[derive(Default)]
-pub struct PromptRegistry {
-    sections: Arc<RwLock<BTreeMap<String, Arc<dyn PromptSectionProvider>>>>,
-}
-
-impl PromptRegistry {
-    /// Create an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register one provider as a reversible effect of `ctx`.
-    pub fn register(
-        &self,
-        ctx: &Ctx,
-        provider: Arc<dyn PromptSectionProvider>,
-    ) -> Result<Disposer, PromptError> {
-        let key = provider.key().to_owned();
-        {
-            let mut sections = self.sections.write().expect("prompt lock poisoned");
-            if sections.contains_key(&key) {
-                return Err(PromptError::DuplicateSection(key));
-            }
-            sections.insert(key.clone(), provider);
-        }
-
-        let sections = self.sections.clone();
-        let cleanup_key = key.clone();
-        match ctx.scope().effect(move || {
-            sections
-                .write()
-                .expect("prompt lock poisoned")
-                .remove(&cleanup_key);
-        }) {
-            Ok(disposer) => Ok(disposer),
-            Err(error) => {
-                self.sections
-                    .write()
-                    .expect("prompt lock poisoned")
-                    .remove(&key);
-                Err(PromptError::Kernel(error.to_string()))
-            }
-        }
-    }
-
-    fn render(&self, request: &PromptRequest<'_>) -> Result<Vec<String>, PromptError> {
-        let mut providers: Vec<Arc<dyn PromptSectionProvider>> = self
-            .sections
-            .read()
-            .expect("prompt lock poisoned")
-            .values()
-            .cloned()
-            .collect();
-        providers.sort_by(|left, right| {
-            left.priority()
-                .cmp(&right.priority())
-                .then_with(|| left.key().cmp(right.key()))
-        });
-
-        let mut output = Vec::new();
-        for provider in providers {
-            if let Some(section) = provider.render(request)? {
-                let section = section.trim();
-                if !section.is_empty() {
-                    output.push(section.to_owned());
-                }
-            }
-        }
-        Ok(output)
-    }
-}
-
-/// One dynamic context section rendered into durable user messages.
-pub trait ContextSectionProvider: Send + Sync + 'static {
-    /// Stable section key.
-    fn key(&self) -> &'static str;
-
-    /// Ordering tier.
-    fn priority(&self) -> PromptPriority;
-
-    /// Render the current section body.
-    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError>;
-}
-
-/// Registry of dynamic context sections.
-#[derive(Default)]
-pub struct ContextRegistry {
-    sections: Arc<RwLock<BTreeMap<String, Arc<dyn ContextSectionProvider>>>>,
-}
-
-impl ContextRegistry {
-    /// Create an empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register one provider as a reversible effect of `ctx`.
-    pub fn register(
-        &self,
-        ctx: &Ctx,
-        provider: Arc<dyn ContextSectionProvider>,
-    ) -> Result<Disposer, PromptError> {
-        let key = provider.key().to_owned();
-        {
-            let mut sections = self.sections.write().expect("context lock poisoned");
-            if sections.contains_key(&key) {
-                return Err(PromptError::DuplicateSection(key));
-            }
-            sections.insert(key.clone(), provider);
-        }
-
-        let sections = self.sections.clone();
-        let cleanup_key = key.clone();
-        match ctx.scope().effect(move || {
-            sections
-                .write()
-                .expect("context lock poisoned")
-                .remove(&cleanup_key);
-        }) {
-            Ok(disposer) => Ok(disposer),
-            Err(error) => {
-                self.sections
-                    .write()
-                    .expect("context lock poisoned")
-                    .remove(&key);
-                Err(PromptError::Kernel(error.to_string()))
-            }
-        }
-    }
-
-    fn render(&self, request: &PromptRequest<'_>) -> Result<Vec<(String, String)>, PromptError> {
-        let mut providers: Vec<Arc<dyn ContextSectionProvider>> = self
-            .sections
-            .read()
-            .expect("context lock poisoned")
-            .values()
-            .cloned()
-            .collect();
-        providers.sort_by(|left, right| {
-            left.priority()
-                .cmp(&right.priority())
-                .then_with(|| left.key().cmp(right.key()))
-        });
-
-        let mut output = Vec::new();
-        for provider in providers {
-            if let Some(section) = provider.render(request)? {
-                let section = section.trim();
-                if !section.is_empty() {
-                    output.push((provider.key().to_owned(), section.to_owned()));
-                }
-            }
-        }
-        Ok(output)
-    }
-}
 
 /// Default injector over a dynamic context registry.
 pub struct PromptContextInjector {
@@ -354,26 +163,24 @@ impl Module for PromptModule {
     ];
 
     fn activate(&self, ctx: &Ctx, config: &Self::Config) -> Result<(), ActivateError> {
-        let registry = Arc::new(PromptRegistry::new());
+        let registry = alpha_prompt_api::section_registry(ctx)
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         for section in builtin::sections(config) {
             registry
                 .register(ctx, section)
                 .map_err(|error| ActivateError::new(Self::KEY, error))?;
         }
-        ctx.provide::<PromptRegistry>(registry.clone())
-            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         let assembler = Arc::new(DefaultPromptAssembler::new(registry));
         ctx.provide::<dyn PromptAssembler>(assembler)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
 
-        let context_registry = Arc::new(ContextRegistry::new());
+        let context_registry = alpha_prompt_api::context_registry(ctx)
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         for section in builtin::context_sections() {
             context_registry
                 .register(ctx, section)
                 .map_err(|error| ActivateError::new(Self::KEY, error))?;
         }
-        ctx.provide::<ContextRegistry>(context_registry.clone())
-            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         let injector: Arc<dyn ContextInjector> =
             Arc::new(PromptContextInjector::new(context_registry));
         ctx.provide::<dyn ContextInjector>(injector)

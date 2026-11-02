@@ -14,6 +14,9 @@ use alpha_module_loop::{
     SteerQueue,
 };
 use alpha_module_permission::PermissionService;
+use alpha_prompt_api::{
+    PromptAssembler, PromptError, PromptPriority, PromptRequest, PromptSectionProvider,
+};
 use alpha_protocol::{OutboundTransport, RpcError};
 use alpha_schema::{
     DiscardedSteer, LiveAgentEvent, MessageId, PermissionMode, ReasoningLevel,
@@ -30,6 +33,74 @@ use tokio_util::sync::CancellationToken;
 
 /// Stable module key used by the generated composition table.
 pub const __ALPHA_MODULE__: &str = "agent.host";
+
+/// Contributes what the model needs to find its own earlier sessions.
+///
+/// Every session of this workspace is a directory under the session root, so the
+/// agent can search them instead of guessing what happened before.
+pub struct AgentHostModule;
+
+impl alpha_kernel::Module for AgentHostModule {
+    type Requirements = ();
+    type Config = ();
+
+    const KEY: &'static str = __ALPHA_MODULE__;
+    const CAPABILITIES: &'static [alpha_kernel::CapabilitySpec] = &[];
+
+    fn activate(
+        &self,
+        ctx: &alpha_kernel::Ctx,
+        _config: &Self::Config,
+    ) -> Result<(), alpha_kernel::ActivateError> {
+        alpha_prompt_api::section_registry(ctx)
+            .and_then(|registry| registry.register(ctx, Arc::new(SessionMemorySection)))
+            .map_err(|error| alpha_kernel::ActivateError::new(Self::KEY, error))?;
+        Ok(())
+    }
+}
+
+/// Tells the model where the history of this workspace lives.
+pub struct SessionMemorySection;
+
+impl SessionMemorySection {
+    fn render_memory(state: &SessionState, sessions_root: Option<&Path>) -> Option<String> {
+        let root = sessions_root?;
+        let mut text = String::from(
+            "# Session Memory\n\n\
+             - Every session is a directory under `",
+        );
+        text.push_str(&root.display().to_string());
+        text.push_str(
+            "`: `header.json` records the workspace it belongs to and `session.v0.jsonl` is its durable event log.\n\
+             - Earlier sessions of this workspace are your long-term memory for it: prior decisions, attempts, and stated preferences that are not in this context. Read or search those logs when you need them instead of guessing.\n\
+             - To find them, search the session headers for this workspace root",
+        );
+        text.push_str(&format!(" (`{}`).", state.workspace.root));
+        text.push_str(
+            "\n- Do not load an entire log into context: search for the terms you need and read only the matching records.\n\
+             - The current session is the one you are answering in; its log is the last line of the same directory listing.",
+        );
+        Some(text)
+    }
+}
+
+impl PromptSectionProvider for SessionMemorySection {
+    fn key(&self) -> &'static str {
+        "session-memory"
+    }
+
+    fn priority(&self) -> PromptPriority {
+        PromptPriority::Capability
+    }
+
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
+        let root = request
+            .ctx
+            .get::<SessionStore>()
+            .map(|store| store.root().to_path_buf());
+        Ok(Self::render_memory(request.state, root.as_deref()))
+    }
+}
 
 /// Failure while creating or driving a session actor.
 #[derive(Debug, Error)]
@@ -1467,6 +1538,34 @@ async fn actor_loop(
     }
 }
 
+/// Record the assembled system prompt before the first turn of a session.
+///
+/// Every contribution to the prompt is registered in the context, so the host
+/// records the result once and later turns reuse it.
+fn ensure_system_prompt(
+    runtime: &SessionRuntime,
+    writer: &SessionWriter,
+    state: &Mutex<SessionState>,
+) {
+    if state
+        .lock()
+        .expect("session state lock poisoned")
+        .system_prompt
+        .is_some()
+    {
+        return;
+    }
+    let Some(assembler) = runtime.ctx.get::<dyn PromptAssembler>() else {
+        return;
+    };
+    let snapshot = state.lock().expect("session state lock poisoned").clone();
+    let Ok(text) = assembler.assemble(&runtime.ctx, &snapshot) else {
+        return;
+    };
+    // The writer observer applies the event to the shared state.
+    let _ = writer.append(SessionEvent::SystemPromptSet { text });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn start_turn(
     runtime: &SessionRuntime,
@@ -1480,6 +1579,7 @@ fn start_turn(
     cancel: &mut Option<CancellationToken>,
     active_turn: &mut Option<TurnId>,
 ) {
+    ensure_system_prompt(runtime, writer, state);
     let turn_writer = writer.clone();
     let turn_state = state.clone();
     let state_snapshot = state.lock().expect("session state lock poisoned").clone();

@@ -20,6 +20,36 @@ fn state() -> SessionState {
 }
 
 #[test]
+fn another_crate_contributes_its_own_section() {
+    let ctx = Ctx::root();
+    PromptModule
+        .activate(&ctx, &PromptConfig::default())
+        .expect("activate prompt");
+    alpha_module_permission::PermissionModule
+        .activate(
+            &ctx,
+            &alpha_module_permission::PermissionConfig {
+                mode: PermissionMode::Auto,
+                ..alpha_module_permission::PermissionConfig::default()
+            },
+        )
+        .expect("activate permission");
+    let assembler = ctx
+        .require::<dyn PromptAssembler>()
+        .expect("prompt assembler");
+    let prompt = assembler.assemble(&ctx, &state()).expect("assemble");
+
+    let rules = prompt.find("# Mandatory Rules").expect("rules");
+    let presets = prompt
+        .find("# Permission Presets")
+        .expect("permission presets");
+    let output = prompt.find("# Your Output").expect("output");
+    assert!(rules < presets);
+    assert!(presets < output);
+    assert!(prompt.contains("reviewer denial is final"));
+}
+
+#[test]
 fn module_assembles_builtin_sections_in_stable_order() {
     let ctx = Ctx::root();
     PromptModule
@@ -34,26 +64,20 @@ fn module_assembles_builtin_sections_in_stable_order() {
         .find("# Your Runtime and Operating Model")
         .expect("runtime");
     let rules = prompt.find("# Mandatory Rules").expect("rules");
-    let presets = prompt
-        .find("# Permission Presets")
-        .expect("permission presets");
     let output = prompt.find("# Your Output").expect("output");
-    let tools = prompt.find("# Tool Use").expect("tools");
     let stop = prompt.find("# Stop Conditions").expect("stop");
     let persona = prompt.find("# Persona").expect("persona");
 
+    // Sections owned by other crates are registered by those crates through the
+    // shared registry, so only this module's own sections are ordered here.
     assert!(runtime < rules);
-    assert!(rules < presets);
-    assert!(presets < output);
-    assert!(output < tools);
-    assert!(tools < stop);
+    assert!(rules < output);
+    assert!(output < stop);
     assert!(stop < persona);
     assert!(!prompt.contains("Current permission mode"));
     assert!(!prompt.contains("`/workspace/project`"));
-    assert!(prompt.contains("standard workspace-write preset"));
     assert!(prompt.contains("small step budget"));
     assert!(!prompt.contains("Codex-compatible"));
-    assert!(prompt.contains("reviewer denial is final"));
     assert!(prompt.contains("GFM tables"));
     assert!(prompt.contains("fenced code blocks"));
 }

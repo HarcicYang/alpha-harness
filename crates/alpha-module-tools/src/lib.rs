@@ -16,6 +16,7 @@ use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_module_fs::{FileSystem, FileSystemSet};
 use alpha_module_permission::PermissionService;
 use alpha_module_process::ProcessRunnerSet;
+use alpha_prompt_api::{PromptError, PromptPriority, PromptRequest, PromptSectionProvider};
 use serde::Deserialize;
 
 /// Stable module key used by the generated composition table.
@@ -82,6 +83,34 @@ impl Module for ToolsModule {
         }
         ctx.provide::<ToolRegistry>(registry)
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
+        // Tool-use policy belongs to the crate that owns the tool surface.
+        alpha_prompt_api::section_registry(ctx)
+            .and_then(|registry| registry.register(ctx, Arc::new(ToolRulesSection)))
+            .map_err(|error| ActivateError::new(Self::KEY, error))?;
         Ok(())
+    }
+}
+
+/// Tool-use policy.
+pub struct ToolRulesSection;
+
+impl PromptSectionProvider for ToolRulesSection {
+    fn key(&self) -> &'static str {
+        "tool-rules"
+    }
+
+    fn priority(&self) -> PromptPriority {
+        PromptPriority::Tools
+    }
+
+    fn render(&self, _request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
+        Ok(Some(
+            "# Tool Use\n\n\
+             - The tool schema attached to the current request is the single source of truth for tool names, parameters, and capabilities.\n\
+             - Independent reads, searches, and inspections should be issued in parallel where possible; operations with dependencies must run in order.\n\
+             - When a tool fails, read the error and adjust your approach; do not repeat the same failing call verbatim.\n\
+             - After a change, verify the result with the check closest to the goal rather than repeatedly reading the whole project."
+                .to_owned(),
+        ))
     }
 }

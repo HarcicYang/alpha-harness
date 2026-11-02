@@ -19,7 +19,8 @@ use alpha_api_openai_chat::OpenAiChatApiModule;
 use alpha_api_openai_responses::OpenAiResponsesApiModule;
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_agent_host::{
-    AgentHostError, AgentHostService, SessionRuntime, SessionRuntimeFactory, SessionRuntimeRequest,
+    AgentHostError, AgentHostModule, AgentHostService, SessionRuntime, SessionRuntimeFactory,
+    SessionRuntimeRequest,
 };
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
 use alpha_module_credential::{CredentialConfig, CredentialModule, CredentialStore};
@@ -203,6 +204,10 @@ impl CoreRuntime {
         options: CoreRuntimeOptions,
     ) -> Result<Self, RunError> {
         let ctx = Ctx::root();
+        // Prompt sections describe where this runtime keeps session memory, so
+        // the store has to be reachable from the context.
+        ctx.provide::<SessionStore>(std::sync::Arc::new(store.clone()))
+            .map_err(|error| RunError::Service(error.to_string()))?;
         activate_provider_modules(&ctx)?;
         ProviderConfigModule.activate(
             &ctx,
@@ -300,6 +305,10 @@ impl AppSessionRuntimeFactory {
                     cwd: workspace.cwd.clone().into(),
                 },
             )
+            .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
+        // The host contributes what the model needs to find earlier sessions.
+        AgentHostModule
+            .activate(&location, &())
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
         PromptModule
             .activate(&location, &PromptConfig::default())
@@ -647,6 +656,7 @@ fn activate_core_modules(
         },
     )?;
     ToolsModule.activate(ctx, &ToolsConfig::default())?;
+    AgentHostModule.activate(ctx, &())?;
     CompactionModule.activate(ctx, &CompactionConfig::default())?;
     Ok(())
 }

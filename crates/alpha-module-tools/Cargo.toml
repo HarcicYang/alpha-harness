@@ -13,6 +13,7 @@ alpha-kernel.workspace = true
 alpha-module-fs.workspace = true
 alpha-module-permission.workspace = true
 alpha-module-process.workspace = true
+alpha-prompt-api.workspace = true
 alpha-schema.workspace = true
 base64.workspace = true
 futures.workspace = true

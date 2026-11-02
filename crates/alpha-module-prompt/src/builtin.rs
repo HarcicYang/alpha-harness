@@ -4,21 +4,18 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use alpha_module_fs::{FileSystem, FsError};
-use alpha_module_permission::PermissionService;
-
 use crate::{
     ContextSectionProvider, PromptConfig, PromptError, PromptPriority, PromptRequest,
     PromptSectionProvider,
 };
+use alpha_module_fs::{FileSystem, FsError};
+use alpha_module_permission::PermissionService;
 
 pub(crate) fn sections(config: &PromptConfig) -> Vec<Arc<dyn PromptSectionProvider>> {
     let mut sections: Vec<Arc<dyn PromptSectionProvider>> = vec![
         Arc::new(RuntimeSection),
         Arc::new(MandatoryRulesSection),
-        Arc::new(PermissionModesSection),
         Arc::new(OutputRulesSection),
-        Arc::new(ToolRulesSection),
         Arc::new(StopConditionsSection),
     ];
     if config.include_project_instructions {
@@ -87,34 +84,6 @@ impl ContextSectionProvider for RuntimeContextSection {
     }
 }
 
-/// Permission preset and approval-flow reference.
-pub struct PermissionModesSection;
-
-impl PromptSectionProvider for PermissionModesSection {
-    fn key(&self) -> &'static str {
-        "permission-modes"
-    }
-
-    fn priority(&self) -> PromptPriority {
-        PromptPriority::Policy
-    }
-
-    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        let _ = request;
-        Ok(Some(
-            "# Permission Presets\n\n\
-             The session runs in one of four modes. Modes are switched by the user, never by you.\n\
-             - `read`: read-only workspace access with network disabled. Reads and searches work; mutations, shell execution, and protected operations are denied without prompting.\n\
-             - `auto`: the standard workspace-write preset. It uses a workspace-write sandbox with network disabled and keeps protected paths such as `.git` read-only. Reads, edits, and commands that remain inside the sandbox run without prompting; protected operations and requests that cross the sandbox boundary require user approval.\n\
-             - `reviewed`: uses the same sandbox boundary as `auto`. Sandbox-contained requests run directly; other requests first pass through the intent classifier, then automatic approval review when the classifier hands them off. A classifier or reviewer allow permits execution; reviewer denial is final. Protected operations require user approval.\n\
-             - `free`: full local filesystem and process access with network enabled and no approval prompts.\n\
-             Approval prompts offer deny, allow once, and allow for this session; there is no always-allow option, and session grants expire with the session. Never auto-approved: critical-path deletions, credential files, policy and sandbox configuration, push and publish/deploy operations, and cross-session messaging.\n\
-             Do not attempt to bypass the active mode, the sandbox, or an approval decision."
-                .to_owned(),
-        ))
-    }
-}
-
 /// Mandatory framework rules.
 pub struct MandatoryRulesSection;
 
@@ -161,30 +130,6 @@ impl PromptSectionProvider for OutputRulesSection {
              - Keep answers concise and specific, stating directly what was done, what the result was, and what problems remain.\n\
              - Do not restate tool output or process logs unless they are necessary for the conclusion.\n\
              - When work is not finished, state the blocker clearly; do not paper over failures with speculative descriptions."
-                .to_owned(),
-        ))
-    }
-}
-
-/// Tool-use policy.
-pub struct ToolRulesSection;
-
-impl PromptSectionProvider for ToolRulesSection {
-    fn key(&self) -> &'static str {
-        "tool-rules"
-    }
-
-    fn priority(&self) -> PromptPriority {
-        PromptPriority::Tools
-    }
-
-    fn render(&self, _request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        Ok(Some(
-            "# Tool Use\n\n\
-             - The tool schema attached to the current request is the single source of truth for tool names, parameters, and capabilities.\n\
-             - Independent reads, searches, and inspections should be issued in parallel where possible; operations with dependencies must run in order.\n\
-             - When a tool fails, read the error and adjust your approach; do not repeat the same failing call verbatim.\n\
-             - After a change, verify the result with the check closest to the goal rather than repeatedly reading the whole project."
                 .to_owned(),
         ))
     }
