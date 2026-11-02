@@ -21,6 +21,9 @@ pub enum LoopError {
     /// Dynamic context injection failed.
     #[error(transparent)]
     Context(#[from] ContextError),
+    /// The turn was cancelled before it could finish.
+    #[error("turn interrupted")]
+    Interrupted,
     /// The turn exceeded the model step limit.
     #[error("turn exceeded {0} model steps")]
     StepLimit(usize),

@@ -264,6 +264,7 @@ fn interrupted_turn_and_tool_call_are_repaired_on_write_open() {
     let header = header();
     let id = header.id;
     let call_id = ToolCallId::new();
+    let message_id = MessageId::new();
 
     {
         let writer = store.create(header).expect("create");
@@ -271,9 +272,27 @@ fn interrupted_turn_and_tool_call_are_repaired_on_write_open() {
             .append(SessionEvent::TurnStarted)
             .expect("append turn start");
         writer
+            .append(SessionEvent::AssistantMessage {
+                id: message_id,
+                blocks: vec![
+                    AssistantContentBlock::LocalToolCall {
+                        id: "provider-call-1".to_owned(),
+                        name: "shell".to_owned(),
+                        arguments: serde_json::json!({ "command": "cargo test" }),
+                    },
+                    AssistantContentBlock::LocalToolCall {
+                        id: "provider-call-2".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: serde_json::json!({ "path": "Cargo.toml" }),
+                    },
+                ],
+                text: String::new(),
+            })
+            .expect("append assistant message");
+        writer
             .append(SessionEvent::ToolCall {
                 id: call_id,
-                message_id: MessageId::new(),
+                message_id,
                 name: "shell".to_owned(),
                 input: serde_json::json!({ "command": "cargo test" }),
             })
@@ -282,17 +301,32 @@ fn interrupted_turn_and_tool_call_are_repaired_on_write_open() {
 
     {
         let writer = store.open_write(id).expect("open write");
-        assert_eq!(writer.repairs().len(), 2);
-        assert_eq!(writer.last_seq().get(), 4);
+        // The recorded call, the announced call that was never recorded, and
+        // the open turn are all settled.
+        assert_eq!(writer.repairs().len(), 4);
+        assert_eq!(writer.last_seq().get(), 7);
         assert!(matches!(
-            writer.repairs()[0].payload,
+            &writer.repairs()[0].payload,
+            SessionEvent::ToolResult {
+                id,
+                status: ToolStatus::Interrupted,
+                ..
+            } if *id == call_id
+        ));
+        assert!(matches!(
+            &writer.repairs()[1].payload,
+            SessionEvent::ToolCall { message_id: repaired_message, name, .. }
+                if *repaired_message == message_id && name == "read"
+        ));
+        assert!(matches!(
+            writer.repairs()[2].payload,
             SessionEvent::ToolResult {
                 status: ToolStatus::Interrupted,
                 ..
             }
         ));
         assert!(matches!(
-            writer.repairs()[1].payload,
+            writer.repairs()[3].payload,
             SessionEvent::TurnEnded {
                 reason: TurnEndReason::Interrupted
             }

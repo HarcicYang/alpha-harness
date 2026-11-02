@@ -12,7 +12,7 @@ use alpha_module_loop::{
 };
 use alpha_module_permission::{PermissionConfig, PermissionModule, PermissionService};
 use alpha_protocol::{OutboundTransport, RpcError};
-use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel};
+use alpha_schema::{AssistantContentBlock, MessageId, PermissionMode, ReasoningLevel, ToolCallId};
 use alpha_session_log::{SessionEvent, SessionState, SessionStore, SessionWriter, TurnEndReason};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
@@ -203,6 +203,96 @@ impl SessionRuntimeFactory for BlockingFactory {
         Ok(SessionRuntime {
             ctx: Ctx::root(),
             agent: Arc::new(BlockingDriver {
+                started: self.started.clone(),
+                release: self.release.clone(),
+                runs: AtomicUsize::new(0),
+            }),
+            provider_tools_override: Arc::new(ProviderToolsOverride::default()),
+            model_route: Arc::new(ModelRouteOverride::default()),
+        })
+    }
+}
+
+struct ToolBlockingDriver {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    runs: AtomicUsize,
+}
+
+impl AgentDriver for ToolBlockingDriver {
+    fn run_turn<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        writer: &'a SessionWriter,
+        _state: &'a SessionState,
+        prompt: &'a str,
+    ) -> BoxFuture<'a, Result<TurnOutcome, LoopError>> {
+        Box::pin(async move {
+            writer.append(SessionEvent::TurnStarted)?;
+            writer.append(SessionEvent::UserMessage {
+                id: MessageId::new(),
+                text: prompt.to_owned(),
+                images: Vec::new(),
+            })?;
+            if self.runs.fetch_add(1, Ordering::SeqCst) > 0 {
+                let id = MessageId::new();
+                let text = format!("echo:{prompt}");
+                writer.append(SessionEvent::AssistantMessage {
+                    id,
+                    blocks: vec![AssistantContentBlock::Text { text: text.clone() }],
+                    text: String::new(),
+                })?;
+                writer.append(SessionEvent::TurnEnded {
+                    reason: TurnEndReason::Completed,
+                })?;
+                return Ok(TurnOutcome {
+                    assistant_message: id,
+                    assistant_text: text,
+                });
+            }
+            let message_id = MessageId::new();
+            writer.append(SessionEvent::AssistantMessage {
+                id: message_id,
+                blocks: vec![
+                    AssistantContentBlock::LocalToolCall {
+                        id: "provider-call-1".to_owned(),
+                        name: "shell".to_owned(),
+                        arguments: json!({ "command": "cargo test" }),
+                    },
+                    AssistantContentBlock::LocalToolCall {
+                        id: "provider-call-2".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: json!({ "path": "Cargo.toml" }),
+                    },
+                ],
+                text: String::new(),
+            })?;
+            writer.append(SessionEvent::ToolCall {
+                id: ToolCallId::new(),
+                message_id,
+                name: "shell".to_owned(),
+                input: json!({ "command": "cargo test" }),
+            })?;
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(TurnOutcome {
+                assistant_message: message_id,
+                assistant_text: String::new(),
+            })
+        })
+    }
+}
+
+struct ToolBlockingFactory {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl SessionRuntimeFactory for ToolBlockingFactory {
+    fn build(&self, _request: SessionRuntimeRequest) -> Result<SessionRuntime, AgentHostError> {
+        Ok(SessionRuntime {
+            ctx: Ctx::root(),
+            agent: Arc::new(ToolBlockingDriver {
                 started: self.started.clone(),
                 release: self.release.clone(),
                 runs: AtomicUsize::new(0),
@@ -828,6 +918,98 @@ fn cancel_stops_the_turn_without_replaying_it() {
         assert!(!notifications.iter().any(|(_, params)| {
             params["kind"] == "durable" && params["event"]["payload"]["type"] == "assistant_message"
         }));
+        drop(release);
+    });
+}
+
+#[test]
+fn cancel_settles_every_announced_tool_call() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let transport = Arc::new(RecordingTransport::default());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let host = AgentHostService::new(
+            store,
+            transport.clone(),
+            Arc::new(ToolBlockingFactory {
+                started: started.clone(),
+                release: release.clone(),
+            }),
+        );
+        let created = host
+            .create_session(session_request(dir.path(), Default::default()))
+            .expect("create");
+        let turn_id = host
+            .submit(created.session_id, "interrupt me".to_owned())
+            .expect("submit");
+        started.notified().await;
+        host.cancel(created.session_id, turn_id)
+            .await
+            .expect("cancel");
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended"
+                && params["event"]["payload"]["reason"] == "interrupted")
+            .await,
+            "durable event did not arrive",
+        );
+
+        let events = transport
+            .notifications
+            .lock()
+            .expect("notification lock poisoned")
+            .iter()
+            .filter(|(method, params)| method == "session.event" && params["kind"] == "durable")
+            .map(|(_, params)| params["event"]["payload"].clone())
+            .collect::<Vec<_>>();
+        let types = events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            types,
+            vec![
+                "turn_started",
+                "user_message",
+                "assistant_message",
+                "tool_call",
+                "tool_result",
+                "tool_call",
+                "tool_result",
+                "turn_ended",
+            ],
+            "the interrupted turn must settle every announced call"
+        );
+        assert_eq!(events[4]["id"], events[3]["id"]);
+        assert_eq!(events[4]["status"], "interrupted");
+        assert_eq!(events[5]["name"], "read");
+        assert_eq!(events[6]["status"], "interrupted");
+        assert_eq!(events[7]["reason"], "interrupted");
+
+        // The session must accept another turn after the interruption.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let _next_turn = loop {
+            match host.submit(created.session_id, "continue".to_owned()) {
+                Ok(turn_id) => break turn_id,
+                Err(AgentHostError::SessionBusy(_)) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(error) => panic!("submit after interrupt: {error}"),
+            }
+        };
+        assert!(
+            wait_for_durable(&transport, 1, |params| params["kind"] == "durable"
+                && params["event"]["payload"]["type"] == "turn_ended"
+                && params["event"]["payload"]["reason"] == "completed")
+            .await,
+            "the session must run another turn after an interruption",
+        );
         drop(release);
     });
 }

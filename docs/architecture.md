@@ -125,8 +125,11 @@ allows one process to append.
 
 Read-open migrates supported older events in memory without changing the source
 file. Repair and migration write a successor generation beside the original.
-Recovery drops an incomplete final line, closes an interrupted turn, and marks
-unfinished tool calls as interrupted.
+Recovery drops an incomplete final line, closes an interrupted turn, and
+settles every tool call the turn announced. Calls that were recorded without a
+result and calls that were only announced both receive an interrupted result,
+so the next request sees a complete history. A cancelled turn is settled in the
+same way before the actor accepts new work.
 
 The front runtime keeps a chat as an in-memory draft until the first prompt.
 Submitting that prompt creates a durable session. This avoids empty session
@@ -156,8 +159,9 @@ For each model step, the loop:
 8. Continues with the updated durable history.
 
 Expected tool failures are returned to the model. Operational tool failures end
-the turn. Cancellation unwinds spawned tasks and listeners through their owning
-scope.
+the turn. Cancellation drops the running driver, records an interrupted result
+for every call the assistant announced, closes the turn, and unwinds spawned
+tasks and listeners through their owning scope.
 
 ## Providers and models
 
@@ -326,8 +330,8 @@ the response it streamed into one usage chunk, and the driver records it as a
 durable `context_usage` event. Input tokens are the complete prompt, including
 tokens the provider served from its cache, so the cache hit rate is the cached
 share of that prompt. The context panel measures the reported prompt, the
-completion that joined the history afterwards, and the output budget reserved
-for the next request against the context window the request was shaped against.
+completion that joined the history afterwards, and the output budget reserved by
+the latest request against the context window that request was shaped against.
 It marks the numbers as estimates whenever no usage has been reported yet.
 
 `FrontRuntimeManager` owns one runtime per desktop workspace. Polling reduces
@@ -342,7 +346,8 @@ permission actions to `alpha-front-runtime`.
 
 `chat` stays in the current terminal. `tui` uses the alternate screen. Both
 render structured assistant content, tool state, queued steers, permission
-prompts, and shared management overlays.
+prompts, and shared management overlays. Ctrl-C and `/quit` cancel the running
+turn and exit after the core has settled it; a second Ctrl-C exits immediately.
 
 ## Desktop frontend
 

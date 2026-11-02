@@ -24,7 +24,7 @@ use alpha_schema::{
 };
 use alpha_session_log::{
     MessageRecord, SessionError, SessionEvent, SessionHeader, SessionState, SessionStore,
-    SessionWriter, TurnEndReason, WorkspaceRef,
+    SessionWriter, WorkspaceRef,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -1566,6 +1566,23 @@ fn ensure_system_prompt(
     let _ = writer.append(SessionEvent::SystemPromptSet { text });
 }
 
+/// Settle calls and turns that an interruption left open.
+///
+/// The assistant message records every call it announced, but a turn can be
+/// stopped before all of them were executed. Appending the missing results and
+/// the interrupted turn end keeps the projection valid and lets the model see
+/// a complete history on the next request.
+fn settle_interrupted_turn(
+    writer: &SessionWriter,
+    state: &Mutex<SessionState>,
+) -> Result<(), SessionError> {
+    let snapshot = state.lock().expect("session state lock poisoned").clone();
+    for event in snapshot.interrupted_turn_repairs() {
+        writer.append(event)?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn start_turn(
     runtime: &SessionRuntime,
@@ -1579,6 +1596,9 @@ fn start_turn(
     cancel: &mut Option<CancellationToken>,
     active_turn: &mut Option<TurnId>,
 ) {
+    // A cancelled turn may have left calls without results. Settle them before
+    // the next turn so the session continues instead of being rejected.
+    let _ = settle_interrupted_turn(writer, state);
     ensure_system_prompt(runtime, writer, state);
     let turn_writer = writer.clone();
     let turn_state = state.clone();
@@ -1603,18 +1623,13 @@ fn start_turn(
                 result.map(|_| ())
             }
             _ = token.cancelled() => {
-                // Preparation runs inside an open turn, so a cancel before the
-                // driver opened it must not fabricate a turn end.
-                if turn_state
-                    .lock()
-                    .expect("session state lock poisoned")
-                    .turn_open
-                {
-                    let _ = turn_writer.append(SessionEvent::TurnEnded {
-                        reason: TurnEndReason::Interrupted,
-                    });
+                // The driver may have stopped between tool calls. Settle every
+                // announced call before closing the turn; the model rejects a
+                // history whose tool calls have no matching results.
+                match settle_interrupted_turn(&turn_writer, &turn_state) {
+                    Ok(()) => Err(LoopError::Interrupted),
+                    Err(error) => Err(LoopError::Session(error)),
                 }
-                Err(LoopError::Tool("turn cancelled".to_owned()))
             }
         };
         let _ = completion_tx.send(TurnCompletion { result });

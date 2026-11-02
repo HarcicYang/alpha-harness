@@ -131,7 +131,90 @@ pub struct SessionState {
     pub last_seq: Seq,
 }
 
+/// Model-visible content recorded for a call that never finished.
+pub const INTERRUPTED_TOOL_CONTENT: &str = "Interrupted before the tool finished.";
+
 impl SessionState {
+    /// Repairs that settle every call of an interrupted turn.
+    ///
+    /// A turn can be stopped after the assistant announced several calls but
+    /// before they were recorded or executed. Settling only the recorded calls
+    /// would leave the announced ones without a result, and providers reject a
+    /// history whose tool calls have no matching results.
+    pub fn interrupted_turn_repairs(&self) -> Vec<SessionEvent> {
+        let mut repairs = Vec::new();
+        for id in &self.pending_tool_calls {
+            repairs.push(SessionEvent::ToolResult {
+                id: *id,
+                status: ToolStatus::Interrupted,
+                content: INTERRUPTED_TOOL_CONTENT.to_owned(),
+                images: Vec::new(),
+            });
+        }
+        if let Some((message_id, blocks)) = self.messages.iter().rev().find_map(|message| {
+            let MessageRecord::Assistant { id, blocks, .. } = message else {
+                return None;
+            };
+            Some((*id, blocks))
+        }) {
+            let mut recorded = self
+                .messages
+                .iter()
+                .filter_map(|message| {
+                    let MessageRecord::ToolCall {
+                        message_id: call_message,
+                        name,
+                        input,
+                        ..
+                    } = message
+                    else {
+                        return None;
+                    };
+                    (*call_message == message_id).then(|| (name.clone(), input.clone()))
+                })
+                .collect::<Vec<_>>();
+            for block in blocks {
+                let AssistantContentBlock::LocalToolCall {
+                    name, arguments, ..
+                } = block
+                else {
+                    continue;
+                };
+                let exact = recorded
+                    .iter()
+                    .position(|(recorded_name, input)| recorded_name == name && input == arguments);
+                let same_name = || {
+                    recorded
+                        .iter()
+                        .position(|(recorded_name, _)| recorded_name == name)
+                };
+                if let Some(index) = exact.or_else(same_name) {
+                    recorded.remove(index);
+                    continue;
+                }
+                let id = ToolCallId::new();
+                repairs.push(SessionEvent::ToolCall {
+                    id,
+                    message_id,
+                    name: name.clone(),
+                    input: arguments.clone(),
+                });
+                repairs.push(SessionEvent::ToolResult {
+                    id,
+                    status: ToolStatus::Interrupted,
+                    content: INTERRUPTED_TOOL_CONTENT.to_owned(),
+                    images: Vec::new(),
+                });
+            }
+        }
+        if self.turn_open {
+            repairs.push(SessionEvent::TurnEnded {
+                reason: crate::event::TurnEndReason::Interrupted,
+            });
+        }
+        repairs
+    }
+
     /// Create an empty projection seeded from a session header.
     pub fn new(header: &SessionHeader) -> Self {
         Self {

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use alpha_schema::{EventEnvelope, Seq};
 use fs2::FileExt;
 
-use crate::event::{SessionEvent, ToolStatus, TurnEndReason};
+use crate::event::SessionEvent;
 use crate::header::SessionHeader;
 use crate::state::SessionState;
 use crate::store::SessionError;
@@ -167,20 +167,5 @@ pub(crate) fn plan_repairs(
     header: &SessionHeader,
     events: &[EventEnvelope<SessionEvent>],
 ) -> Vec<SessionEvent> {
-    let state = SessionState::from_events(header, events);
-    let mut repairs = Vec::new();
-    for id in &state.pending_tool_calls {
-        repairs.push(SessionEvent::ToolResult {
-            id: *id,
-            status: ToolStatus::Interrupted,
-            content: String::new(),
-            images: Vec::new(),
-        });
-    }
-    if state.turn_open {
-        repairs.push(SessionEvent::TurnEnded {
-            reason: TurnEndReason::Interrupted,
-        });
-    }
-    repairs
+    SessionState::from_events(header, events).interrupted_turn_repairs()
 }

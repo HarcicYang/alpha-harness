@@ -1,6 +1,6 @@
 //! Default agent driver.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use alpha_agent_api::{AgentDriver, ContextError, ContextInjector, LoopError, TurnOutcome};
@@ -10,8 +10,8 @@ use alpha_schema::{
     AssistantContentBlock, ImageAttachment, MessageId, ReasoningLevel, ToolCallId, TurnId,
 };
 use alpha_session_log::{
-    MessageRecord, SessionError, SessionEvent, SessionState, SessionWriter, ToolStatus,
-    TurnEndReason,
+    INTERRUPTED_TOOL_CONTENT, MessageRecord, SessionError, SessionEvent, SessionState,
+    SessionWriter, ToolStatus, TurnEndReason,
 };
 use futures::StreamExt;
 use futures::future::BoxFuture;
@@ -856,6 +856,10 @@ struct HistoryBuilder {
     pending_tool_results: Vec<(String, String, Vec<ImageAttachment>)>,
     calls_for: Option<MessageId>,
     tool_result_ids: BTreeMap<String, String>,
+    // Results synthesized for calls that were announced but never settled.
+    synthesized_results: BTreeSet<String>,
+    // Calls recorded after their assistant message was already projected.
+    skipped_calls: BTreeSet<String>,
 }
 
 impl HistoryBuilder {
@@ -914,14 +918,19 @@ impl HistoryBuilder {
                 input,
                 ..
             } => {
+                // Repair events can append a call after the turn it belongs to
+                // was already projected. The sanitizer settled that call at the
+                // assistant message, so replaying it here would invent a second
+                // assistant turn.
+                let belongs_to_pending_message = self
+                    .pending_blocks
+                    .as_ref()
+                    .is_some_and(|(pending_id, _)| pending_id == message_id);
+                if self.calls_for != Some(*message_id) && !belongs_to_pending_message {
+                    self.skipped_calls.insert(id.to_string());
+                    return;
+                }
                 if self.calls_for != Some(*message_id) {
-                    let has_pending_message = self
-                        .pending_blocks
-                        .as_ref()
-                        .is_some_and(|(pending_id, _)| pending_id == message_id);
-                    if !has_pending_message {
-                        self.flush();
-                    }
                     self.calls_for = Some(*message_id);
                 }
                 self.pending_calls.push(ToolCall {
@@ -936,6 +945,9 @@ impl HistoryBuilder {
                 images,
                 ..
             } => {
+                if self.skipped_calls.remove(&id.to_string()) {
+                    return;
+                }
                 self.pending_tool_results
                     .push((id.to_string(), content.clone(), images.clone()));
             }
@@ -947,10 +959,12 @@ impl HistoryBuilder {
         let caller = self.calls_for.take();
         let pending_blocks = self.pending_blocks.take();
         let pending_text = self.pending_text.take();
+        let mut announced = BTreeSet::new();
 
         if calls.is_empty() {
             match (pending_blocks, pending_text) {
                 (Some((_, blocks)), _) if !blocks.is_empty() => {
+                    announced.extend(local_call_ids(&blocks));
                     self.messages.push(ChatMessage::AssistantContent(blocks));
                 }
                 (_, Some((_, text))) => {
@@ -996,19 +1010,41 @@ impl HistoryBuilder {
                 };
                 self.tool_result_ids.insert(call.id, call_id);
             }
+            announced.extend(local_call_ids(&blocks));
             self.messages.push(ChatMessage::AssistantContent(blocks));
         }
 
+        let mut answered = BTreeSet::new();
         for (local_id, content, images) in std::mem::take(&mut self.pending_tool_results) {
             let call_id = self
                 .tool_result_ids
                 .get(&local_id)
                 .cloned()
                 .unwrap_or(local_id);
+            // A late durable result for a call that was already settled by a
+            // repair must not be added a second time.
+            if self.synthesized_results.contains(&call_id) {
+                continue;
+            }
+            answered.insert(call_id.clone());
             self.messages.push(ChatMessage::ToolResult {
                 call_id,
                 content,
                 images,
+            });
+        }
+        // The assistant message announces every call, including calls the
+        // interrupted turn never recorded. Providers reject a history whose
+        // tool calls have no matching results.
+        for call_id in announced {
+            if answered.contains(&call_id) || self.synthesized_results.contains(&call_id) {
+                continue;
+            }
+            self.synthesized_results.insert(call_id.clone());
+            self.messages.push(ChatMessage::ToolResult {
+                call_id,
+                content: INTERRUPTED_TOOL_CONTENT.to_owned(),
+                images: Vec::new(),
             });
         }
     }
@@ -1017,6 +1053,13 @@ impl HistoryBuilder {
         self.flush();
         self.messages
     }
+}
+
+fn local_call_ids(blocks: &[AssistantContentBlock]) -> impl Iterator<Item = String> + '_ {
+    blocks.iter().filter_map(|block| match block {
+        AssistantContentBlock::LocalToolCall { id, .. } => Some(id.clone()),
+        _ => None,
+    })
 }
 
 fn text_to_blocks(text: String) -> Vec<AssistantContentBlock> {
@@ -1134,5 +1177,116 @@ mod tests {
             &messages[3],
             ChatMessage::ToolResult { call_id, .. } if call_id == "provider-call-2"
         ));
+    }
+
+    #[test]
+    fn announced_calls_are_settled_before_the_next_user_message() {
+        let header = SessionHeader::new(
+            SessionId::new(),
+            PermissionMode::Auto,
+            WorkspaceRef {
+                root: "/workspace".to_owned(),
+                cwd: "/workspace".to_owned(),
+            },
+        );
+        let message_id = MessageId::new();
+        let first_call = ToolCallId::new();
+        let repaired_call = ToolCallId::new();
+        let events = vec![
+            EventEnvelope::new(
+                Seq::new(1),
+                SessionEvent::UserMessage {
+                    id: MessageId::new(),
+                    text: "interrupt me".to_owned(),
+                    images: Vec::new(),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(2),
+                SessionEvent::AssistantMessage {
+                    id: message_id,
+                    blocks: vec![
+                        AssistantContentBlock::LocalToolCall {
+                            id: "provider-call-1".to_owned(),
+                            name: "shell".to_owned(),
+                            arguments: serde_json::json!({ "command": "pwd" }),
+                        },
+                        AssistantContentBlock::LocalToolCall {
+                            id: "provider-call-2".to_owned(),
+                            name: "shell".to_owned(),
+                            arguments: serde_json::json!({ "command": "ls" }),
+                        },
+                    ],
+                    text: String::new(),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(3),
+                SessionEvent::ToolCall {
+                    id: first_call,
+                    message_id,
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({ "command": "pwd" }),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(4),
+                SessionEvent::UserMessage {
+                    id: MessageId::new(),
+                    text: "are you still there?".to_owned(),
+                    images: Vec::new(),
+                },
+            ),
+            // Repairs appended by a write-open arrive after later messages.
+            EventEnvelope::new(
+                Seq::new(5),
+                SessionEvent::ToolCall {
+                    id: repaired_call,
+                    message_id,
+                    name: "read".to_owned(),
+                    input: serde_json::json!({ "path": "Cargo.toml" }),
+                },
+            ),
+            EventEnvelope::new(
+                Seq::new(6),
+                SessionEvent::ToolResult {
+                    id: repaired_call,
+                    status: ToolStatus::Interrupted,
+                    content: INTERRUPTED_TOOL_CONTENT.to_owned(),
+                    images: Vec::new(),
+                },
+            ),
+        ];
+        let state = SessionState::from_events(&header, &events);
+
+        let messages = HistoryBuilder::from_state(&state);
+
+        assert_eq!(
+            messages.len(),
+            5,
+            "a late repair must not invent a second assistant message"
+        );
+        assert!(
+            matches!(
+                &messages[2],
+                ChatMessage::ToolResult { call_id, content, .. }
+                    if call_id == "provider-call-1"
+                        && content == INTERRUPTED_TOOL_CONTENT
+            ),
+            "recorded call should be settled before the next user message"
+        );
+        assert!(
+            matches!(
+                &messages[3],
+                ChatMessage::ToolResult { call_id, content, .. }
+                    if call_id == "provider-call-2"
+                        && content == INTERRUPTED_TOOL_CONTENT
+            ),
+            "announced call should be settled before the next user message"
+        );
+        assert!(
+            matches!(&messages[4], ChatMessage::User(text) if text == "are you still there?"),
+            "the next user message must follow the settled calls"
+        );
     }
 }

@@ -1144,6 +1144,7 @@ struct App {
     thinking_picker: Option<ThinkingPicker>,
     help: bool,
     quit: bool,
+    quit_after_turn: bool,
 }
 
 struct SessionPicker {
@@ -1436,6 +1437,7 @@ fn run_terminal(runtime: FrontRuntime, profile: TerminalProfile) -> Result<(), T
         thinking_picker: None,
         help: false,
         quit: false,
+        quit_after_turn: false,
     };
     app.providers.refresh(&mut runtime)?;
     if app
@@ -1476,6 +1478,9 @@ fn run_loop(
             redraw = true;
             sync_views(app, runtime);
         }
+        if app.quit_after_turn && app.chat.running_turn.is_none() {
+            return Ok(());
+        }
 
         let now = Instant::now();
         if redraw && now >= next_frame {
@@ -1504,6 +1509,17 @@ fn run_loop(
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c'))
                     {
+                        // Let the core settle the turn before the process goes
+                        // away. A second Ctrl-C exits immediately.
+                        if app.chat.running_turn.is_some() && !app.quit_after_turn {
+                            if let Err(error) = runtime.cancel() {
+                                app.chat.status = Some(error.to_string());
+                            } else {
+                                app.chat.status = Some("cancelling turn".to_owned());
+                            }
+                            app.quit_after_turn = true;
+                            continue;
+                        }
                         return Ok(());
                     }
                     if app.help {
@@ -2112,7 +2128,20 @@ fn execute_command(
         CommandOutcome::OpenThinking => open_thinking_picker(app, runtime)?,
         CommandOutcome::OpenSessions => open_session_picker(app, runtime)?,
         CommandOutcome::Help => app.help = true,
-        CommandOutcome::Quit => app.quit = true,
+        CommandOutcome::Quit => {
+            // `/quit` follows the same path as Ctrl-C: finish settling the
+            // running turn before the process goes away.
+            if app.chat.running_turn.is_some() && !app.quit_after_turn {
+                if let Err(error) = runtime.cancel() {
+                    app.chat.status = Some(error.to_string());
+                } else {
+                    app.chat.status = Some("cancelling turn".to_owned());
+                }
+                app.quit_after_turn = true;
+            } else {
+                app.quit = true;
+            }
+        }
     }
     if reset_view {
         app.chat.reset_session_view();
@@ -3629,6 +3658,7 @@ mod tests {
             thinking_picker: None,
             help: false,
             quit: false,
+            quit_after_turn: false,
         }
     }
 
