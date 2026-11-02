@@ -470,6 +470,11 @@ fn process_event_line(
         // Completion tokens are cumulative, so every delta supersedes the last.
         "message_delta" => {
             if let Some(reported) = event.usage {
+                // Some compatible endpoints repeat the prompt size here instead
+                // of in `message_start`.
+                if reported.input_tokens > 0 {
+                    usage.input_tokens = reported.input_tokens;
+                }
                 pending.push_back(Ok(CompletionChunk::Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: reported.output_tokens,
