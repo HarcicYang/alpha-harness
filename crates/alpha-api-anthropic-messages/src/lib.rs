@@ -100,9 +100,41 @@ struct StreamState {
 }
 
 /// Token counts reported across the Anthropic event stream.
+///
+/// The Messages API reports uncached prompt tokens, prompt tokens written to
+/// the cache, and prompt tokens read from the cache separately. The context
+/// size is the sum of all three, so the stream reports that total and keeps
+/// the read count as the cached subset.
 #[derive(Clone, Copy, Debug, Default)]
 struct UsageState {
     input_tokens: u64,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+}
+
+impl UsageState {
+    fn record(&mut self, reported: &StreamUsage) {
+        self.input_tokens = reported.input_tokens;
+        self.cache_creation_input_tokens = reported.cache_creation_input_tokens;
+        self.cache_read_input_tokens = reported.cache_read_input_tokens;
+    }
+
+    fn merge(&mut self, reported: &StreamUsage) {
+        // Deltas may repeat only the fields that changed.
+        if reported.input_tokens > 0 {
+            self.input_tokens = reported.input_tokens;
+        }
+        if reported.cache_creation_input_tokens > 0 {
+            self.cache_creation_input_tokens = reported.cache_creation_input_tokens;
+        }
+        if reported.cache_read_input_tokens > 0 {
+            self.cache_read_input_tokens = reported.cache_read_input_tokens;
+        }
+    }
+
+    fn prompt_tokens(&self) -> u64 {
+        self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
+    }
 }
 
 impl StreamState {
@@ -460,11 +492,11 @@ fn process_event_line(
         // Prompt tokens arrive once, at the start of the message.
         "message_start" => {
             if let Some(reported) = event.message.and_then(|message| message.usage) {
-                usage.input_tokens = reported.input_tokens;
+                usage.record(&reported);
                 pending.push_back(Ok(CompletionChunk::Usage {
-                    input_tokens: reported.input_tokens,
+                    input_tokens: usage.prompt_tokens(),
                     output_tokens: reported.output_tokens,
-                    cached_input_tokens: reported.cache_read_input_tokens,
+                    cached_input_tokens: usage.cache_read_input_tokens,
                 }));
             }
         }
@@ -473,13 +505,11 @@ fn process_event_line(
             if let Some(reported) = event.usage {
                 // Some compatible endpoints repeat the prompt size here instead
                 // of in `message_start`.
-                if reported.input_tokens > 0 {
-                    usage.input_tokens = reported.input_tokens;
-                }
+                usage.merge(&reported);
                 pending.push_back(Ok(CompletionChunk::Usage {
-                    input_tokens: usage.input_tokens,
+                    input_tokens: usage.prompt_tokens(),
                     output_tokens: reported.output_tokens,
-                    cached_input_tokens: reported.cache_read_input_tokens,
+                    cached_input_tokens: usage.cache_read_input_tokens,
                 }));
             }
         }
@@ -647,6 +677,8 @@ struct StreamUsage {
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
     #[serde(default)]
     cache_read_input_tokens: u64,
 }

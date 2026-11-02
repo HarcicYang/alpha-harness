@@ -53,7 +53,7 @@ async fn streams_text_and_tool_input_deltas() {
     let http = Arc::new(StreamingHttp {
         request: Mutex::new(None),
         chunks: vec![
-            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4321,\"output_tokens\":1,\"cache_read_input_tokens\":3900}}}\n\n".to_vec(),
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4321,\"output_tokens\":1,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":3900}}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n".to_vec(),
             b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n".to_vec(),
@@ -90,7 +90,7 @@ async fn streams_text_and_tool_input_deltas() {
     assert_eq!(
         chunks[0],
         CompletionChunk::Usage {
-            input_tokens: 4321,
+            input_tokens: 8321,
             output_tokens: 1,
             cached_input_tokens: 3900
         }
@@ -115,7 +115,7 @@ async fn streams_text_and_tool_input_deltas() {
     assert_eq!(
         chunks[6],
         CompletionChunk::Usage {
-            input_tokens: 4321,
+            input_tokens: 8321,
             output_tokens: 27,
             cached_input_tokens: 3900
         }

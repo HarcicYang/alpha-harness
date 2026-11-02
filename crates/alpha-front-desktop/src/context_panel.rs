@@ -5,7 +5,11 @@ fn cache_hit_label(context: &ContextView) -> String {
     if context.input_tokens == 0 {
         return String::new();
     }
-    let percent = context.cached_input_tokens as f64 / context.input_tokens as f64 * 100.0;
+    // `input_tokens` is the total prompt, so the cached subset can never be
+    // larger. Clamp instead of showing an impossible rate if a provider
+    // reports the two counts inconsistently.
+    let percent =
+        (context.cached_input_tokens as f64 / context.input_tokens as f64 * 100.0).min(100.0);
     format!("{percent:.0}% hit")
 }
 
@@ -20,8 +24,12 @@ impl AlphaDesktop {
         }
 
         // The provider reports the prompt it just answered; its completion joins
-        // that prompt in the next request, so both count against the window.
-        let used_tokens = context.input_tokens.saturating_add(context.output_tokens);
+        // that prompt in the next request, and the output budget is reserved on
+        // top of both. All three occupy the window.
+        let used_tokens = context
+            .input_tokens
+            .saturating_add(context.output_tokens)
+            .saturating_add(context.max_tokens);
         let percent_value = if context.context_window == 0 {
             0.0
         } else {
@@ -548,5 +556,31 @@ impl AlphaDesktop {
                     .child(capability_chips),
             );
         popover_enter(panel, format!("context-panel:{}", self.overlay_generation))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_hit_label;
+    use alpha_front_runtime::ContextView;
+
+    #[test]
+    fn cache_hit_rate_is_the_cached_share_of_the_prompt() {
+        let context = ContextView {
+            input_tokens: 19_483,
+            cached_input_tokens: 18_176,
+            ..ContextView::default()
+        };
+        assert_eq!(cache_hit_label(&context), "93% hit");
+    }
+
+    #[test]
+    fn cache_hit_rate_never_exceeds_the_prompt() {
+        let context = ContextView {
+            input_tokens: 1_307,
+            cached_input_tokens: 18_176,
+            ..ContextView::default()
+        };
+        assert_eq!(cache_hit_label(&context), "100% hit");
     }
 }

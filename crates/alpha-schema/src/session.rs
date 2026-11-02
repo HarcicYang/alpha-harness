@@ -137,7 +137,7 @@ pub enum SessionEvent {
     },
     /// Token usage the provider reported for one request.
     ContextUsage {
-        /// Prompt tokens reported by the provider.
+        /// Total prompt tokens, including tokens served from the cache.
         input_tokens: u64,
         /// Completion tokens reported by the provider.
         output_tokens: u64,

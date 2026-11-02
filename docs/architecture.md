@@ -323,12 +323,12 @@ runtime retains only opaque references.
 
 Context statistics come from the provider: every adapter maps the token usage of
 the response it streamed into one usage chunk, and the driver records it as a
-durable `context_usage` event. The context panel shows the prompt size the
-provider reported for the latest request plus the completion that joined the
-history afterwards, measured against the context window the same request was
-shaped against, and it marks the numbers as estimates whenever no usage has been
-reported yet. The reserved output budget is displayed next to the percentage
-because both have to fit inside the window.
+durable `context_usage` event. Input tokens are the complete prompt, including
+tokens the provider served from its cache, so the cache hit rate is the cached
+share of that prompt. The context panel measures the reported prompt, the
+completion that joined the history afterwards, and the output budget reserved
+for the next request against the context window the request was shaped against.
+It marks the numbers as estimates whenever no usage has been reported yet.
 
 `FrontRuntimeManager` owns one runtime per desktop workspace. Polling reduces
 active state changes and background notices. Notices cover background turn
