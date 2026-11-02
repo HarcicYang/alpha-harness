@@ -263,8 +263,26 @@ rejected.
 
 ## Prompt and compaction
 
-The prompt module builds a deterministic system prompt from ordered sections.
-Tools remain the canonical source for tool descriptions and schemas.
+The prompt module assembles a deterministic system prompt from ordered sections.
+The section contract lives in `alpha-prompt-api`, and any crate contributes
+through `section_registry` or `context_registry` as a reversible effect of the
+context, so registration order between modules does not matter:
+
+- the prompt module owns the agent identity, runtime facts, mandatory rules,
+  output contract, stop conditions, and project instructions;
+- the tools module owns tool-use policy;
+- the permission module owns the permission presets;
+- the agent host owns the session-memory pointer.
+
+A section belongs to the crate that owns the fact it describes. Tools remain the
+canonical source for tool descriptions and schemas. The host records the
+assembled prompt as `system_prompt_set` before the first turn, so every frontend
+gets the same prompt and resumed sessions reuse it.
+
+The session-memory section names the session root of the runtime and tells the
+model that earlier sessions of this workspace are its long-term memory: it can
+search those logs for decisions and preferences that are not in context instead
+of guessing.
 
 Project instructions come from `AGENTS.md` and `.alpha/AGENTS.md` between the
 workspace root and fixed working directory. The prompt records source paths and
