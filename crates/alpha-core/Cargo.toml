@@ -9,14 +9,13 @@ keywords = ["alpha-harness", "core"]
 categories = ["development-tools"]
 
 [features]
-default = ["permission"]
+default = ["permission", "headless-openai"]
 permission = ["dep:alpha-module-permission"]
+headless-openai = ["dep:alpha-api-openai-chat", "dep:alpha-module-provider-openai"]
 
 [dependencies]
 alpha-agent-api.workspace = true
-alpha-api-anthropic-messages.workspace = true
-alpha-api-openai-chat.workspace = true
-alpha-api-openai-responses.workspace = true
+alpha-api-openai-chat = { workspace = true, optional = true }
 alpha-credential-api.workspace = true
 alpha-host-api.workspace = true
 alpha-http-api.workspace = true
@@ -31,13 +30,8 @@ alpha-module-loop.workspace = true
 alpha-module-permission = { workspace = true, optional = true }
 alpha-module-process.workspace = true
 alpha-module-prompt.workspace = true
-alpha-module-provider-anthropic-messages.workspace = true
 alpha-module-provider-config.workspace = true
-alpha-module-provider-deepseek.workspace = true
-alpha-module-provider-openai-chat-completions.workspace = true
-alpha-module-provider-openai-responses.workspace = true
-alpha-module-provider-openai.workspace = true
-alpha-module-provider-opencode-go.workspace = true
+alpha-module-provider-openai = { workspace = true, optional = true }
 alpha-module-tools.workspace = true
 alpha-permission-api.workspace = true
 alpha-prompt-api.workspace = true
@@ -53,4 +47,5 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "rt", "rt-multi-thread", "sync", "time", "io-std", "io-util", "macros"] }
 
 [dev-dependencies]
+alpha-module-provider-openai-chat-completions.workspace = true
 tempfile.workspace = true

@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use alpha_api_anthropic_messages::AnthropicMessagesApiModule;
+#[cfg(feature = "headless-openai")]
 use alpha_api_openai_chat::OpenAiChatApiModule;
-use alpha_api_openai_responses::OpenAiResponsesApiModule;
+use alpha_host_api::{Host, ModuleInput, ModuleScope};
 use alpha_kernel::{ActivateError, Ctx, Module};
 use alpha_module_agent_host::{
     AgentHostError, AgentHostModule, AgentHostService, SessionRuntime, SessionRuntimeFactory,
@@ -25,7 +25,9 @@ use alpha_module_agent_host::{
 use alpha_module_compaction::{CompactionConfig, CompactionModule};
 use alpha_module_credential::{CredentialConfig, CredentialModule, CredentialStore};
 use alpha_module_fs::{FsConfig, FsLocalModule};
-use alpha_module_http::{HttpClient, HttpConfig, HttpLocalModule};
+use alpha_module_http::HttpClient;
+#[cfg(feature = "headless-openai")]
+use alpha_module_http::{HttpConfig, HttpLocalModule};
 use alpha_module_loop::{
     AgentDriver, LoopConfig, LoopModule, ModelProvider, ModelRoute, ModelRouteOverride,
     ProviderRegistry, ProviderToolsOverride, SteerQueue,
@@ -34,15 +36,9 @@ use alpha_module_loop::{
 use alpha_module_permission::{PermissionConfig, PermissionModule};
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
-use alpha_module_provider_anthropic_messages::AnthropicMessagesProviderModule;
-use alpha_module_provider_config::{
-    ProviderConfigConfig, ProviderConfigModule, ProviderConfigStore,
-};
-use alpha_module_provider_deepseek::DeepSeekProviderModule;
+use alpha_module_provider_config::ProviderConfigStore;
+#[cfg(feature = "headless-openai")]
 use alpha_module_provider_openai::{OpenAiConfig, OpenAiProviderModule, PROVIDER_NAME};
-use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
-use alpha_module_provider_openai_responses::OpenAiResponsesProviderModule;
-use alpha_module_provider_opencode_go::OpenCodeGoProviderModule;
 use alpha_module_tools::{ToolsConfig, ToolsModule};
 #[cfg(test)]
 use alpha_permission_api::PermissionRequest;
@@ -181,8 +177,8 @@ pub struct CoreRuntimeOptions {
 
 impl CoreRuntime {
     /// Compose the core services required by frontends.
-    pub fn new(store: SessionStore) -> Result<Self, RunError> {
-        Self::new_with_services(store, None, None)
+    pub fn new(store: SessionStore, host: &'static Host) -> Result<Self, RunError> {
+        Self::new_with_services(store, None, None, host)
     }
 
     /// Compose the core with optional injected credential and HTTP services.
@@ -190,6 +186,7 @@ impl CoreRuntime {
         store: SessionStore,
         credential: Option<Arc<dyn CredentialStore>>,
         http: Option<Arc<dyn HttpClient>>,
+        host: &'static Host,
     ) -> Result<Self, RunError> {
         Self::new_with_options(
             store,
@@ -198,6 +195,7 @@ impl CoreRuntime {
                 http,
                 provider_config_path: None,
             },
+            host,
         )
     }
 
@@ -205,31 +203,22 @@ impl CoreRuntime {
     pub fn new_with_options(
         store: SessionStore,
         options: CoreRuntimeOptions,
+        host: &'static Host,
     ) -> Result<Self, RunError> {
         let ctx = Ctx::root();
         // Prompt sections describe where this runtime keeps session memory, so
         // the store has to be reachable from the context.
         ctx.provide::<SessionStore>(std::sync::Arc::new(store.clone()))
             .map_err(|error| RunError::Service(error.to_string()))?;
-        activate_provider_modules(&ctx)?;
-        ProviderConfigModule.activate(
-            &ctx,
-            &ProviderConfigConfig {
-                path: options.provider_config_path,
-            },
-        )?;
+        activate_composed_global_modules(&ctx, host, &options)?;
         migrate_loaded_provider_instances(&ctx)?;
         if let Some(credential) = options.credential {
             ctx.provide::<dyn CredentialStore>(credential)
                 .map_err(|error| RunError::Service(error.to_string()))?;
-        } else {
-            CredentialModule.activate(&ctx, &CredentialConfig::default())?;
         }
         if let Some(http) = options.http {
             ctx.provide::<dyn HttpClient>(http)
                 .map_err(|error| RunError::Service(error.to_string()))?;
-        } else {
-            HttpLocalModule.activate(&ctx, &HttpConfig {})?;
         }
         Ok(Self { ctx, store })
     }
@@ -522,6 +511,7 @@ impl ApprovalChannel for TtyApprovalChannel {
 }
 
 /// Compose the production runtime with the OpenAI-compatible provider.
+#[cfg(feature = "headless-openai")]
 pub fn compose_openai_runtime(
     workspace: &Path,
     mode: PermissionMode,
@@ -548,6 +538,7 @@ pub fn compose_openai_runtime(
 }
 
 /// Compose the production runtime with an injected HTTP client.
+#[cfg(feature = "headless-openai")]
 pub fn compose_openai_runtime_with_http(
     workspace: &Path,
     mode: PermissionMode,
@@ -615,6 +606,7 @@ pub fn compose_with_driver(
     Ok(Composition { ctx, agent, audit })
 }
 
+#[cfg(feature = "headless-openai")]
 fn provide_provider_registry(ctx: &Ctx) -> Result<(), RunError> {
     ctx.provide::<ProviderRegistry>(Arc::new(ProviderRegistry::new()))
         .map_err(|error| RunError::Service(error.to_string()))?;
@@ -628,7 +620,8 @@ fn activate_core_modules(
     approval: Option<Arc<dyn ApprovalChannel>>,
     audit: Arc<CollectingAuditSink>,
 ) -> Result<(), RunError> {
-    activate_provider_modules(ctx)?;
+    #[cfg(feature = "headless-openai")]
+    activate_headless_provider_modules(ctx)?;
     CredentialModule.activate(ctx, &CredentialConfig::default())?;
     FsLocalModule.activate(
         ctx,
@@ -668,16 +661,39 @@ fn activate_core_modules(
     Ok(())
 }
 
-fn activate_provider_modules(ctx: &Ctx) -> Result<(), RunError> {
+/// Activate the global modules the composition selected.
+///
+/// The adapter and provider-kind registries are the base every composed
+/// adapter and provider kind registers into, so activate them first. Modules
+/// replaced by injected services are skipped, and the injector provides its
+/// service after activation.
+fn activate_composed_global_modules(
+    ctx: &Ctx,
+    host: &'static Host,
+    options: &CoreRuntimeOptions,
+) -> Result<(), RunError> {
+    ProviderApiModule.activate(ctx, &())?;
+    let input = ModuleInput::new(json!({ "path": options.provider_config_path }));
+    for module in host.modules_at(ModuleScope::Global) {
+        if module.key == "provider.api" {
+            continue;
+        }
+        if module.key == "credential" && options.credential.is_some() {
+            continue;
+        }
+        if module.key == "http.local" && options.http.is_some() {
+            continue;
+        }
+        (module.activate)(ctx, &input).map_err(|error| RunError::Service(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Provider modules used by the headless composition API.
+#[cfg(feature = "headless-openai")]
+fn activate_headless_provider_modules(ctx: &Ctx) -> Result<(), RunError> {
     ProviderApiModule.activate(ctx, &())?;
     OpenAiChatApiModule.activate(ctx, &())?;
-    OpenAiResponsesApiModule.activate(ctx, &())?;
-    AnthropicMessagesApiModule.activate(ctx, &())?;
-    OpenAiChatProviderModule.activate(ctx, &())?;
-    OpenAiResponsesProviderModule.activate(ctx, &())?;
-    AnthropicMessagesProviderModule.activate(ctx, &())?;
-    DeepSeekProviderModule.activate(ctx, &())?;
-    OpenCodeGoProviderModule.activate(ctx, &())?;
     Ok(())
 }
 
@@ -948,13 +964,13 @@ impl OutboundTransport for ServerTransport {
 }
 
 /// Serve JSON-RPC over stdio using the default session store.
-pub fn serve_stdio(store: SessionStore) -> Result<(), ServeError> {
-    serve_core_stdio(store)
+pub fn serve_stdio(store: SessionStore, host: &'static Host) -> Result<(), ServeError> {
+    serve_core_stdio(store, host)
 }
 
 /// Serve the managed core protocol over stdio.
-pub fn serve_core_stdio(store: SessionStore) -> Result<(), ServeError> {
-    serve_core_stdio_with_services(store, None, None)
+pub fn serve_core_stdio(store: SessionStore, host: &'static Host) -> Result<(), ServeError> {
+    serve_core_stdio_with_services(store, None, None, host)
 }
 
 /// Serve the managed core over stdio with optional injected services.
@@ -962,6 +978,7 @@ pub fn serve_core_stdio_with_services(
     store: SessionStore,
     credential: Option<Arc<dyn CredentialStore>>,
     http: Option<Arc<dyn HttpClient>>,
+    host: &'static Host,
 ) -> Result<(), ServeError> {
     serve_core_stdio_with_options(
         store,
@@ -970,6 +987,7 @@ pub fn serve_core_stdio_with_services(
             http,
             provider_config_path: None,
         },
+        host,
     )
 }
 
@@ -977,10 +995,11 @@ pub fn serve_core_stdio_with_services(
 pub fn serve_core_stdio_with_options(
     store: SessionStore,
     options: CoreRuntimeOptions,
+    host: &'static Host,
 ) -> Result<(), ServeError> {
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
-    serve_protocol_with_options(&mut input, std::io::stdout(), store, options)
+    serve_protocol_with_options(&mut input, std::io::stdout(), store, options, host)
 }
 
 /// Serve the managed core protocol over an arbitrary reader and writer.
@@ -990,6 +1009,7 @@ pub fn serve_protocol_with_services<R: BufRead, W: Write + Send + 'static>(
     store: SessionStore,
     credential: Option<Arc<dyn CredentialStore>>,
     http: Option<Arc<dyn HttpClient>>,
+    host: &'static Host,
 ) -> Result<(), ServeError> {
     serve_protocol_with_options(
         reader,
@@ -1000,6 +1020,7 @@ pub fn serve_protocol_with_services<R: BufRead, W: Write + Send + 'static>(
             http,
             provider_config_path: None,
         },
+        host,
     )
 }
 
@@ -1009,8 +1030,9 @@ pub fn serve_protocol_with_options<R: BufRead, W: Write + Send + 'static>(
     writer: W,
     store: SessionStore,
     options: CoreRuntimeOptions,
+    host: &'static Host,
 ) -> Result<(), ServeError> {
-    let runtime = CoreRuntime::new_with_options(store, options)?;
+    let runtime = CoreRuntime::new_with_options(store, options, host)?;
     let (transport, outbound) = ServerTransport::channel();
     let outbound_service: Arc<dyn OutboundTransport> = transport.clone();
     runtime
@@ -2125,5 +2147,67 @@ mod tests {
             })
             .await;
         assert_eq!(decision, ApprovalDecision::Timeout);
+    }
+
+    #[cfg(feature = "headless-openai")]
+    mod composed_activation {
+        use super::*;
+        use alpha_api_openai_chat::OpenAiChatApiModule;
+        use alpha_host_api::{Host, ModuleEntry, ModuleInput, ModuleScope};
+        use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
+        use alpha_provider_api::{ProviderApiModule, ProviderKindRegistry};
+
+        fn provider_api(ctx: &Ctx, _: &ModuleInput) -> Result<(), ActivateError> {
+            ProviderApiModule.activate(ctx, &())
+        }
+
+        fn openai_chat_api(ctx: &Ctx, _: &ModuleInput) -> Result<(), ActivateError> {
+            OpenAiChatApiModule.activate(ctx, &())
+        }
+
+        fn openai_chat_kind(ctx: &Ctx, _: &ModuleInput) -> Result<(), ActivateError> {
+            OpenAiChatProviderModule.activate(ctx, &())
+        }
+
+        static HOST: Host = Host {
+            modules: &[
+                ModuleEntry {
+                    key: "provider.api",
+                    scope: ModuleScope::Global,
+                    requires_config: &[],
+                    activate: provider_api,
+                },
+                ModuleEntry {
+                    key: "api.openai-chat",
+                    scope: ModuleScope::Global,
+                    requires_config: &[],
+                    activate: openai_chat_api,
+                },
+                ModuleEntry {
+                    key: "provider.openai-chat-completions",
+                    scope: ModuleScope::Global,
+                    requires_config: &[],
+                    activate: openai_chat_kind,
+                },
+            ],
+            fronts: &[],
+        };
+
+        #[test]
+        fn activates_only_composed_provider_kinds() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let runtime = CoreRuntime::new_with_options(
+                SessionStore::new(dir.path()),
+                CoreRuntimeOptions::default(),
+                &HOST,
+            )
+            .expect("runtime");
+            let kinds = runtime
+                .ctx
+                .require::<ProviderKindRegistry>()
+                .expect("provider kinds");
+            assert!(kinds.get("openai-chat-completions").is_some());
+            assert!(kinds.get("deepseek").is_none());
+        }
     }
 }

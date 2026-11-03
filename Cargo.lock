@@ -243,9 +243,7 @@ name = "alpha-core"
 version = "0.1.0"
 dependencies = [
  "alpha-agent-api",
- "alpha-api-anthropic-messages",
  "alpha-api-openai-chat",
- "alpha-api-openai-responses",
  "alpha-credential-api",
  "alpha-host-api",
  "alpha-http-api",
@@ -260,13 +258,9 @@ dependencies = [
  "alpha-module-permission",
  "alpha-module-process",
  "alpha-module-prompt",
- "alpha-module-provider-anthropic-messages",
  "alpha-module-provider-config",
- "alpha-module-provider-deepseek",
  "alpha-module-provider-openai",
  "alpha-module-provider-openai-chat-completions",
- "alpha-module-provider-openai-responses",
- "alpha-module-provider-opencode-go",
  "alpha-module-tools",
  "alpha-permission-api",
  "alpha-prompt-api",

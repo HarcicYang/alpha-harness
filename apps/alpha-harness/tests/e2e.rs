@@ -84,6 +84,7 @@ fn core_protocol_runs_a_turn_through_a_configured_provider() {
                 http: Some(server_http),
                 provider_config_path: Some(config.path().join("config.toml")),
             },
+            alpha_harness::composition::host(),
         )
         .expect("serve core");
     });

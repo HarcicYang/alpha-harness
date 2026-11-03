@@ -36,7 +36,9 @@ module declares its key, scope, requirements, provisions, and capabilities in
 `alpha-build` reads the resolved dependency graph during the build. It checks
 for missing requirements, duplicate singleton providers, invalid front
 declarations, metadata errors, and registry collisions. It writes a generated
-module table and front table into `OUT_DIR`; it does not edit source files.
+module table and front table into `OUT_DIR`; it does not edit source files. The
+managed core activates its global modules from that table, so provider and
+adapter kinds outside the composition are not registered.
 
 Two crates cannot provide the same singleton capability in one composition.
 Replacing a capability means removing one implementation dependency and adding

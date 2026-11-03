@@ -17,7 +17,7 @@ pub fn run(host: &'static Host) -> ExitCode {
     let matches = command(host).get_matches();
     match matches.subcommand() {
         Some(("sessions", _)) => list_sessions(),
-        Some(("__core", sub)) => serve_core(sub),
+        Some(("__core", sub)) => serve_core(host, sub),
         Some((name, sub)) => match host.fronts.iter().find(|front| front.command == name) {
             Some(front) => run_front(front, sub),
             None => ExitCode::FAILURE,
@@ -161,13 +161,13 @@ fn list_sessions() -> ExitCode {
     }
 }
 
-fn serve_core(matches: &ArgMatches) -> ExitCode {
+fn serve_core(host: &'static Host, matches: &ArgMatches) -> ExitCode {
     if !matches.get_flag("stdio") {
         eprintln!("alpha __core: --stdio is required");
         return ExitCode::FAILURE;
     }
     let store = SessionStore::new(SessionStore::default_root());
-    match crate::serve_stdio(store) {
+    match crate::serve_stdio(store, host) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("alpha __core: {error}");
