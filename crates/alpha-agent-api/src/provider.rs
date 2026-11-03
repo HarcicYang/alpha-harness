@@ -263,7 +263,7 @@ pub enum CompletionChunk {
     },
     /// Provider-reported token usage for the request.
     Usage {
-        /// Prompt tokens.
+        /// Total prompt tokens, including tokens served from the cache.
         input_tokens: u64,
         /// Completion tokens.
         output_tokens: u64,
