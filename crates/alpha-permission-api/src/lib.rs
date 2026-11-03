@@ -26,6 +26,31 @@ pub trait PermissionService: Send + Sync + 'static {
     fn set_mode(&self, mode: PermissionMode);
 }
 
+/// Permission service used when no permission module is composed.
+///
+/// Removing the module removes every permission check: requests are allowed,
+/// the effective mode is unrestricted, and tools use the full local filesystem
+/// and process access. The model is not told about permission modes because
+/// that prompt section belongs to the removed module.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnrestrictedPermission;
+
+impl PermissionService for UnrestrictedPermission {
+    fn check(&self, _request: PermissionRequest) -> BoxFuture<'_, PermissionOutcome> {
+        Box::pin(async {
+            PermissionOutcome::Allowed {
+                scope: GrantScope::Session,
+            }
+        })
+    }
+
+    fn mode(&self) -> PermissionMode {
+        PermissionMode::Free
+    }
+
+    fn set_mode(&self, _mode: PermissionMode) {}
+}
+
 /// Prompt shown to an approval channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalPrompt {
@@ -124,5 +149,21 @@ impl AuditSink for CollectingAuditSink {
             .lock()
             .expect("audit lock poisoned")
             .push(record);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unrestricted_permission_allows_every_request() {
+        let service = UnrestrictedPermission;
+        assert_eq!(service.mode(), PermissionMode::Free);
+        let outcome = futures::executor::block_on(service.check(PermissionRequest::new(
+            "fs.write",
+            ["/outside/workspace".to_owned()],
+        )));
+        assert!(outcome.is_allowed());
     }
 }

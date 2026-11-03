@@ -235,6 +235,15 @@ the request.
 Agents cannot change their own permission mode. Mode changes and permission
 decisions are durable events produced through frontend actions.
 
+The permission module is optional at composition time. A composition that omits
+it still builds the tools module; tools then use an unrestricted permission
+service that allows every request and reports the `free` execution boundary. The
+model receives no permission presets section and no permission-mode runtime
+fact. Mode changes are rejected because no service exists to apply them.
+`alpha-min` is the reference composition without the permission module: it
+disables `alpha-core`'s default `permission` feature and does not depend on
+`alpha-module-permission`.
+
 ## Credentials and configuration
 
 Provider secrets use the platform credential store:

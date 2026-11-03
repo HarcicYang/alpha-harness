@@ -13,7 +13,7 @@ use alpha_module_loop::{
     AgentDriver, LoopError, ModelRoute, ModelRouteOverride, ProviderToolsOverride, SteerMessage,
     SteerQueue,
 };
-use alpha_module_permission::PermissionService;
+use alpha_permission_api::PermissionService;
 use alpha_prompt_api::{
     PromptAssembler, PromptError, PromptPriority, PromptRequest, PromptSectionProvider,
 };
@@ -1308,8 +1308,8 @@ async fn actor_loop(
                         let _ = reply.send(result);
                     }
                     SessionCommand::SetMode { mode, reply } => {
-                        let result = match runtime.ctx.require::<dyn PermissionService>() {
-                            Ok(permission) => writer
+                        let result = match runtime.ctx.get::<dyn PermissionService>() {
+                            Some(permission) => writer
                                 .append(SessionEvent::ModeChanged { mode })
                                 .map_err(AgentHostError::Session)
                                 .map(|envelope| {
@@ -1319,7 +1319,10 @@ async fn actor_loop(
                                         .expect("session state lock poisoned")
                                         .apply(&envelope);
                                 }),
-                            Err(error) => Err(AgentHostError::Runtime(error.to_string())),
+                            None => Err(AgentHostError::Invalid(
+                                "permission module is not composed; modes are unavailable"
+                                    .to_owned(),
+                            )),
                         };
                         let _ = reply.send(result);
                     }

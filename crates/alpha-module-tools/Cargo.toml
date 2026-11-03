@@ -11,8 +11,8 @@ categories = ["development-tools"]
 [dependencies]
 alpha-kernel.workspace = true
 alpha-module-fs.workspace = true
-alpha-module-permission.workspace = true
 alpha-module-process.workspace = true
+alpha-permission-api.workspace = true
 alpha-prompt-api.workspace = true
 alpha-schema.workspace = true
 base64.workspace = true
@@ -26,6 +26,7 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+alpha-module-permission.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
@@ -38,5 +39,5 @@ config = "ToolsConfig"
 requires_config = []
 key = "tools"
 provides = [{ key = "tool", kind = "registry", scope = "location" }]
-requires = ["fs", "process", "permission"]
+requires = ["fs", "process"]
 registry_entries = ["read", "grep", "write", "edit", "shell"]

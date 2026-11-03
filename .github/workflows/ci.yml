@@ -103,3 +103,7 @@ jobs:
             echo "trimmed build still links a UI crate" >&2
             exit 1
           fi
+          if cargo tree --package alpha-min | grep -q "alpha-module-permission"; then
+            echo "trimmed build still links the permission module" >&2
+            exit 1
+          fi

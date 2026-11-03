@@ -312,6 +312,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-width",
 ]
 
 [[package]]
@@ -453,7 +454,6 @@ dependencies = [
  "alpha-module-fs",
  "alpha-module-http",
  "alpha-module-loop",
- "alpha-module-permission",
  "alpha-module-process",
  "alpha-module-prompt",
  "alpha-module-provider-config",
@@ -469,6 +469,7 @@ dependencies = [
  "alpha-kernel",
  "alpha-module-loop",
  "alpha-module-permission",
+ "alpha-permission-api",
  "alpha-prompt-api",
  "alpha-protocol",
  "alpha-schema",
@@ -596,6 +597,7 @@ dependencies = [
  "alpha-module-fs",
  "alpha-module-loop",
  "alpha-module-permission",
+ "alpha-permission-api",
  "alpha-prompt-api",
  "alpha-schema",
  "alpha-session-log",
@@ -708,6 +710,7 @@ dependencies = [
  "alpha-module-fs",
  "alpha-module-permission",
  "alpha-module-process",
+ "alpha-permission-api",
  "alpha-prompt-api",
  "alpha-schema",
  "base64",

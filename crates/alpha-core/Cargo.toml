@@ -8,6 +8,10 @@ repository.workspace = true
 keywords = ["alpha-harness", "core"]
 categories = ["development-tools"]
 
+[features]
+default = ["permission"]
+permission = ["dep:alpha-module-permission"]
+
 [dependencies]
 alpha-agent-api.workspace = true
 alpha-api-anthropic-messages.workspace = true
@@ -24,7 +28,7 @@ alpha-module-credential.workspace = true
 alpha-module-fs.workspace = true
 alpha-module-http.workspace = true
 alpha-module-loop.workspace = true
-alpha-module-permission.workspace = true
+alpha-module-permission = { workspace = true, optional = true }
 alpha-module-process.workspace = true
 alpha-module-prompt.workspace = true
 alpha-module-provider-anthropic-messages.workspace = true

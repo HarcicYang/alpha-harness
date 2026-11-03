@@ -1,4 +1,5 @@
-//! Trimmed composition: one provider kind, no desktop front, no terminal UI.
+//! Trimmed composition: one provider kind, no desktop front, no terminal UI,
+//! and no permission module.
 
 use std::process::ExitCode;
 

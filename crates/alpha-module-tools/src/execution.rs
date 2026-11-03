@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use alpha_module_fs::{DirEntry, FileStat, FileSystem, FileSystemAccess, FileSystemSet, FsError};
-use alpha_module_permission::PermissionService;
+use alpha_permission_api::PermissionService;
 use alpha_schema::PermissionMode;
 
 pub(crate) struct ModeAwareFileSystem {

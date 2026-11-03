@@ -30,10 +30,8 @@ use alpha_module_loop::{
     AgentDriver, LoopConfig, LoopModule, ModelProvider, ModelRoute, ModelRouteOverride,
     ProviderRegistry, ProviderToolsOverride, SteerQueue,
 };
-use alpha_module_permission::{
-    ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
-    PermissionConfig, PermissionModule,
-};
+#[cfg(feature = "permission")]
+use alpha_module_permission::{PermissionConfig, PermissionModule};
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_prompt::{PromptAssembler, PromptConfig, PromptModule};
 use alpha_module_provider_anthropic_messages::AnthropicMessagesProviderModule;
@@ -46,6 +44,11 @@ use alpha_module_provider_openai_chat_completions::OpenAiChatProviderModule;
 use alpha_module_provider_openai_responses::OpenAiResponsesProviderModule;
 use alpha_module_provider_opencode_go::OpenCodeGoProviderModule;
 use alpha_module_tools::{ToolsConfig, ToolsModule};
+#[cfg(test)]
+use alpha_permission_api::PermissionRequest;
+use alpha_permission_api::{
+    ApprovalChannel, ApprovalDecision, ApprovalPrompt, AuditSink, CollectingAuditSink,
+};
 use alpha_protocol::{
     FramingError, Id, Message, Notification, OutboundTransport, Request, Response, ResponsePayload,
     Router, RpcError, read_message, write_message,
@@ -362,6 +365,7 @@ impl SessionRuntimeFactory for AppSessionRuntimeFactory {
             .provide::<dyn AuditSink>(audit)
             .map_err(|error| AgentHostError::Runtime(error.to_string()))?;
 
+        #[cfg(feature = "permission")]
         PermissionModule
             .activate(
                 &session_ctx,
@@ -648,6 +652,9 @@ fn activate_core_modules(
     let audit_service: Arc<dyn AuditSink> = audit;
     ctx.provide::<dyn AuditSink>(audit_service)
         .map_err(|error| RunError::Service(error.to_string()))?;
+    #[cfg(not(feature = "permission"))]
+    let _ = mode;
+    #[cfg(feature = "permission")]
     PermissionModule.activate(
         ctx,
         &PermissionConfig {
@@ -2112,10 +2119,7 @@ mod tests {
         };
         let decision = channel
             .decide(ApprovalPrompt {
-                request: alpha_module_permission::PermissionRequest::new(
-                    "fs.write",
-                    ["workspace/main.rs".to_owned()],
-                ),
+                request: PermissionRequest::new("fs.write", ["workspace/main.rs".to_owned()]),
                 reason: "test".to_owned(),
                 protected: false,
             })

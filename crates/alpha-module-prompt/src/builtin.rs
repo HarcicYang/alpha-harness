@@ -9,7 +9,7 @@ use crate::{
     PromptSectionProvider,
 };
 use alpha_module_fs::{FileSystem, FsError};
-use alpha_module_permission::PermissionService;
+use alpha_permission_api::PermissionService;
 
 pub(crate) fn sections(config: &PromptConfig) -> Vec<Arc<dyn PromptSectionProvider>> {
     let mut sections: Vec<Arc<dyn PromptSectionProvider>> = vec![
@@ -43,16 +43,19 @@ impl PromptSectionProvider for RuntimeSection {
     }
 
     fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        let _ = request;
-        Ok(Some(
+        let authority = if request.ctx.get::<dyn PermissionService>().is_some() {
+            "permission mode, workspace root, and fixed cwd"
+        } else {
+            "workspace root and fixed cwd"
+        };
+        Ok(Some(format!(
             "# Your Runtime and Operating Model\n\n\
              - You are Alpha, a coding agent that runs inside `alpha-harness`; the code and logs of this agent are your own source.\n\
              - You are responsible for understanding tasks, inspecting the workspace, making changes, and verifying results.\n\
-             - The latest `alpha_context` message with key `runtime` is authoritative for the permission mode, workspace root, and fixed cwd.\n\
+             - The latest `alpha_context` message with key `runtime` is authoritative for the {authority}.\n\
              - You can read, search, and edit files and run commands through tools; when an action is required you must call a tool.\n\
              - Every tool call is a real operation; before executing, confirm the target and the scope of impact."
-                .to_owned(),
-        ))
+        )))
     }
 }
 
@@ -68,14 +71,17 @@ impl ContextSectionProvider for RuntimeContextSection {
     }
 
     fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        let mode = request
+        let permission = match request
             .ctx
             .get::<dyn PermissionService>()
             .map(|permission| permission.mode())
-            .unwrap_or(request.state.mode);
+        {
+            Some(mode) => format!("- Permission mode: `{mode}`.\n"),
+            None => "- Permission control: none; tools run unrestricted.\n".to_owned(),
+        };
         Ok(Some(format!(
             "# Runtime Context\n\n\
-             - Permission mode: `{mode}`.\n\
+             {permission}\
              - Workspace root: `{}`.\n\
              - Fixed cwd: `{}`.\n\
              - This message supersedes earlier runtime context messages.",
@@ -96,16 +102,20 @@ impl PromptSectionProvider for MandatoryRulesSection {
         PromptPriority::Policy
     }
 
-    fn render(&self, _request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
-        Ok(Some(
+    fn render(&self, request: &PromptRequest<'_>) -> Result<Option<String>, PromptError> {
+        let permission = if request.ctx.get::<dyn PermissionService>().is_some() {
+            "- You must respect the current permission mode, sandbox boundaries, and approval outcomes; do not attempt to bypass a denied permission.\n"
+        } else {
+            ""
+        };
+        Ok(Some(format!(
             "# Mandatory Rules\n\n\
              - When an action is required, the only correct way is to call a tool; do not fabricate `<tool_call>`, XML, Markdown, or any other pseudo tool call in your text.\n\
              - Read the relevant files before modifying them; do not guess content from file names, search results, or memory alone.\n\
              - Do not claim to have run commands you did not run, or to have verified results you did not verify.\n\
-             - You must respect the current permission mode, sandbox boundaries, and approval outcomes; do not attempt to bypass a denied permission.\n\
+             {permission}\
              - Do not write secrets, tokens, passwords, or other credentials into files, logs, or user-visible output."
-                .to_owned(),
-        ))
+        )))
     }
 }
 

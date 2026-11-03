@@ -100,6 +100,15 @@ fn runtime_context_is_injected_once_and_updated_as_new_messages() {
     PromptModule
         .activate(&ctx, &PromptConfig::default())
         .expect("activate");
+    alpha_module_permission::PermissionModule
+        .activate(
+            &ctx,
+            &alpha_module_permission::PermissionConfig {
+                mode: PermissionMode::Auto,
+                ..alpha_module_permission::PermissionConfig::default()
+            },
+        )
+        .expect("activate permission");
     let injector = ctx
         .require::<dyn ContextInjector>()
         .expect("context injector");
@@ -128,6 +137,9 @@ fn runtime_context_is_injected_once_and_updated_as_new_messages() {
         })
         .expect("mode changed");
     state.apply(&changed);
+    ctx.require::<dyn alpha_permission_api::PermissionService>()
+        .expect("permission service")
+        .set_mode(PermissionMode::Free);
     futures::executor::block_on(injector.inject(&ctx, &writer, &mut state, &mut messages))
         .expect("inject changed context");
     assert_eq!(messages.len(), 2);
@@ -246,4 +258,44 @@ fn project_instruction_limit_is_enforced() {
     assert!(prompt.contains("0123"));
     assert!(prompt.contains("[project instructions truncated]"));
     assert!(!prompt.contains("456789"));
+}
+
+#[test]
+fn runtime_context_reports_no_permission_control_without_the_module() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(dir.path());
+    let header = SessionHeader::new(
+        SessionId::new(),
+        PermissionMode::Auto,
+        WorkspaceRef {
+            root: "/workspace".to_owned(),
+            cwd: "/workspace/project".to_owned(),
+        },
+    );
+    let writer = store.create(header.clone()).expect("create");
+    let mut state = SessionState::new(&header);
+    let ctx = Ctx::root();
+    PromptModule
+        .activate(&ctx, &PromptConfig::default())
+        .expect("activate");
+    let injector = ctx
+        .require::<dyn ContextInjector>()
+        .expect("context injector");
+    let mut messages = Vec::new();
+
+    futures::executor::block_on(injector.inject(&ctx, &writer, &mut state, &mut messages))
+        .expect("inject initial context");
+
+    let ChatMessage::User(context) = &messages[0] else {
+        panic!("context must be a user message");
+    };
+    assert!(context.contains("Permission control: none"));
+    assert!(!context.contains("Permission mode:"));
+
+    let assembler = ctx
+        .require::<dyn PromptAssembler>()
+        .expect("prompt assembler");
+    let prompt = assembler.assemble(&ctx, &state).expect("assemble");
+    assert!(!prompt.contains("permission mode, sandbox boundaries"));
+    assert!(!prompt.contains("# Permission Presets"));
 }

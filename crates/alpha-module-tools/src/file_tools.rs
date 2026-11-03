@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use alpha_module_fs::{FileSystem, FsError};
-use alpha_module_permission::{PermissionOutcome, PermissionRequest, PermissionService};
+use alpha_permission_api::{PermissionOutcome, PermissionRequest, PermissionService};
 use alpha_schema::PermissionMode;
 use futures::future::BoxFuture;
 use serde::Deserialize;

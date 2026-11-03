@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use alpha_kernel::{ActivateError, CapabilityScope, CapabilitySpec, Ctx, Module};
 use alpha_module_fs::{FileSystem, FileSystemSet};
-use alpha_module_permission::PermissionService;
 use alpha_module_process::ProcessRunnerSet;
+use alpha_permission_api::{PermissionService, UnrestrictedPermission};
 use alpha_prompt_api::{PromptError, PromptPriority, PromptRequest, PromptSectionProvider};
 use serde::Deserialize;
 
@@ -56,8 +56,8 @@ impl Module for ToolsModule {
             .require::<ProcessRunnerSet>()
             .map_err(|error| ActivateError::new(Self::KEY, error))?;
         let permission = ctx
-            .require::<dyn PermissionService>()
-            .map_err(|error| ActivateError::new(Self::KEY, error))?;
+            .get::<dyn PermissionService>()
+            .unwrap_or_else(|| Arc::new(UnrestrictedPermission));
         let filesystem: Arc<dyn FileSystem> = Arc::new(execution::ModeAwareFileSystem::new(
             filesystems,
             permission.clone(),

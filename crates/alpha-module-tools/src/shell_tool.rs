@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alpha_module_permission::{PermissionOutcome, PermissionRequest, PermissionService};
 use alpha_module_process::{
     ProcessAccess, ProcessError, ProcessOutputCallback, ProcessRequest, ProcessRunner,
     ProcessRunnerSet,
 };
+use alpha_permission_api::{PermissionOutcome, PermissionRequest, PermissionService};
 use alpha_schema::PermissionMode;
 use futures::future::BoxFuture;
 use serde::Deserialize;

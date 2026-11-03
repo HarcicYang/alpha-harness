@@ -13,7 +13,7 @@ alpha-prompt-api.workspace = true
 alpha-kernel.workspace = true
 alpha-module-fs.workspace = true
 alpha-module-loop.workspace = true
-alpha-module-permission.workspace = true
+alpha-permission-api.workspace = true
 alpha-session-log.workspace = true
 alpha-schema.workspace = true
 futures.workspace = true
@@ -21,6 +21,7 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+alpha-module-permission.workspace = true
 tempfile.workspace = true
 
 [package.metadata.alpha]

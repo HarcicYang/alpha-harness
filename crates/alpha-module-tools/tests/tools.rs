@@ -3,11 +3,12 @@ use std::sync::Arc;
 
 use alpha_kernel::{Ctx, Module};
 use alpha_module_fs::{FsConfig, FsLocalModule};
-use alpha_module_permission::{PermissionConfig, PermissionModule, PermissionService};
+use alpha_module_permission::{PermissionConfig, PermissionModule};
 use alpha_module_process::{ProcessConfig, ProcessLocalModule};
 use alpha_module_tools::{
     RegistryError, ToolContext, ToolError, ToolRegistry, ToolsConfig, ToolsModule,
 };
+use alpha_permission_api::PermissionService;
 use alpha_schema::{MessageId, PermissionMode, SessionId, ToolCallId};
 use serde_json::{Value, json};
 
@@ -138,6 +139,49 @@ async fn free_mode_writes_outside_the_workspace() {
     assert_eq!(
         std::fs::read_to_string(&path).expect("outside file"),
         "full access"
+    );
+}
+
+#[tokio::test]
+async fn tools_run_unrestricted_without_a_permission_module() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let ctx = Ctx::root();
+    FsLocalModule
+        .activate(
+            &ctx,
+            &FsConfig {
+                root: workspace.path().to_path_buf(),
+                cwd: workspace.path().to_path_buf(),
+            },
+        )
+        .expect("fs");
+    ProcessLocalModule
+        .activate(
+            &ctx,
+            &ProcessConfig {
+                cwd: workspace.path().to_path_buf(),
+                ..ProcessConfig::default()
+            },
+        )
+        .expect("process");
+    ToolsModule
+        .activate(&ctx, &ToolsConfig::default())
+        .expect("tools");
+    let registry = ctx.require::<ToolRegistry>().expect("registry");
+    assert!(ctx.get::<dyn PermissionService>().is_none());
+
+    let path = outside.path().join("outside.txt");
+    run(
+        &registry,
+        "write",
+        json!({ "path": path, "content": "no permission" }),
+    )
+    .await
+    .expect("write outside workspace");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("outside file"),
+        "no permission"
     );
 }
 
