@@ -1,22 +1,48 @@
 use super::*;
 
+fn window_icon_button(
+    id: &'static str,
+    icon: IconName,
+    icon_size: f32,
+    tooltip: &'static str,
+) -> Button {
+    Button::new(id)
+        .icon(Icon::new(icon).size(px(icon_size)))
+        .ghost()
+        .compact()
+        .size(px(29.))
+        .rounded_full()
+        .tooltip(tooltip)
+        .tooltip_show_delay(Duration::from_millis(320))
+}
+
 fn window_controls() -> impl IntoElement {
     div()
         .flex_none()
-        .ml(px(4.))
+        .ml(px(6.))
+        .p(px(3.))
         .flex()
         .items_center()
-        .gap(px(1.))
+        .gap(px(2.))
+        .rounded_full()
+        .border_1()
+        .border_color(rgba(BORDER_SUBTLE))
+        .bg(rgb(SURFACE))
         .child(
-            icon_button("window-minimize", IconName::Minus, "Minimize")
+            window_icon_button("window-minimize", IconName::Minus, 14., "Minimize")
                 .on_click(|_, window, _| window.minimize_window()),
         )
         .child(
-            icon_button("window-maximize", IconName::Square, "Maximize or restore")
-                .on_click(|_, window, _| window.zoom_window()),
+            window_icon_button(
+                "window-maximize",
+                IconName::Square,
+                10.5,
+                "Maximize or restore",
+            )
+            .on_click(|_, window, _| window.zoom_window()),
         )
         .child(
-            icon_button("window-close", IconName::X, "Close")
+            window_icon_button("window-close", IconName::X, 14., "Close")
                 .on_click(|_, window, _| window.remove_window()),
         )
 }
