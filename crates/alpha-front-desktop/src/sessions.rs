@@ -174,6 +174,9 @@ impl AlphaDesktop {
                         .gap(px(8.))
                         .child(
                             div()
+                                .min_w(px(0.))
+                                .flex_1()
+                                .truncate()
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .line_height(px(17.))
@@ -182,6 +185,7 @@ impl AlphaDesktop {
                         .when(is_active, |this| {
                             this.child(
                                 div()
+                                    .flex_none()
                                     .rounded_full()
                                     .bg(rgba(ACCENT_SOFT))
                                     .px(px(6.))
@@ -196,6 +200,8 @@ impl AlphaDesktop {
                 .child(
                     div()
                         .mt(px(8.))
+                        .w_full()
+                        .line_clamp(3)
                         .text_size(px(9.5))
                         .line_height(px(15.))
                         .text_color(rgb(MUTED))
