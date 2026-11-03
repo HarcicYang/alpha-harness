@@ -1,5 +1,26 @@
 use super::*;
 
+fn window_controls() -> impl IntoElement {
+    div()
+        .flex_none()
+        .ml(px(4.))
+        .flex()
+        .items_center()
+        .gap(px(1.))
+        .child(
+            icon_button("window-minimize", IconName::Minus, "Minimize")
+                .on_click(|_, window, _| window.minimize_window()),
+        )
+        .child(
+            icon_button("window-maximize", IconName::Square, "Maximize or restore")
+                .on_click(|_, window, _| window.zoom_window()),
+        )
+        .child(
+            icon_button("window-close", IconName::X, "Close")
+                .on_click(|_, window, _| window.remove_window()),
+        )
+}
+
 impl AlphaDesktop {
     fn render_ambient_header(&self, workspace: String, cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -46,6 +67,18 @@ impl AlphaDesktop {
                         this.toggle_workspace_menu(window, cx);
                     })),
             )
+            .when(cfg!(not(target_os = "macos")), |this| {
+                this.child(div().flex_1().h_full().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_, event: &MouseDownEvent, window, _| {
+                        if event.click_count >= 2 {
+                            window.zoom_window();
+                        } else {
+                            window.start_window_move();
+                        }
+                    }),
+                ))
+            })
             .child(
                 div()
                     .p(px(3.))
@@ -79,6 +112,9 @@ impl AlphaDesktop {
                         ),
                     ),
             )
+            .when(cfg!(not(target_os = "macos")), |this| {
+                this.child(window_controls())
+            })
             .into_any_element()
     }
 

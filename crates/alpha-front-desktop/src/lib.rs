@@ -239,11 +239,28 @@ pub fn run_desktop(runtime: FrontRuntimeManager) -> Result<(), DesktopError> {
                 .take()
                 .ok_or_else(|| DesktopError::Startup("desktop runtime consumed".to_owned()))
                 .expect("desktop runtime is initialized once");
+            // Linux and Windows draw the window chrome themselves. macOS keeps
+            // the native titlebar and traffic lights.
+            #[cfg(target_os = "macos")]
+            let titlebar = None;
+            #[cfg(not(target_os = "macos"))]
+            let titlebar = Some(TitlebarOptions {
+                title: Some("alpha-harness".into()),
+                appears_transparent: true,
+                traffic_light_position: None,
+            });
+            #[cfg(target_os = "macos")]
+            let window_decorations = None;
+            #[cfg(not(target_os = "macos"))]
+            let window_decorations = Some(WindowDecorations::Client);
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
                     window_min_size: Some(size(px(560.), px(560.))),
                     inactive_frame_interval: Some(Duration::from_millis(8)),
+                    titlebar,
+                    window_decorations,
+                    app_owns_titlebar_drag: cfg!(not(target_os = "macos")),
                     ..WindowOptions::default()
                 },
                 cx,

@@ -366,6 +366,12 @@ turn and exit after the core has settled it; a second Ctrl-C exits immediately.
 selection, clipboard operations, scrolling, and presentation animation. Shared
 workflow state remains in `alpha-front-runtime`.
 
+Linux and Windows use client-side window chrome: the blank middle of the ambient
+header is the drag region, and minimize, maximize or restore, and close sit at
+its right edge. macOS keeps the native titlebar and traffic lights. Session
+titles and previews are truncated by display columns, so Latin and CJK text
+both end at the same visual width with an ellipsis.
+
 | Module | Responsibility |
 | --- | --- |
 | `shell` | Ambient header, transcript frame, composer placement, and top-level overlays |
