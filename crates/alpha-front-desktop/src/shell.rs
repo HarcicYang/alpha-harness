@@ -36,7 +36,7 @@ fn window_controls() -> impl IntoElement {
             window_icon_button(
                 "window-maximize",
                 IconName::Square,
-                10.5,
+                9.,
                 "Maximize or restore",
             )
             .on_click(|_, window, _| window.zoom_window()),
