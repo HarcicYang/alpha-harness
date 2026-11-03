@@ -202,6 +202,7 @@ impl AlphaDesktop {
                         .mt(px(8.))
                         .w_full()
                         .line_clamp(3)
+                        .text_ellipsis()
                         .text_size(px(9.5))
                         .line_height(px(15.))
                         .text_color(rgb(MUTED))
