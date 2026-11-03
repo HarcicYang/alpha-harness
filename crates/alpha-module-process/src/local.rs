@@ -7,10 +7,41 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+#[cfg(unix)]
+use nix::sys::signal::{Signal, killpg};
+#[cfg(unix)]
+use nix::unistd::Pid;
+
 use crate::seam::{
     ProcessError, ProcessOutcome, ProcessOutputCallback, ProcessRequest, ProcessRunner,
     ProcessStream,
 };
+
+/// Kills the child's process group if the run is dropped before it exits.
+#[cfg(unix)]
+struct ProcessGroup {
+    pid: Option<u32>,
+}
+
+#[cfg(unix)]
+impl ProcessGroup {
+    fn new(pid: u32) -> Self {
+        Self { pid: Some(pid) }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid {
+            let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        }
+    }
+}
 
 /// Process seam backed by the local machine.
 #[derive(Clone, Debug)]
@@ -74,11 +105,18 @@ impl ProcessRunner for LocalProcessRunner {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            #[cfg(unix)]
+            command.process_group(0);
             for (key, value) in &request.env {
                 command.env(key, value);
             }
 
             let mut child = command.spawn().map_err(ProcessError::Spawn)?;
+            // The shell spawns its own children. Killing only the direct child
+            // on interruption leaves those descendants running, so own the
+            // whole process group and kill it if this future is dropped.
+            #[cfg(unix)]
+            let mut group = child.id().map(ProcessGroup::new);
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let stdout_output = Self::read_stream(stdout, ProcessStream::Stdout, output.clone());
@@ -95,6 +133,11 @@ impl ProcessRunner for LocalProcessRunner {
                 },
                 None => wait.await?,
             };
+            // The command exited; its process group is empty.
+            #[cfg(unix)]
+            if let Some(group) = group.as_mut() {
+                group.disarm();
+            }
 
             Ok(ProcessOutcome {
                 code: status.code(),

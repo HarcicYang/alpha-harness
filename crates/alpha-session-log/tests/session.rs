@@ -377,6 +377,8 @@ fn list_returns_headers_newest_first() {
 fn list_entries_includes_the_first_user_message() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(dir.path());
+    // A session that never recorded an event is an abandoned draft.
+    drop(store.create(header()).expect("create empty"));
     let header = header();
     let id = header.id;
 

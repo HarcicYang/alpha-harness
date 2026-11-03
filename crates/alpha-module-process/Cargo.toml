@@ -19,6 +19,9 @@ tokio = { workspace = true, features = ["io-util"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [package.metadata.alpha]
 api = 1
 kind = "module"

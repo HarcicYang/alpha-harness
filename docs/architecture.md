@@ -132,8 +132,9 @@ so the next request sees a complete history. A cancelled turn is settled in the
 same way before the actor accepts new work.
 
 The front runtime keeps a chat as an in-memory draft until the first prompt.
-Submitting that prompt creates a durable session. This avoids empty session
-directories from opening a new chat and walking away.
+Submitting that prompt creates a durable session. Session listings hide
+sessions that never recorded an event, so an interrupted startup does not leave
+a blank entry in the picker.
 
 ## Agent loop
 
@@ -210,7 +211,8 @@ and returns model-visible image content.
 command running after the current tool call returns. The model can query the
 job by `job_id`, choose a per-call wait with `wait_ms`, and read output after a
 byte offset with `since_bytes`. The shell tool does not apply a wall-clock
-timeout to commands.
+timeout to commands. A foreground command runs in its own process group, so
+interrupting the turn kills the command together with its descendants.
 
 ## Permissions
 

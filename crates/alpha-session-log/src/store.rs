@@ -226,24 +226,33 @@ impl SessionStore {
     }
 
     /// List sessions with the first user message projected from each log.
+    ///
+    /// A session that never recorded an event is a draft that was abandoned
+    /// before its first turn, so it is not worth showing in a session picker.
     pub fn list_entries(&self) -> Result<Vec<SessionListEntry>, SessionError> {
         self.list()?
             .into_iter()
-            .map(|header| {
-                let first_message = self.open_read(header.id).ok().and_then(|reader| {
-                    reader
-                        .state()
-                        .messages
-                        .into_iter()
-                        .find_map(|message| match message {
-                            MessageRecord::User { text, .. } => Some(text),
-                            _ => None,
-                        })
-                });
-                Ok(SessionListEntry {
+            .filter_map(|header| {
+                let first_message = match self.open_read(header.id) {
+                    Ok(reader) => {
+                        let state = reader.state();
+                        if state.messages.is_empty() {
+                            return None;
+                        }
+                        state
+                            .messages
+                            .into_iter()
+                            .find_map(|message| match message {
+                                MessageRecord::User { text, .. } => Some(text),
+                                _ => None,
+                            })
+                    }
+                    Err(_) => None,
+                };
+                Some(Ok(SessionListEntry {
                     header,
                     first_message,
-                })
+                }))
             })
             .collect()
     }

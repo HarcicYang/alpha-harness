@@ -107,6 +107,51 @@ async fn timeouts_kill_the_process() {
     assert!(matches!(error, ProcessError::Timeout(_)));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_a_streaming_run_kills_descendants() {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runner = LocalProcessRunner::new(dir.path());
+    let seen = Arc::new(Mutex::new(None));
+    let sink = seen.clone();
+    let output: ProcessOutputCallback = Arc::new(move |_, bytes| {
+        if let Ok(pid) = String::from_utf8_lossy(&bytes).trim().parse::<i32>() {
+            *sink.lock().expect("pid lock poisoned") = Some(pid);
+        }
+    });
+    let mut run = Box::pin(runner.run_streaming(
+        ProcessRequest::new(
+            "sh",
+            ["-c".to_owned(), "sleep 30 & echo $!; wait".to_owned()],
+        ),
+        output,
+    ));
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut run => panic!("run finished before the pid was read: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    if let Some(pid) = *seen.lock().expect("pid lock poisoned") {
+                        break pid;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("pid");
+
+    drop(run);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        kill(Pid::from_raw(pid), None).is_err(),
+        "the descendant process survived the interrupted run"
+    );
+}
+
 #[tokio::test]
 async fn module_provides_the_seam() {
     let dir = tempfile::tempdir().expect("tempdir");
